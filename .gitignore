@@ -1,0 +1,10 @@
+.DS_Store
+.env
+.env.*
+node_modules/
+coverage/
+artifacts/
+backend/data/
+*.db
+*.db-shm
+*.db-wal

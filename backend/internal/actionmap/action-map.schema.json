@@ -1,0 +1,205 @@
+{
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "string", "enum": ["action-map/1"] },
+    "site": {
+      "type": "object",
+      "properties": {
+        "origin": { "type": "string" },
+        "observedUrls": {
+          "type": "array",
+          "items": { "type": "string" },
+          "maxItems": 12
+        }
+      },
+      "required": ["origin", "observedUrls"],
+      "additionalProperties": false
+    },
+    "summary": { "type": "string" },
+    "states": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,39}$" },
+          "label": { "type": "string" },
+          "urlPattern": { "type": "string" },
+          "fingerprint": { "type": ["string", "null"] },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string" },
+            "maxItems": 8
+          }
+        },
+        "required": ["id", "label", "urlPattern", "fingerprint", "evidence"],
+        "additionalProperties": false
+      }
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,39}$" },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "category": {
+            "type": "string",
+            "enum": ["read", "navigate", "input", "submit", "change"]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["observed", "resolvable", "unresolved"]
+          },
+          "safety": { "type": "string", "enum": ["read", "write", "danger"] },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "fromState": { "type": "string" },
+          "toState": { "type": ["string", "null"] },
+          "parameters": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,29}$" },
+                "description": { "type": "string" },
+                "type": { "type": "string", "enum": ["string", "number", "boolean"] },
+                "required": { "type": "boolean" }
+              },
+              "required": ["name", "description", "type", "required"],
+              "additionalProperties": false
+            }
+          },
+          "steps": {
+            "type": "array",
+            "maxItems": 20,
+            "items": { "$ref": "#/$defs/step" }
+          },
+          "output": { "$ref": "#/$defs/output" },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string" },
+            "maxItems": 10
+          },
+          "missingEvidence": {
+            "type": "array",
+            "items": { "type": "string" },
+            "maxItems": 10
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "category",
+          "status",
+          "safety",
+          "confidence",
+          "fromState",
+          "toState",
+          "parameters",
+          "steps",
+          "output",
+          "evidence",
+          "missingEvidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 12
+    },
+    "privacy": {
+      "type": "object",
+      "properties": {
+        "redactionsApplied": { "type": "integer", "minimum": 0 },
+        "categories": {
+          "type": "array",
+          "items": { "type": "string" },
+          "maxItems": 12
+        },
+        "policy": { "type": "string" }
+      },
+      "required": ["redactionsApplied", "categories", "policy"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["schemaVersion", "site", "summary", "states", "actions", "warnings", "privacy"],
+  "additionalProperties": false,
+  "$defs": {
+    "locator": {
+      "type": "object",
+      "properties": {
+        "css": { "type": ["string", "null"] },
+        "role": { "type": ["string", "null"] },
+        "name": { "type": ["string", "null"] },
+        "placeholder": { "type": ["string", "null"] },
+        "text": { "type": ["string", "null"] },
+        "hrefContains": { "type": ["string", "null"] }
+      },
+      "required": ["css", "role", "name", "placeholder", "text", "hrefContains"],
+      "additionalProperties": false
+    },
+    "expectation": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["none", "dom_change", "navigation", "collection", "element"]
+        },
+        "state": { "type": ["string", "null"] },
+        "urlPattern": { "type": ["string", "null"] },
+        "target": { "$ref": "#/$defs/locator" }
+      },
+      "required": ["kind", "state", "urlPattern", "target"],
+      "additionalProperties": false
+    },
+    "step": {
+      "type": "object",
+      "properties": {
+        "op": { "type": "string", "enum": ["fill", "click", "press", "wait", "extract"] },
+        "target": { "$ref": "#/$defs/locator" },
+        "valueFrom": { "type": ["string", "null"] },
+        "literalValue": { "type": ["string", "null"] },
+        "key": { "type": ["string", "null"] },
+        "expect": { "$ref": "#/$defs/expectation" },
+        "timeoutMs": { "type": "integer", "minimum": 100, "maximum": 30000 }
+      },
+      "required": ["op", "target", "valueFrom", "literalValue", "key", "expect", "timeoutMs"],
+      "additionalProperties": false
+    },
+    "field": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "locator": { "$ref": "#/$defs/locator" },
+        "attribute": { "type": ["string", "null"] },
+        "required": { "type": "boolean" }
+      },
+      "required": ["name", "locator", "attribute", "required"],
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "mode": { "type": "string", "enum": ["none", "page", "collection"] },
+        "collectionRoot": { "$ref": "#/$defs/locator" },
+        "item": { "$ref": "#/$defs/locator" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 25 },
+        "fields": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/field" }
+        }
+      },
+      "required": ["mode", "collectionRoot", "item", "limit", "fields"],
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "schemaVersion": "learning-trace/2",
+  "recordingId": "storefront-search-smoke",
+  "startedAt": "2026-09-02T12:00:00.000Z",
+  "stoppedAt": "2026-09-02T12:00:12.000Z",
+  "initialStateFingerprint": "home",
+  "finalStateFingerprint": "product_added",
+  "states": [
+    {
+      "capturedAt": "2026-09-02T12:00:00.000Z",
+      "url": "http://127.0.0.1:4317/demo/",
+      "origin": "http://127.0.0.1:4317",
+      "title": "Instrument Supply",
+      "fingerprint": "home",
+      "semanticXml": "<page><node>duplicate projection removed by Go</node></page>",
+      "nodes": [
+        { "identity": "#catalog-query|input|searchbox|Search the catalog", "tag": "input", "role": "searchbox", "name": "Search the catalog", "text": "", "css": "#catalog-query", "attributes": { "name": "q", "placeholder": "Search instruments", "type": "search" }, "rect": { "x": 300, "y": 20, "width": 520, "height": 46 } },
+        { "identity": "button|button|Search", "tag": "button", "role": "button", "name": "Search", "text": "Search", "css": "header form button:nth-of-type(1)", "attributes": { "type": "submit" }, "rect": { "x": 820, "y": 20, "width": 88, "height": 46 } },
+        { "identity": "a|link|Basket", "tag": "a", "role": "link", "name": "Basket 0", "text": "Basket 0", "css": "a[data-cart-link]", "attributes": { "href": "http://127.0.0.1:4317/demo/cart" }, "rect": { "x": 1050, "y": 28, "width": 80, "height": 30 } }
+      ],
+      "collections": []
+    },
+    {
+      "capturedAt": "2026-09-02T12:00:03.000Z",
+      "url": "http://127.0.0.1:4317/demo/",
+      "origin": "http://127.0.0.1:4317",
+      "title": "Instrument Supply",
+      "fingerprint": "query_entered",
+      "nodes": [
+        { "identity": "#catalog-query|input|searchbox|Search the catalog", "tag": "input", "role": "searchbox", "name": "Search the catalog", "text": "", "css": "#catalog-query", "attributes": { "name": "q", "placeholder": "Search instruments", "type": "search" }, "rect": { "x": 300, "y": 20, "width": 520, "height": 46 } },
+        { "identity": "button|button|Search", "tag": "button", "role": "button", "name": "Search", "text": "Search", "css": "header form button:nth-of-type(1)", "attributes": { "type": "submit" }, "rect": { "x": 820, "y": 20, "width": 88, "height": 46 } }
+      ],
+      "collections": []
+    },
+    {
+      "capturedAt": "2026-09-02T12:00:06.000Z",
+      "url": "http://127.0.0.1:4317/demo/search?q=headphones",
+      "origin": "http://127.0.0.1:4317",
+      "title": "Instrument Supply",
+      "fingerprint": "results",
+      "nodes": [
+        { "identity": "main|heading|Search results", "tag": "h1", "role": "heading", "name": "Search results", "text": "Search results", "css": "main h1:nth-of-type(1)", "attributes": {}, "rect": { "x": 50, "y": 150, "width": 650, "height": 90 } },
+        { "identity": "article[data-product-card]|article|Field H1", "tag": "article", "role": "article", "name": "Field H1 $129 4.8 / 5", "text": "Closed-back headphones Field H1 $129 4.8 / 5", "css": "article[data-product-card]", "attributes": { "data-product-card": "", "data-product-id": "field-h1" }, "rect": { "x": 50, "y": 320, "width": 340, "height": 335 } },
+        { "identity": "a|link|Field H1", "tag": "a", "role": "link", "name": "Field H1", "text": "Field H1", "css": "article:nth-of-type(1) h2 a", "attributes": { "href": "http://127.0.0.1:4317/demo/product/field-h1" }, "rect": { "x": 72, "y": 370, "width": 120, "height": 32 } },
+        { "identity": "button|button|Add to basket", "tag": "button", "role": "button", "name": "Add to basket", "text": "Add to basket", "css": "article:nth-of-type(1) button", "attributes": { "type": "button", "data-product-id": "field-h1" }, "rect": { "x": 220, "y": 590, "width": 140, "height": 38 } }
+      ],
+      "collections": [
+        {
+          "parentCss": "div[data-product-results]",
+          "itemCss": "article[data-product-card]",
+          "count": 3,
+          "sample": [
+            { "name": "Field H1", "text": "Closed-back headphones Field H1 $129 4.8 / 5", "attributes": { "data-product-id": "field-h1" } },
+            { "name": "Reference H4", "text": "Open-back headphones Reference H4 $189 4.6 / 5", "attributes": { "data-product-id": "reference-h4" } },
+            { "name": "Transit Buds", "text": "Wireless earphones Transit Buds $99 4.4 / 5", "attributes": { "data-product-id": "transit-buds" } }
+          ]
+        }
+      ]
+    },
+    {
+      "capturedAt": "2026-09-02T12:00:09.000Z",
+      "url": "http://127.0.0.1:4317/demo/product/field-h1",
+      "origin": "http://127.0.0.1:4317",
+      "title": "Instrument Supply",
+      "fingerprint": "product",
+      "nodes": [
+        { "identity": "h1|heading|Field H1", "tag": "h1", "role": "heading", "name": "Field H1", "text": "Field H1", "css": "main h1:nth-of-type(1)", "attributes": {}, "rect": { "x": 90, "y": 220, "width": 520, "height": 100 } },
+        { "identity": "button|button|Add to basket", "tag": "button", "role": "button", "name": "Add to basket", "text": "Add to basket", "css": "button[data-add-to-basket]", "attributes": { "type": "button", "data-product-id": "field-h1" }, "rect": { "x": 90, "y": 480, "width": 160, "height": 46 } }
+      ],
+      "collections": []
+    },
+    {
+      "capturedAt": "2026-09-02T12:00:12.000Z",
+      "url": "http://127.0.0.1:4317/demo/product/field-h1",
+      "origin": "http://127.0.0.1:4317",
+      "title": "Instrument Supply",
+      "fingerprint": "product_added",
+      "nodes": [
+        { "identity": "h1|heading|Field H1", "tag": "h1", "role": "heading", "name": "Field H1", "text": "Field H1", "css": "main h1:nth-of-type(1)", "attributes": {}, "rect": { "x": 90, "y": 220, "width": 520, "height": 100 } },
+        { "identity": "button|button|Added to basket", "tag": "button", "role": "button", "name": "Added to basket", "text": "Added to basket", "css": "button[data-add-to-basket]", "attributes": { "type": "button", "data-product-id": "field-h1" }, "rect": { "x": 90, "y": 480, "width": 160, "height": 46 } },
+        { "identity": "status|This instrument is now in your basket", "tag": "p", "role": "status", "name": "This instrument is now in your basket.", "text": "This instrument is now in your basket.", "css": "p[data-basket-status]", "attributes": {}, "rect": { "x": 90, "y": 540, "width": 380, "height": 24 } }
+      ],
+      "collections": []
+    }
+  ],
+  "steps": [
+    {
+      "sequence": 1,
+      "event": { "id": "fill-search", "kind": "fill", "occurredAt": "2026-09-02T12:00:02.000Z", "target": { "role": "searchbox", "name": "Search the catalog", "css": "#catalog-query" }, "value": { "redacted": false, "value": "headphones" } },
+      "fromStateFingerprint": "home",
+      "toStateFingerprint": "query_entered",
+      "delta": { "urlChanged": false, "beforeUrl": "http://127.0.0.1:4317/demo/", "afterUrl": "http://127.0.0.1:4317/demo/", "added": [], "removed": [], "changed": [], "collectionsChanged": false, "beforeFingerprint": "home", "afterFingerprint": "query_entered" }
+    },
+    {
+      "sequence": 2,
+      "event": { "id": "submit-search", "kind": "click", "occurredAt": "2026-09-02T12:00:04.000Z", "target": { "role": "button", "name": "Search", "css": "header form button:nth-of-type(1)" }, "value": { "redacted": false, "value": null } },
+      "fromStateFingerprint": "query_entered",
+      "toStateFingerprint": "results",
+      "delta": { "urlChanged": true, "beforeUrl": "http://127.0.0.1:4317/demo/", "afterUrl": "http://127.0.0.1:4317/demo/search?q=headphones", "added": [{ "role": "heading", "name": "Search results" }], "removed": [], "changed": [], "collectionsChanged": true, "beforeFingerprint": "query_entered", "afterFingerprint": "results" }
+    },
+    {
+      "sequence": 3,
+      "event": { "id": "open-product", "kind": "click", "occurredAt": "2026-09-02T12:00:07.000Z", "target": { "role": "link", "name": "Field H1", "css": "article:nth-of-type(1) h2 a" }, "value": { "redacted": false, "value": null } },
+      "fromStateFingerprint": "results",
+      "toStateFingerprint": "product",
+      "delta": { "urlChanged": true, "beforeUrl": "http://127.0.0.1:4317/demo/search?q=headphones", "afterUrl": "http://127.0.0.1:4317/demo/product/field-h1", "added": [{ "role": "heading", "name": "Field H1" }], "removed": [], "changed": [], "collectionsChanged": true, "beforeFingerprint": "results", "afterFingerprint": "product" }
+    },
+    {
+      "sequence": 4,
+      "event": { "id": "add-product", "kind": "click", "occurredAt": "2026-09-02T12:00:10.000Z", "target": { "role": "button", "name": "Add to basket", "css": "button[data-add-to-basket]" }, "value": { "redacted": false, "value": null } },
+      "fromStateFingerprint": "product",
+      "toStateFingerprint": "product_added",
+      "delta": { "urlChanged": false, "beforeUrl": "http://127.0.0.1:4317/demo/product/field-h1", "afterUrl": "http://127.0.0.1:4317/demo/product/field-h1", "added": [{ "role": "status", "name": "This instrument is now in your basket." }], "removed": [], "changed": [{ "before": { "name": "Add to basket" }, "after": { "name": "Added to basket" } }], "collectionsChanged": false, "beforeFingerprint": "product", "afterFingerprint": "product_added" }
+    }
+  ],
+  "observedPath": [
+    { "sequence": 1, "event": { "kind": "fill", "target": { "role": "searchbox", "name": "Search the catalog" }, "value": { "redacted": false, "value": "headphones" } }, "fromStateFingerprint": "home", "toStateFingerprint": "query_entered", "transition": { "urlChanged": false, "beforeUrl": "http://127.0.0.1:4317/demo/", "afterUrl": "http://127.0.0.1:4317/demo/", "addedNodes": 0, "removedNodes": 0, "changedNodes": 0, "collectionsChanged": false } },
+    { "sequence": 2, "event": { "kind": "click", "target": { "role": "button", "name": "Search" }, "value": { "redacted": false, "value": null } }, "fromStateFingerprint": "query_entered", "toStateFingerprint": "results", "transition": { "urlChanged": true, "beforeUrl": "http://127.0.0.1:4317/demo/", "afterUrl": "http://127.0.0.1:4317/demo/search?q=headphones", "addedNodes": 1, "removedNodes": 0, "changedNodes": 0, "collectionsChanged": true } },
+    { "sequence": 3, "event": { "kind": "click", "target": { "role": "link", "name": "Field H1" }, "value": { "redacted": false, "value": null } }, "fromStateFingerprint": "results", "toStateFingerprint": "product", "transition": { "urlChanged": true, "beforeUrl": "http://127.0.0.1:4317/demo/search?q=headphones", "afterUrl": "http://127.0.0.1:4317/demo/product/field-h1", "addedNodes": 1, "removedNodes": 0, "changedNodes": 0, "collectionsChanged": true } },
+    { "sequence": 4, "event": { "kind": "click", "target": { "role": "button", "name": "Add to basket" }, "value": { "redacted": false, "value": null } }, "fromStateFingerprint": "product", "toStateFingerprint": "product_added", "transition": { "urlChanged": false, "beforeUrl": "http://127.0.0.1:4317/demo/product/field-h1", "afterUrl": "http://127.0.0.1:4317/demo/product/field-h1", "addedNodes": 1, "removedNodes": 0, "changedNodes": 1, "collectionsChanged": false } }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Action Mapper Lab",
+  "version": "0.1.0",
+  "description": "Record browser workflows and discover deterministic page states and actions.",
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Action Mapper",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "manifest-contract.js",
+        "semantic.js",
+        "runner.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
