@@ -7,6 +7,14 @@
 }(typeof globalThis === 'undefined' ? this : globalThis, () => {
   'use strict';
 
+  const INPUT_ROLES = new Set([
+    'combobox',
+    'listbox',
+    'searchbox',
+    'spinbutton',
+    'textbox',
+  ]);
+
   const stateKey = (state) => {
     if (!state?.fingerprint) {
       throw new Error('A captured page state must have a fingerprint');
@@ -106,37 +114,231 @@
     };
   };
 
-  const observedPath = (recording) => recording.steps.map((step) => {
-    const before = recording.states[step.fromStateFingerprint];
-    const after = recording.states[step.toStateFingerprint];
-    return {
-      sequence: step.sequence,
-      event: step.event,
-      fromStateFingerprint: step.fromStateFingerprint,
-      toStateFingerprint: step.toStateFingerprint,
-      transition: {
-        urlChanged: step.delta?.urlChanged === true,
-        beforeUrl: before?.url || step.delta?.beforeUrl || null,
-        afterUrl: after?.url || step.delta?.afterUrl || null,
-        addedNodes: step.delta?.added?.length || 0,
-        removedNodes: step.delta?.removed?.length || 0,
-        changedNodes: step.delta?.changed?.length || 0,
-        collectionsChanged: step.delta?.collectionsChanged === true,
-      },
-    };
+  const targetKey = (event) => {
+    const target = event?.target || {};
+    return target.id
+      || target.css
+      || [target.role, target.name, target.attributes?.placeholder].filter(Boolean).join('|');
+  };
+
+  const hasMaterialUpdate = (step) => (
+    step.delta?.urlChanged === true
+    || step.delta?.collectionsChanged === true
+    || (step.delta?.added?.length || 0) > 0
+    || (step.delta?.removed?.length || 0) > 0
+    || (step.delta?.changed?.length || 0) > 0
+  );
+
+  const mergeDeltas = (first, second) => ({
+    ...second,
+    beforeUrl: first?.beforeUrl || null,
+    beforeTitle: first?.beforeTitle || null,
+    beforeFingerprint: first?.beforeFingerprint || null,
+    urlChanged: first?.beforeUrl !== second?.afterUrl,
+    titleChanged: first?.beforeTitle !== second?.afterTitle,
+    added: [...(first?.added || []), ...(second?.added || [])].slice(0, 160),
+    removed: [...(first?.removed || []), ...(second?.removed || [])].slice(0, 100),
+    changed: [...(first?.changed || []), ...(second?.changed || [])].slice(0, 100),
+    collectionsChanged: first?.collectionsChanged === true || second?.collectionsChanged === true,
   });
 
-  const toTrace = (recording) => ({
-    schemaVersion: 'learning-trace/2',
-    recordingId: recording.id,
-    startedAt: recording.startedAt,
-    stoppedAt: recording.stoppedAt,
-    initialStateFingerprint: recording.initialStateFingerprint,
-    finalStateFingerprint: recording.finalStateFingerprint,
-    states: recording.stateOrder.map((fingerprint) => recording.states[fingerprint]),
-    steps: recording.steps,
-    observedPath: observedPath(recording),
+  const normalizeSteps = (recording) => {
+    const ordered = [...recording.steps].sort((left, right) => left.sequence - right.sequence);
+    const withoutFocusClicks = ordered.filter((step, index) => {
+      const next = ordered[index + 1];
+      return !(
+        step.event.kind === 'click'
+        && INPUT_ROLES.has(step.event.target?.role)
+        && !hasMaterialUpdate(step)
+        && next?.event.kind === 'fill'
+        && targetKey(step.event) === targetKey(next.event)
+      );
+    });
+
+    return withoutFocusClicks.reduce((normalized, step) => {
+      const previous = normalized[normalized.length - 1];
+      const isRepeatedFill = previous?.event.kind === 'fill'
+        && step.event.kind === 'fill'
+        && targetKey(previous.event) === targetKey(step.event)
+        && previous.toStateFingerprint === step.fromStateFingerprint
+        && previous.delta?.urlChanged !== true
+        && step.delta?.urlChanged !== true;
+      if (!isRepeatedFill) {
+        normalized.push(step);
+        return normalized;
+      }
+
+      normalized[normalized.length - 1] = {
+        ...previous,
+        event: step.event,
+        fromStateFingerprint: previous.fromStateFingerprint,
+        toStateFingerprint: step.toStateFingerprint,
+        delta: mergeDeltas(previous.delta, step.delta),
+      };
+      return normalized;
+    }, []);
+  };
+
+  const compactAttributes = (attributes = {}) => Object.fromEntries(
+    Object.entries(attributes).filter(([, value]) => value !== null && value !== ''),
+  );
+
+  const compactNode = (node) => {
+    const output = {
+      id: node.id,
+      tag: node.tag,
+      role: node.role || null,
+      name: node.name || null,
+      css: node.css || null,
+      shadowHost: node.shadowHost || null,
+      attributes: compactAttributes(node.attributes),
+      interaction: node.interaction || null,
+      context: node.parentContext || null,
+      rect: node.rect || null,
+    };
+    if (node.text && node.text !== node.name) output.text = node.text;
+    return output;
+  };
+
+  const compactCollection = (collection) => ({
+    parentCss: collection.parentCss || null,
+    itemCss: collection.itemCss || null,
+    count: collection.count,
+    sample: (collection.sample || []).map((item) => ({
+      name: item.name || null,
+      text: item.text && item.text !== item.name ? item.text : null,
+      attributes: compactAttributes(item.attributes),
+    })),
   });
+
+  const compactPage = (state, id) => ({
+    id,
+    fingerprint: state.fingerprint,
+    url: state.url,
+    title: state.title,
+    viewport: state.viewport,
+    nodes: (state.nodes || []).map(compactNode),
+    collections: (state.collections || []).map(compactCollection),
+    truncated: state.truncated === true,
+  });
+
+  const compactTarget = (target = {}) => ({
+    id: target.id || null,
+    tag: target.tag || null,
+    role: target.role || null,
+    name: target.name || null,
+    css: target.css || null,
+    shadowHost: target.shadowHost || null,
+    attributes: compactAttributes(target.attributes),
+    interaction: target.interaction || null,
+    rect: target.rect || null,
+  });
+
+  const compactChangedNode = (change) => ({
+    before: compactNode(change.before || {}),
+    after: compactNode(change.after || {}),
+  });
+
+  const compactDelta = (delta = {}) => ({
+    urlChanged: delta.urlChanged === true,
+    beforeUrl: delta.beforeUrl || null,
+    afterUrl: delta.afterUrl || null,
+    titleChanged: delta.titleChanged === true,
+    added: (delta.added || []).map(compactNode),
+    removed: (delta.removed || []).map(compactNode),
+    changed: (delta.changed || []).map(compactChangedNode),
+    collectionsChanged: delta.collectionsChanged === true,
+    collections: (delta.collections || []).map(compactCollection),
+  });
+
+  const pageIds = (recording) => new Map(recording.stateOrder.map((fingerprint, index) => (
+    [fingerprint, `page_${index + 1}`]
+  )));
+
+  const toTrace = (recording) => {
+    const steps = normalizeSteps(recording);
+    const ids = pageIds(recording);
+    const frames = [];
+    const seenPages = new Set();
+    const pages = [];
+    const transitions = [];
+    let nextFrameSequence = 1;
+
+    const appendPageFrame = (fingerprint) => {
+      const id = ids.get(fingerprint);
+      const state = recording.states[fingerprint];
+      const reused = seenPages.has(id);
+      const page = reused
+        ? { id, fingerprint, reused: true }
+        : compactPage(state, id);
+      frames.push({ sequence: nextFrameSequence, type: 'page', page });
+      if (!reused) {
+        seenPages.add(id);
+        pages.push({ id, fingerprint, firstFrameSequence: nextFrameSequence });
+      }
+      nextFrameSequence += 1;
+      return id;
+    };
+
+    let currentPageId = appendPageFrame(recording.initialStateFingerprint);
+    steps.forEach((step, index) => {
+      const fromPageId = ids.get(step.fromStateFingerprint);
+      const toPageId = ids.get(step.toStateFingerprint);
+      if (currentPageId !== fromPageId) currentPageId = appendPageFrame(step.fromStateFingerprint);
+
+      const actionId = `action_${index + 1}`;
+      const actionFrameSequence = nextFrameSequence;
+      frames.push({
+        sequence: nextFrameSequence,
+        type: 'action',
+        fromPageId,
+        action: {
+          id: actionId,
+          kind: step.event.kind,
+          occurredAt: step.event.occurredAt,
+          target: compactTarget(step.event.target),
+          value: step.event.value,
+        },
+      });
+      nextFrameSequence += 1;
+
+      const updateFrameSequence = nextFrameSequence;
+      frames.push({
+        sequence: nextFrameSequence,
+        type: 'update',
+        actionId,
+        fromPageId,
+        toPageId,
+        update: compactDelta(step.delta),
+      });
+      nextFrameSequence += 1;
+
+      currentPageId = appendPageFrame(step.toStateFingerprint);
+      transitions.push({
+        id: `transition_${index + 1}`,
+        fromPageId,
+        actionId,
+        actionFrameSequence,
+        updateFrameSequence,
+        toPageId,
+      });
+    });
+
+    return {
+      schemaVersion: 'learning-trace/3',
+      recordingId: recording.id,
+      startedAt: recording.startedAt,
+      stoppedAt: recording.stoppedAt,
+      frames,
+      actionTree: {
+        kind: 'directed_action_graph',
+        rootPageId: ids.get(recording.initialStateFingerprint),
+        finalPageId: ids.get(recording.finalStateFingerprint),
+        pages,
+        transitions,
+      },
+    };
+  };
 
   const stateFor = (recording, fingerprint) => recording?.states?.[fingerprint] || null;
 
@@ -146,7 +348,7 @@
     completeNavigation,
     createRecording,
     finishRecording,
-    observedPath,
+    normalizeSteps,
     stateFor,
     toTrace,
   };

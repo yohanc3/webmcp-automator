@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	defaultModel  = "openai/gpt-oss-120b"
+	defaultModel  = "openai/gpt-oss-20b:nitro"
 	openRouterURL = "https://openrouter.ai/api/v1/chat/completions"
 	DiscoveryGoal = "Discover the website states, available actions, and deterministic steps supported by this recording."
 )
@@ -33,9 +33,16 @@ The input is a sanitized recording of page states, visible semantic elements, us
 - The input has already been scrubbed, but you must still generalize anything that appears personal or uniquely identifying.
 </privacy_rules>
 
+<trace_contract>
+- The recording uses learning-trace/3.
+- frames are an ordered causal stream: page, action, update, resulting page, then the next action.
+- A repeated page frame references an earlier full page snapshot by id and fingerprint.
+- actionTree is rebuilt and validated by the backend from those frames. It is a directed graph because a workflow can revisit or branch from a page.
+</trace_contract>
+
 <discovery_rules>
 1. Build a state/action map, not a single tool.
-2. In learning-trace/2, states are deduplicated page maps. Each step references its before and after state fingerprints, and observedPath is a compact reconstruction of the same transitions. Treat this graph as the authoritative event order and URL-change evidence.
+2. Follow frames in exact sequence. For each transition, use its page evidence, action, update, and resulting page together. Treat actionTree as authoritative ordering and URL-change evidence.
 3. States describe materially distinct observed page conditions. Reuse a state when only incidental text changed.
 4. First include the composite actions directly demonstrated by contiguous event sequences. Their status is observed and their steps must follow the demonstrated order. Split a long recording at clear goal or page-state boundaries instead of collapsing everything into one action.
 5. Discover additional high-signal actions from semantic controls and repeated content visible in any observed state.
@@ -62,22 +69,28 @@ type Result struct {
 	ActionMap  actionmap.Map   `json:"actionMap"`
 	Model      string          `json:"model"`
 	ResponseID string          `json:"responseId"`
+	Provider   string          `json:"provider,omitempty"`
+	Finish     string          `json:"finishReason,omitempty"`
 	Usage      json.RawMessage `json:"usage,omitempty"`
 }
 
 type chatEnvelope struct {
-	ID      string          `json:"id"`
-	Model   string          `json:"model"`
-	Choices []chatChoice    `json:"choices"`
-	Usage   json.RawMessage `json:"usage"`
-	Error   *struct {
+	ID       string          `json:"id"`
+	Model    string          `json:"model"`
+	Provider string          `json:"provider"`
+	Choices  []chatChoice    `json:"choices"`
+	Usage    json.RawMessage `json:"usage"`
+	Error    *struct {
 		Message string `json:"message"`
 	} `json:"error"`
 }
 
 type chatChoice struct {
-	Message struct {
-		Content string `json:"content"`
+	FinishReason string `json:"finish_reason"`
+	Message      struct {
+		Content          string            `json:"content"`
+		Reasoning        string            `json:"reasoning"`
+		ReasoningDetails []json.RawMessage `json:"reasoning_details"`
 	} `json:"message"`
 }
 
@@ -115,7 +128,10 @@ func (client Client) Discover(ctx context.Context, trace json.RawMessage) (Resul
 			{"role": "system", "content": systemInstructions},
 			{"role": "user", "content": string(input)},
 		},
-		"max_tokens": 12000,
+		"max_completion_tokens": 8000,
+		"reasoning": map[string]any{
+			"effort": "low",
+		},
 		"response_format": map[string]any{
 			"type": "json_schema",
 			"json_schema": map[string]any{
@@ -172,11 +188,21 @@ func (client Client) Discover(ctx context.Context, trace json.RawMessage) (Resul
 	}
 
 	outputText := ""
+	finishReason := ""
+	reasoningCharacters := 0
 	if len(envelope.Choices) > 0 {
 		outputText = strings.TrimSpace(envelope.Choices[0].Message.Content)
+		finishReason = envelope.Choices[0].FinishReason
+		reasoningCharacters = len(envelope.Choices[0].Message.Reasoning)
+		for _, detail := range envelope.Choices[0].Message.ReasoningDetails {
+			reasoningCharacters += len(detail)
+		}
 	}
 	if outputText == "" {
-		return Result{}, errors.New("OpenRouter returned no action map")
+		return Result{}, fmt.Errorf(
+			"OpenRouter returned no action map (model=%s provider=%s finish_reason=%s reasoning_chars=%d)",
+			envelope.Model, envelope.Provider, finishReason, reasoningCharacters,
+		)
 	}
 
 	var discovered actionmap.Map
@@ -186,10 +212,12 @@ func (client Client) Discover(ctx context.Context, trace json.RawMessage) (Resul
 	if err := discovered.Validate(); err != nil {
 		return Result{
 			ActionMap: discovered, Model: envelope.Model,
-			ResponseID: envelope.ID, Usage: envelope.Usage,
+			ResponseID: envelope.ID, Provider: envelope.Provider,
+			Finish: finishReason, Usage: envelope.Usage,
 		}, err
 	}
 	return Result{
-		ActionMap: discovered, Model: envelope.Model, ResponseID: envelope.ID, Usage: envelope.Usage,
+		ActionMap: discovered, Model: envelope.Model, ResponseID: envelope.ID,
+		Provider: envelope.Provider, Finish: finishReason, Usage: envelope.Usage,
 	}, nil
 }

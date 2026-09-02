@@ -10,15 +10,19 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"webmcp-automator/backend/internal/actionmap"
 	"webmcp-automator/backend/internal/learning"
+	"webmcp-automator/backend/internal/privacy"
 	"webmcp-automator/backend/internal/store"
 )
 
 type fakeDiscoverer struct {
 	trace json.RawMessage
 }
+
+type failingDiscoverer struct{}
 
 func (discoverer *fakeDiscoverer) Discover(
 	_ context.Context,
@@ -29,6 +33,13 @@ func (discoverer *fakeDiscoverer) Discover(
 		ActionMap: apiTestMap(),
 		Model:     "openai/gpt-oss-120b",
 	}, nil
+}
+
+func (failingDiscoverer) Discover(
+	_ context.Context,
+	_ json.RawMessage,
+) (learning.Result, error) {
+	return learning.Result{}, context.Canceled
 }
 
 func TestHealthReportsSQLite(t *testing.T) {
@@ -64,34 +75,111 @@ func TestDiscoverSanitizesTraceBeforeStorageAndModel(t *testing.T) {
 		"/api/discover",
 		bytes.NewBufferString(`{
 			"trace": {
-				"initialState": {
-					"url": "https://example.com/?account=elijah",
-					"semanticXml": "<page>elijah@example.com</page>"
-				},
-				"finalState": {"url": "https://example.com/results?q=private"},
-				"steps": []
+				"schemaVersion":"learning-trace/3",
+				"frames":[
+					{"sequence":1,"type":"page","page":{
+						"id":"page_1","fingerprint":"home",
+						"url":"https://example.com/?account=elijah",
+						"semanticXml":"<page>elijah@example.com</page>"
+					}},
+					{"sequence":2,"type":"action","fromPageId":"page_1","action":{
+						"id":"action_1","kind":"fill",
+						"value":{"redacted":false,"value":"private"}
+					}},
+					{"sequence":3,"type":"update","actionId":"action_1",
+						"fromPageId":"page_1","toPageId":"page_2","update":{
+							"urlChanged":true,
+							"afterUrl":"https://example.com/results?q=private"
+						}},
+					{"sequence":4,"type":"page","page":{
+						"id":"page_2","fingerprint":"results",
+						"url":"https://example.com/results?q=private"
+					}}
+				]
 			}
 		}`),
 	)
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", response.Code, response.Body.String())
 	}
-	modelInput := string(discoverer.trace)
-	if strings.Contains(modelInput, "elijah@example.com") || strings.Contains(modelInput, "semanticXml") ||
-		strings.Contains(modelInput, "account=") || strings.Contains(modelInput, "?q=") {
-		t.Fatalf("model received unsanitized trace: %s", modelInput)
+	var accepted struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode accepted response: %v", err)
 	}
 	var body struct {
+		Status    string          `json:"status"`
 		Discovery store.Discovery `json:"discovery"`
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode discovery response: %v", err)
+	for attempt := 0; attempt < 100; attempt++ {
+		statusRequest := httptest.NewRequest(
+			http.MethodGet,
+			"/api/discover/"+accepted.SessionID,
+			nil,
+		)
+		statusResponse := httptest.NewRecorder()
+		server.ServeHTTP(statusResponse, statusRequest)
+		if statusResponse.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d: %s", statusResponse.Code, statusResponse.Body.String())
+		}
+		if err := json.Unmarshal(statusResponse.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode discovery status: %v", err)
+		}
+		if body.Status == "candidate" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if body.Status != "candidate" {
+		t.Fatalf("discovery did not complete: %#v", body)
+	}
+	session, err := database.GetSession(context.Background(), accepted.SessionID)
+	if err != nil {
+		t.Fatalf("get stored session: %v", err)
+	}
+	modelInput := string(session.Trace)
+	if strings.Contains(modelInput, "elijah@example.com") || strings.Contains(modelInput, "semanticXml") ||
+		strings.Contains(modelInput, "account=") || strings.Contains(modelInput, "?q=") ||
+		!strings.Contains(modelInput, "directed_action_graph") {
+		t.Fatalf("model received unsanitized trace: %s", modelInput)
 	}
 	if body.Discovery.ActionMap.Privacy.RedactionsApplied == 0 {
 		t.Fatalf("expected persisted privacy summary: %#v", body.Discovery)
+	}
+}
+
+func TestRunDiscoveryPersistsAContextFailure(t *testing.T) {
+	database, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	session, err := database.CreateSession(
+		context.Background(),
+		learning.DiscoveryGoal,
+		"https://example.com/",
+		"https://example.com/results",
+		json.RawMessage(`{"schemaVersion":"learning-trace/3"}`),
+	)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := database.MarkLearning(context.Background(), session.ID); err != nil {
+		t.Fatalf("mark learning: %v", err)
+	}
+	server := New(database, failingDiscoverer{}, true, "openrouter", "fake", "")
+	server.runDiscovery(session.ID, session.Trace, privacy.Summary{})
+	stored, err := database.GetSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if stored.Status != "failed" || stored.Error == nil ||
+		!strings.Contains(*stored.Error, context.Canceled.Error()) {
+		t.Fatalf("expected durable failed status, got %#v", stored)
 	}
 }
 

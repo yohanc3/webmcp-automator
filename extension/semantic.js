@@ -4,7 +4,28 @@
   'use strict';
 
   const MAX_NODES = 900;
+  const MAX_SCANNED_ELEMENTS = 6000;
   const MAX_TEXT_LENGTH = 320;
+  const INTERACTIVE_ROLES = new Set([
+    'button',
+    'checkbox',
+    'combobox',
+    'link',
+    'listbox',
+    'menuitem',
+    'menuitemcheckbox',
+    'menuitemradio',
+    'option',
+    'radio',
+    'scrollbar',
+    'searchbox',
+    'slider',
+    'spinbutton',
+    'switch',
+    'tab',
+    'textbox',
+    'treeitem',
+  ]);
   const SEMANTIC_SELECTOR = [
     'a[href]',
     'article',
@@ -57,6 +78,33 @@
     return (result >>> 0).toString(36);
   };
 
+  const composedChildren = (node) => {
+    if (node.nodeType === Node.ELEMENT_NODE && node.localName === 'slot') {
+      const assigned = node.assignedNodes({ flatten: true });
+      return assigned.length > 0 ? assigned : Array.from(node.childNodes);
+    }
+    if (node.nodeType === Node.ELEMENT_NODE && node.shadowRoot) {
+      return Array.from(node.shadowRoot.childNodes);
+    }
+    return Array.from(node.childNodes || []);
+  };
+
+  const collectComposedElements = (root) => {
+    const elements = [];
+    const visited = new Set();
+    const visit = (node) => {
+      if (visited.has(node)) return;
+      visited.add(node);
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        if (['head', 'noscript', 'script', 'style', 'template'].includes(node.localName)) return;
+        elements.push(node);
+      }
+      composedChildren(node).forEach(visit);
+    };
+    visit(root);
+    return elements;
+  };
+
   const isVisible = (element) => {
     if (!(element instanceof Element)) {
       return false;
@@ -103,14 +151,48 @@
     return null;
   };
 
-  const roleFor = (element) => normalizeText(element.getAttribute('role')).split(' ')[0]
-    || implicitRole(element);
+  const roleFor = (element) => {
+    const explicit = normalizeText(element.getAttribute('role')).split(' ')[0];
+    if (['generic', 'none', 'presentation'].includes(explicit)) return null;
+    return explicit || implicitRole(element);
+  };
+
+  const isNativeControl = (element) => {
+    const tag = element.localName;
+    if ((tag === 'a' || tag === 'area') && element.hasAttribute('href')) return true;
+    if (['button', 'select', 'summary', 'textarea'].includes(tag)) return true;
+    if (tag === 'input') return (element.getAttribute('type') || 'text') !== 'hidden';
+    return element.isContentEditable && !element.parentElement?.isContentEditable;
+  };
+
+  const interactionFor = (element) => {
+    if (isNativeControl(element) || INTERACTIVE_ROLES.has(roleFor(element))) {
+      return { kind: 'confirmed', confidence: 'high', source: 'semantic' };
+    }
+    if (element.hasAttribute('onclick')) {
+      return { kind: 'inferred', confidence: 'medium', source: 'inline-onclick' };
+    }
+    if (element.getAttribute('draggable') === 'true') {
+      return { kind: 'inferred', confidence: 'medium', source: 'draggable' };
+    }
+    const style = window.getComputedStyle(element);
+    const parent = element.parentElement;
+    if (style.cursor === 'pointer' && (!parent || window.getComputedStyle(parent).cursor !== 'pointer')) {
+      return { kind: 'inferred', confidence: 'low', source: 'pointer' };
+    }
+    return null;
+  };
 
   const referencedText = (element, attributeName) => normalizeText(
     normalizeText(element.getAttribute(attributeName))
       .split(' ')
       .filter(Boolean)
-      .map((id) => element.ownerDocument.getElementById(id)?.textContent || '')
+      .map((id) => {
+        const root = element.getRootNode();
+        return (typeof root.getElementById === 'function' ? root.getElementById(id) : null)
+          || element.ownerDocument.getElementById(id);
+      })
+      .map((referenced) => referenced?.textContent || '')
       .join(' '),
   );
 
@@ -201,7 +283,9 @@
     const attribute = stableAttributeSelector(element);
     if (attribute) {
       try {
-        if (document.querySelectorAll(attribute).length === 1) {
+        const root = element.getRootNode();
+        const queryRoot = typeof root.querySelectorAll === 'function' ? root : document;
+        if (queryRoot.querySelectorAll(attribute).length === 1) {
           return attribute;
         }
       } catch (error) {
@@ -258,6 +342,9 @@
     const name = accessibleName(element);
     const attributes = selectedAttributes(element);
     const css = stableCss(element);
+    const root = element.getRootNode();
+    const shadowHost = root instanceof ShadowRoot ? stableCss(root.host) : null;
+    const interaction = interactionFor(element);
     const parent = element.parentElement;
     const parentContext = parent
       ? truncate(accessibleName(parent) || parent.innerText, 160)
@@ -280,7 +367,9 @@
       name,
       text: truncate(element.innerText || element.textContent || ''),
       css,
+      shadowHost,
       attributes,
+      interaction,
       parentContext,
       rect: rectangle(element),
     };
@@ -321,10 +410,13 @@
     };
   };
 
-  const detectCollections = () => {
+  const detectCollections = (sourceElements) => {
     const collections = [];
     const parents = new Set();
-    document.querySelectorAll('[data-component-type], [data-product-card], article, li')
+    sourceElements
+      .filter((element) => element.matches(
+        '[data-component-type], [data-product-card], article, li',
+      ))
       .forEach((element) => {
         if (element.parentElement && isVisible(element)) {
           parents.add(element.parentElement);
@@ -380,11 +472,17 @@
   ].join('\n');
 
   const capturePageState = () => {
-    const elements = Array.from(document.querySelectorAll(SEMANTIC_SELECTOR))
+    const allElements = collectComposedElements(document.body || document.documentElement)
+      .slice(0, MAX_SCANNED_ELEMENTS);
+    const elements = allElements
+      .filter((element) => (
+        element.matches(SEMANTIC_SELECTOR)
+        || interactionFor(element)
+      ))
       .filter(isVisible)
       .slice(0, MAX_NODES);
     const nodes = elements.map(describeElement);
-    const collections = detectCollections();
+    const collections = detectCollections(allElements);
     const stateIdentity = JSON.stringify({
       url: window.location.href,
       title: document.title,
@@ -485,9 +583,11 @@
   return {
     accessibleName,
     capturePageState,
+    collectComposedElements,
     describeElement,
     diffStates,
     eventValue,
+    interactionFor,
     isSensitiveControl,
     roleFor,
   };

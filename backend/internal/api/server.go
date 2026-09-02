@@ -17,6 +17,7 @@ import (
 	"webmcp-automator/backend/internal/learning"
 	"webmcp-automator/backend/internal/privacy"
 	"webmcp-automator/backend/internal/store"
+	learningtrace "webmcp-automator/backend/internal/trace"
 )
 
 const maxRequestBytes = 8 << 20
@@ -44,35 +45,6 @@ type publishRequest struct {
 	VersionID string `json:"versionId"`
 }
 
-type traceMetadata struct {
-	InitialState struct {
-		URL string `json:"url"`
-	} `json:"initialState"`
-	FinalState struct {
-		URL string `json:"url"`
-	} `json:"finalState"`
-	InitialStateFingerprint string `json:"initialStateFingerprint"`
-	FinalStateFingerprint   string `json:"finalStateFingerprint"`
-	States                  []struct {
-		Fingerprint string `json:"fingerprint"`
-		URL         string `json:"url"`
-	} `json:"states"`
-}
-
-func (metadata traceMetadata) observedURLs() (string, string) {
-	startURL := metadata.InitialState.URL
-	finalURL := metadata.FinalState.URL
-	for _, state := range metadata.States {
-		if state.Fingerprint == metadata.InitialStateFingerprint {
-			startURL = state.URL
-		}
-		if state.Fingerprint == metadata.FinalStateFingerprint {
-			finalURL = state.URL
-		}
-	}
-	return startURL, finalURL
-}
-
 func New(
 	database *store.Store,
 	discoverer Discoverer,
@@ -88,6 +60,7 @@ func New(
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", server.health)
 	mux.HandleFunc("POST /api/discover", server.discover)
+	mux.HandleFunc("GET /api/discover/{sessionID}", server.discoveryStatus)
 	mux.HandleFunc("POST /api/learn", server.discover)
 	mux.HandleFunc("GET /api/adapters", server.listAdapters)
 	mux.HandleFunc("POST /api/adapters/publish", server.publish)
@@ -115,21 +88,24 @@ func (server *Server) discover(writer http.ResponseWriter, request *http.Request
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if !json.Valid(input.Trace) {
-		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "trace must be valid JSON"})
-		return
-	}
-	sanitizedTrace, privacySummary, err := privacy.SanitizeTrace(input.Trace)
+	normalizedTrace, _, err := learningtrace.Normalize(input.Trace)
 	if err != nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	metadata := traceMetadata{}
-	_ = json.Unmarshal(sanitizedTrace, &metadata)
-	startURL, finalURL := metadata.observedURLs()
+	sanitizedTrace, privacySummary, err := privacy.SanitizeTrace(normalizedTrace)
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	sanitizedTrace, metadata, err := learningtrace.Normalize(sanitizedTrace)
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	session, err := server.store.CreateSession(
 		request.Context(), learning.DiscoveryGoal,
-		startURL, finalURL, sanitizedTrace,
+		metadata.StartURL, metadata.FinalURL, sanitizedTrace,
 	)
 	if err != nil {
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -139,14 +115,24 @@ func (server *Server) discover(writer http.ResponseWriter, request *http.Request
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	result, err := server.discoverer.Discover(request.Context(), sanitizedTrace)
+	go server.runDiscovery(session.ID, sanitizedTrace, privacySummary)
+	writeJSON(writer, http.StatusAccepted, map[string]any{
+		"sessionId": session.ID,
+		"status":    "learning",
+		"privacy":   privacySummary,
+	})
+}
+
+func (server *Server) runDiscovery(
+	sessionID string,
+	sanitizedTrace json.RawMessage,
+	privacySummary privacy.Summary,
+) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	result, err := server.discoverer.Discover(ctx, sanitizedTrace)
 	if err != nil {
-		_ = server.store.MarkFailed(request.Context(), session.ID, err)
-		status := http.StatusUnprocessableEntity
-		if strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
-			status = http.StatusServiceUnavailable
-		}
-		writeJSON(writer, status, map[string]any{"error": err.Error(), "sessionId": session.ID})
+		server.markDiscoveryFailed(sessionID, err)
 		return
 	}
 	result.ActionMap.Privacy = actionmap.Privacy{
@@ -154,17 +140,46 @@ func (server *Server) discover(writer http.ResponseWriter, request *http.Request
 		Categories:        privacySummary.Categories,
 		Policy:            "Sensitive values were scrubbed before storage and model transmission.",
 	}
-	discovery, err := server.store.SaveDiscovery(request.Context(), session.ID, result)
+	persistContext, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	_, err = server.store.SaveDiscovery(persistContext, sessionID, result)
+	persistCancel()
 	if err != nil {
-		_ = server.store.MarkFailed(request.Context(), session.ID, err)
-		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		server.markDiscoveryFailed(sessionID, err)
+	}
+}
+
+func (server *Server) markDiscoveryFailed(sessionID string, cause error) {
+	persistContext, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer persistCancel()
+	_ = server.store.MarkFailed(persistContext, sessionID, cause)
+}
+
+func (server *Server) discoveryStatus(writer http.ResponseWriter, request *http.Request) {
+	sessionID := strings.TrimSpace(request.PathValue("sessionID"))
+	session, err := server.store.GetSession(request.Context(), sessionID)
+	if err != nil {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(writer, http.StatusCreated, map[string]any{
-		"sessionId": session.ID, "discovery": discovery,
-		"model": result.Model, "responseId": result.ResponseID, "usage": result.Usage,
-		"privacy": privacySummary,
-	})
+	body := map[string]any{
+		"sessionId":  session.ID,
+		"status":     session.Status,
+		"model":      session.Model,
+		"responseId": session.ResponseID,
+	}
+	if session.Error != nil {
+		body["error"] = *session.Error
+	}
+	if session.Status == "candidate" {
+		discovery, err := server.store.GetDiscovery(request.Context(), session.ID)
+		if err != nil {
+			writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		body["discovery"] = discovery
+		body["privacy"] = discovery.ActionMap.Privacy
+	}
+	writeJSON(writer, http.StatusOK, body)
 }
 
 func (server *Server) listAdapters(writer http.ResponseWriter, request *http.Request) {

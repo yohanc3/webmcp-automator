@@ -6,6 +6,21 @@ const path = require('node:path');
 const backend = (process.env.ACTION_MAPPER_BACKEND || 'http://127.0.0.1:4317').replace(/\/$/, '');
 const fixturePath = path.resolve(__dirname, '../test/fixtures/storefront-search-trace.json');
 
+const waitForDiscovery = async (sessionId) => {
+  const deadline = Date.now() + 180000;
+  while (Date.now() < deadline) {
+    const response = await fetch(`${backend}/api/discover/${encodeURIComponent(sessionId)}`);
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(body.error || `Discovery status failed with HTTP ${response.status}`);
+    }
+    if (body.status === 'candidate') return body;
+    if (body.status === 'failed') throw new Error(body.error || 'Discovery failed');
+    await new Promise((resolve) => { setTimeout(resolve, 500); });
+  }
+  throw new Error('Discovery did not complete within 180 seconds');
+};
+
 const run = async () => {
   const trace = JSON.parse(await readFile(fixturePath, 'utf8'));
   const response = await fetch(`${backend}/api/discover`, {
@@ -13,10 +28,11 @@ const run = async () => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ trace }),
   });
-  const body = await response.json().catch(() => ({}));
+  const accepted = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(body.error || `Discovery failed with HTTP ${response.status}`);
+    throw new Error(accepted.error || `Discovery failed with HTTP ${response.status}`);
   }
+  const body = await waitForDiscovery(accepted.sessionId);
   const actionMap = body.discovery?.actionMap;
   if (!actionMap || actionMap.schemaVersion !== 'action-map/1') {
     throw new Error('The backend returned no validated action-map/1 result');

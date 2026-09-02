@@ -29,13 +29,16 @@ type Store struct {
 }
 
 type Session struct {
-	ID        string          `json:"id"`
-	Goal      string          `json:"goal"`
-	StartURL  string          `json:"startUrl"`
-	FinalURL  string          `json:"finalUrl"`
-	Trace     json.RawMessage `json:"trace"`
-	Status    string          `json:"status"`
-	CreatedAt time.Time       `json:"createdAt"`
+	ID         string          `json:"id"`
+	Goal       string          `json:"goal"`
+	StartURL   string          `json:"startUrl"`
+	FinalURL   string          `json:"finalUrl"`
+	Trace      json.RawMessage `json:"trace"`
+	Status     string          `json:"status"`
+	Model      string          `json:"model,omitempty"`
+	ResponseID string          `json:"responseId,omitempty"`
+	Error      *string         `json:"error,omitempty"`
+	CreatedAt  time.Time       `json:"createdAt"`
 }
 
 type Candidate struct {
@@ -136,6 +139,45 @@ func (store *Store) MarkFailed(ctx context.Context, sessionID string, cause erro
 	return store.updateSession(ctx, sessionID, "failed", &message, "", "")
 }
 
+func (store *Store) GetSession(ctx context.Context, sessionID string) (Session, error) {
+	var session Session
+	var traceText string
+	var createdAt string
+	var model sql.NullString
+	var responseID sql.NullString
+	var failure sql.NullString
+	err := store.db.QueryRowContext(ctx, `
+		SELECT id, goal, start_url, final_url, trace_json, status,
+		       model, response_id, error, created_at
+		FROM learning_sessions
+		WHERE id = ?`, sessionID).Scan(
+		&session.ID,
+		&session.Goal,
+		&session.StartURL,
+		&session.FinalURL,
+		&traceText,
+		&session.Status,
+		&model,
+		&responseID,
+		&failure,
+		&createdAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Session{}, errors.New("learning session was not found")
+	}
+	if err != nil {
+		return Session{}, fmt.Errorf("get learning session: %w", err)
+	}
+	session.Trace = json.RawMessage(traceText)
+	session.Model = model.String
+	session.ResponseID = responseID.String
+	if failure.Valid {
+		session.Error = &failure.String
+	}
+	session.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	return session, nil
+}
+
 func (store *Store) SaveCandidate(ctx context.Context, sessionID string, result learning.Result) (Candidate, error) {
 	return Candidate{}, errors.New("adapter candidate persistence is paused while action discovery is active")
 }
@@ -181,6 +223,35 @@ func (store *Store) SaveDiscovery(ctx context.Context, sessionID string, result 
 		ID: discoveryID, SessionID: sessionID, ActionMap: result.ActionMap,
 		Model: result.Model, CreatedAt: now,
 	}, nil
+}
+
+func (store *Store) GetDiscovery(ctx context.Context, sessionID string) (Discovery, error) {
+	var discovery Discovery
+	var mapText string
+	var model sql.NullString
+	var createdAt string
+	err := store.db.QueryRowContext(ctx, `
+		SELECT id, source_session_id, map_json, model, created_at
+		FROM action_maps
+		WHERE source_session_id = ?`, sessionID).Scan(
+		&discovery.ID,
+		&discovery.SessionID,
+		&mapText,
+		&model,
+		&createdAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Discovery{}, errors.New("action map was not found")
+	}
+	if err != nil {
+		return Discovery{}, fmt.Errorf("get action map: %w", err)
+	}
+	if err := json.Unmarshal([]byte(mapText), &discovery.ActionMap); err != nil {
+		return Discovery{}, fmt.Errorf("decode action map: %w", err)
+	}
+	discovery.Model = model.String
+	discovery.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	return discovery, nil
 }
 
 func (store *Store) Publish(ctx context.Context, adapterID, versionID string) error {

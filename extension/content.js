@@ -4,6 +4,7 @@
   const { capturePageState, describeElement, diffStates, eventValue } = WebMcpSemantic;
   const { buildInputSchema, manifestMatchesLocation } = WebMcpManifest;
   const registrationControllers = new Map();
+  const pendingCompletions = new Set();
   let recordingId = null;
   let pendingInput = null;
 
@@ -82,13 +83,19 @@
   const completeEvent = async (traceEvent, beforeState) => {
     if (!traceEvent) return;
     const afterState = await quietState();
-    chrome.runtime.sendMessage({
+    await sendMessage({
       type: 'TRACE_EVENT_COMPLETED',
       recordingId,
       eventId: traceEvent.id,
       delta: diffStates(beforeState, afterState),
       afterState,
     });
+  };
+
+  const trackCompletion = (traceEvent, beforeState) => {
+    const completion = completeEvent(traceEvent, beforeState).catch(() => {});
+    pendingCompletions.add(completion);
+    completion.finally(() => pendingCompletions.delete(completion));
   };
 
   const flushInput = async () => {
@@ -124,6 +131,9 @@
       || target?.isContentEditable)) {
       return;
     }
+    if (target instanceof HTMLInputElement && ['checkbox', 'radio'].includes(target.type)) {
+      return;
+    }
     if (pendingInput?.target !== target) {
       void flushInput();
       pendingInput = {
@@ -138,12 +148,13 @@
 
   const onClick = (event) => {
     if (!recordingId || globalThis.__webMcpRunnerActive) return;
+    if (event.detail === 0) return;
     void flushInput();
     const target = interactiveTarget(event.target);
     if (!target) return;
     const beforeState = capturePageState();
     const traceEvent = beginEvent('click', target, { redacted: false, value: null }, beforeState);
-    void completeEvent(traceEvent, beforeState);
+    trackCompletion(traceEvent, beforeState);
   };
 
   const onKeyDown = (event) => {
@@ -156,7 +167,7 @@
       redacted: false,
       value: 'Enter',
     }, beforeState);
-    void completeEvent(traceEvent, beforeState);
+    trackCompletion(traceEvent, beforeState);
   };
 
   const waitForJob = async (jobId, signal) => {
@@ -224,11 +235,13 @@
     if (message.type === 'RECORDING_START') {
       recordingId = message.recordingId;
       pendingInput = null;
+      pendingCompletions.clear();
       sendResponse({ ok: true });
       return false;
     }
     if (message.type === 'RECORDING_STOP') {
       flushInput()
+        .then(() => Promise.allSettled([...pendingCompletions]))
         .then(() => {
           recordingId = null;
           sendResponse({ ok: true, finalState: capturePageState() });

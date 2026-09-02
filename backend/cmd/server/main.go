@@ -21,7 +21,7 @@ import (
 func main() {
 	host := environment("WEBMCP_LEARN_HOST", "127.0.0.1")
 	port := environment("WEBMCP_LEARN_PORT", "4317")
-	model := environment("OPENROUTER_MODEL", "openai/gpt-oss-120b")
+	model := environment("OPENROUTER_MODEL", "openai/gpt-oss-20b:nitro")
 	databasePath := environment("WEBMCP_DB_PATH", filepath.Join("data", "webmcp.db"))
 	demoDirectory := environment("WEBMCP_DEMO_DIR", filepath.Join("..", "demo"))
 	apiKey := strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))

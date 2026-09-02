@@ -6,6 +6,7 @@ const BACKEND = 'http://127.0.0.1:4317';
 const RECORDING_KEY = 'activeRecording';
 const CANDIDATE_KEY = 'candidate';
 const DISCOVERY_KEY = 'discoveryMap';
+const DISCOVERY_SESSION_KEY = 'discoverySessionId';
 const JOBS_KEY = 'jobs';
 const WEBMCP_STATUS_KEY = 'webMcpStatus';
 const ADAPTER_CACHE_KEY = 'adapterCache';
@@ -74,6 +75,17 @@ const summarizeRecording = (recording) => {
 
 const sanitizedTrace = (recording) => ActionMapperRecorder.toTrace(recording);
 
+const waitForDiscovery = async (sessionId) => {
+  const deadline = Date.now() + 180000;
+  while (Date.now() < deadline) {
+    const result = await requestBackend(`/api/discover/${encodeURIComponent(sessionId)}`);
+    if (result.status === 'candidate') return result;
+    if (result.status === 'failed') throw new Error(result.error || 'Action discovery failed');
+    await new Promise((resolve) => { setTimeout(resolve, 500); });
+  }
+  throw new Error('Action discovery is still running; retry to read the completed result');
+};
+
 const startRecording = async (tabId) => {
   if (!Number.isInteger(tabId)) throw new Error('A browser tab is required');
   const page = await tabMessage(tabId, { type: 'GET_PAGE_STATE' });
@@ -91,7 +103,7 @@ const startRecording = async (tabId) => {
 };
 
 const stopRecording = async () => {
-  const recording = await storageGet('session', RECORDING_KEY, null);
+  let recording = await storageGet('session', RECORDING_KEY, null);
   if (!recording || recording.status !== 'recording') {
     throw new Error('There is no active recording');
   }
@@ -102,6 +114,7 @@ const stopRecording = async () => {
   } catch (error) {
     // Preserve the most recent navigation snapshot when the page is closing.
   }
+  recording = await storageGet('session', RECORDING_KEY, recording);
   const finished = ActionMapperRecorder.finishRecording(
     recording,
     finalState,
@@ -164,10 +177,12 @@ const discover = async () => {
   if (recording.steps.length === 0) {
     throw new Error('The recording has no actions to discover from');
   }
-  const response = await requestBackend('/api/discover', {
+  const accepted = await requestBackend('/api/discover', {
     method: 'POST',
     body: JSON.stringify({ trace: sanitizedTrace(recording) }),
   });
+  await storageSet('session', DISCOVERY_SESSION_KEY, accepted.sessionId);
+  const response = await waitForDiscovery(accepted.sessionId);
   const discovery = {
     ...response.discovery,
     privacy: response.privacy,
@@ -425,7 +440,12 @@ const handleMessage = async (message, sender) => {
     case 'GET_POPUP_STATE':
       return { ok: true, ...(await popupState()) };
     case 'CLEAR_RECORDING':
-      await chrome.storage.session.remove([RECORDING_KEY, CANDIDATE_KEY, DISCOVERY_KEY]);
+      await chrome.storage.session.remove([
+        RECORDING_KEY,
+        CANDIDATE_KEY,
+        DISCOVERY_KEY,
+        DISCOVERY_SESSION_KEY,
+      ]);
       return { ok: true };
     case 'DISCOVER':
       return { ok: true, discovery: await discover() };

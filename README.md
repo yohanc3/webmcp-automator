@@ -2,7 +2,7 @@
 
 Action Mapper is an experiment in learning a website's actions from normal browser use.
 
-The Chrome extension observes a demonstrated path, records semantic page states and the changes caused by each event, and sends a privacy-scrubbed trace to a Go service. GPT-OSS 120B classifies the evidence into an inspectable map of page states, actions, deterministic steps, outputs, confidence, and missing evidence. SQLite preserves the sanitized observation and resulting map.
+The Chrome extension observes a demonstrated path, records semantic page states and the changes caused by each event, and sends a privacy-scrubbed trace to a Go service. GPT-OSS classifies the evidence into an inspectable map of page states, actions, deterministic steps, outputs, confidence, and missing evidence. SQLite preserves the sanitized observation and resulting map.
 
 WebMCP registration and generalized execution are intentionally paused. The current question is narrower:
 
@@ -26,19 +26,22 @@ The result is a **state-conditioned action map**:
 - A **resolvable action** was not demonstrated end to end, but the captured UI contains enough evidence to specify it safely.
 - An **unresolved action** is visible but still needs another observation before deterministic steps can be claimed.
 
-This is a graph conceptually, although each individual discovered action currently contains a linear step list.
+This is a directed action graph, not strictly a tree: several actions can leave the same page state, and a workflow can return to a state it has already seen. `actionTree` remains the transport field name, while its `kind` explicitly identifies a `directed_action_graph`. Each individual discovered action still contains a linear primitive step list.
 
 ## Discovery pipeline
 
 ```text
 user starts recording
   → extension captures the initial semantic page map
-  → each unique page map becomes a state node keyed by its fingerprint
-  → clicks, fills, Enter presses, navigation, and UI deltas become ordered transition edges
+  → clicks, fills, Enter presses, navigation, and UI deltas become causal frames
   → user stops recording
+  → extension normalizes focus clicks and repeated fills
+  → trace is serialized as page → action → update → resulting page
+  → Go validates that ordering and independently rebuilds the directed action graph
   → Go removes typed values, URL parameters, duplicate XML, and obvious identifiers
   → sanitized trace is stored in SQLite
-  → sanitized trace and strict action-map schema are sent to GPT-OSS 120B through OpenRouter
+  → the API returns immediately while discovery continues independently
+  → sanitized trace and strict action-map schema are sent to GPT-OSS through OpenRouter
   → Go validates state references, action statuses, locators, parameters, steps, and outputs
   → validated map is stored in SQLite
   → extension renders the state rail and action/step ledger
@@ -46,7 +49,7 @@ user starts recording
 
 Discovery is automatic. The user does not name or manually configure a capability.
 
-The extension produces `learning-trace/2` before involving AI. It contains a deduplicated `states` set, ordered `steps` referencing their before/after state fingerprints, and an `observedPath` that summarizes URL, node, and collection changes. This reconstruction is deterministic browser bookkeeping; GPT-OSS is responsible only for grouping that evidence into meaningful higher-level actions.
+The extension produces `learning-trace/3` before involving AI. Its `frames` are deliberately stepped: a compact page map is followed by the action observed on that page, the exact URL/DOM/collection update caused by the action, and the resulting page. A previously seen page can be sent as a small reference instead of duplicating its entire semantic map. The extension builds an initial `actionTree`; the Go boundary discards and reconstructs that structure from validated frame order before storage or model access. GPT-OSS is responsible only for grouping this deterministic evidence into meaningful higher-level actions.
 
 ## Action-map contract
 
@@ -79,7 +82,7 @@ The extension records a bounded semantic projection rather than raw HTML. Eviden
 
 Geometry is supporting evidence, not a replay locator. It helps identify headers, sidebars, modals, grids, and repeated groups, but coordinates are too fragile across responsive layouts and experiments.
 
-The standalone [`semantic-ui-extractor.js`](./semantic-ui-extractor.js) remains the richer reference projection. It handles composed trees, open Shadow DOM, accessible names, semantic hierarchy, and careful separation of confirmed controls from inferred candidates. The extension currently uses a smaller side-effect-free capture module; merging the richer projection core is a later improvement.
+The extension's side-effect-free capture module now uses the important core from [`semantic-ui-extractor.js`](./semantic-ui-extractor.js): composed-tree traversal, open Shadow DOM traversal, accessible-name evidence, and an explicit distinction between confirmed controls and lower-confidence inferred candidates. The standalone script remains useful as the richer human-readable XML projection; `yohance_testing_script.js` is historical test material and is not part of the discovery runtime.
 
 ## Privacy boundary
 
@@ -117,6 +120,7 @@ extension/                       Loadable Manifest V3 Chrome extension
 backend/internal/actionmap/      Action-map types, schema, and validation
 backend/internal/privacy/        Pre-storage and pre-model trace sanitizer
 backend/internal/learning/       OpenRouter GPT-OSS discovery client and prompt
+backend/internal/trace/          Stepped trace validation and action-graph reconstruction
 backend/internal/store/          SQLite schema and persistence
 backend/internal/api/            Local HTTP API
 demo/                            Functional miniature commerce site for discovery experiments
@@ -138,7 +142,7 @@ export OPENROUTER_API_KEY="your-key"
 npm start
 ```
 
-`npm start` runs `go run ./cmd/server` from the `backend` directory. The default model is `openai/gpt-oss-120b`; override it only when explicitly testing another compiler:
+`npm start` runs `go run ./cmd/server` from the `backend` directory. The default is `openai/gpt-oss-20b:nitro` with low reasoning effort. The 20B model supports Structured Outputs and is much faster for this classification-shaped task; Nitro asks OpenRouter to prefer its highest-throughput provider. Use 120B as a quality comparison or fallback, not the interactive default:
 
 ```bash
 OPENROUTER_MODEL="openai/gpt-oss-120b" npm start
@@ -159,7 +163,8 @@ Then:
 ## Local API
 
 - `GET /health` — backend, model, key, and database readiness.
-- `POST /api/discover` — sanitize and store a trace, discover its action map, validate it, and persist the result.
+- `POST /api/discover` — validate, sanitize, and store a stepped trace, then start discovery asynchronously.
+- `GET /api/discover/{sessionId}` — poll the durable discovery session until it is `candidate` or `failed`.
 - `POST /api/learn` — temporary compatibility alias for `/api/discover`.
 - paused adapter/replay routes remain available but are not part of this experiment's success criteria.
 
@@ -182,7 +187,8 @@ The automated suite covers:
 
 - action-map reference and step validation;
 - trace privacy stripping;
-- deduplicated page-state recording, out-of-order event reconciliation, URL transitions, and observed-path reconstruction;
+- stepped page/action/update/page serialization, repeated-page references, event normalization, and out-of-order event reconciliation;
+- server-side trace-order validation and action-graph reconstruction;
 - owned-storefront routing for search, product, comparison, basket, checkout, and confirmation states;
 - OpenRouter Structured Outputs request and response handling;
 - API sanitization before model access;
@@ -196,7 +202,7 @@ The decisive manual test is a real extension recording that produces a useful mu
 - One recording provides evidence, not universal site understanding.
 - The system does not yet merge several maps into one durable multi-observation graph.
 - Generated CSS and A/B layouts can still weaken locators.
-- Frames, closed Shadow DOM, and virtualized content need deeper capture support.
+- Cross-origin frames, closed Shadow DOM, and virtualized content need deeper capture support.
 - Privacy stripping is heuristic.
 - WebMCP registration, background replay, repair, reputation, and public sharing are paused.
 - Ordering and other destructive workflows require an explicit confirmation design before execution work resumes.
