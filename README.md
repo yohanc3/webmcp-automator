@@ -125,6 +125,7 @@ backend/internal/store/          SQLite schema and persistence
 backend/internal/api/            Local HTTP API
 demo/                            Functional miniature commerce site for discovery experiments
 test/                            Browser-side contract tests
+scripts/browser-recorder-harness.js Test-only Codex Browser recorder injection
 ```
 
 ## Run it
@@ -182,6 +183,8 @@ npm run smoke:discover
 ```
 
 That script sends `test/fixtures/storefront-search-trace.json` through the same `/api/discover` privacy, model, validation, and SQLite path used by the extension, then prints only the resulting state/action summary.
+
+For a real browser walkthrough without installing the extension, `scripts/browser-recorder-harness.js` can be injected into the owned demo together with `extension/semantic.js` and `extension/recorder-core.js`. It is deliberately not loaded by the demo application: the harness exists only for Codex Browser testing, preserves an in-progress recording across demo navigations in session storage, and emits the same `learning-trace/3` contract as the extension.
 
 The automated suite covers:
 
