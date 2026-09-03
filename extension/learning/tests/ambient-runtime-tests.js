@@ -262,6 +262,12 @@ test('candidate review and confirmation protocol messages fail closed without si
   assert.deepEqual(await fixture.coordinator.handleMessage({ type: 'SUBMIT_CANDIDATE_REVIEW' }), { ok: false, error: 'A complete candidate-review decision is required' });
   assert.match((await fixture.coordinator.handleMessage({ type: 'OPEN_CANDIDATE_EVIDENCE' })).error, /explicitly unavailable/);
   assert.match((await fixture.coordinator.handleMessage({ type: 'SUBMIT_RUN_CONFIRMATION' })).error, /exact coordinator run/);
+  for (const type of ['GET_POLICY_REVIEW_STATE', 'SUBMIT_CANDIDATE_REVIEW', 'SUBMIT_RUN_CONFIRMATION']) {
+    assert.match(
+      (await fixture.coordinator.handleMessage({ type }, { tab: { id: 7 } })).error,
+      /trusted extension UI/,
+    );
+  }
   assert.deepEqual(fixture.sideEffects, before);
   assert.deepEqual(fixture.areas, { local: { unrelatedLocal: 'kept' }, session: { unrelatedSession: 'kept' } });
 });
@@ -512,6 +518,8 @@ test('loads only exact authoritative action-map context and candidate bindings f
   ]);
   assert.equal(result.state.actionMap.digest, mapDigest);
   assert.deepEqual(result.state.actionMap.actions, [{ actionId: 'search', evidenceHandles: ['layer_1:node_1'] }]);
+  assert.equal(result.state.context.listDigest, listDigest);
+  assert.equal(result.state.context.listRevision, 2);
   assert.deepEqual(result.state.candidate, {
     actionMapDigest: mapDigest, actionMapRevision: 2, actions: [{ id: 'search' }], contentDigest: listDigest, listDigest, listId: 'ambient_site_https_shop_test', listRevision: 2, publication: { revision: 2, status: 'candidate' }, revision: 2, review: { binding: { actionMapDigest: mapDigest, actionMapRevision: 2, candidateDigest: listDigest }, status: 'candidate' }, status: 'candidate', title: 'ambient_site_https_shop_test',
   });

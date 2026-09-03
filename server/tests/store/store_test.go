@@ -231,6 +231,12 @@ func TestPublishActionListTransactionHasOneDatabaseWinner(t *testing.T) {
 			WithArgs(list.ListID, 1).
 			WillReturnRows(sqlmock.NewRows([]string{"document_json", "candidate_digest", "created_at"}).
 				AddRow(string(canonical), digest, createdAt))
+		mock.ExpectQuery("SELECT decision").
+			WithArgs(list.ListID, 1, digest).
+			WillReturnRows(sqlmock.NewRows([]string{"decision"}))
+		mock.ExpectQuery("SELECT bindings.candidate_digest").
+			WithArgs(list.ListID, 1).
+			WillReturnRows(sqlmock.NewRows([]string{"candidate_digest", "scope_id", "action_map_revision", "action_map_digest", "head_revision", "head_digest"}))
 		mock.ExpectQuery("SELECT decision, candidate_digest, scopes_json, checked_at, expires_at").
 			WithArgs("policy_owned_demo_001", list.ListID, 1).
 			WillReturnRows(sqlmock.NewRows([]string{"decision", "candidate_digest", "scopes_json", "checked_at", "expires_at"}).
@@ -267,6 +273,110 @@ func TestPublishActionListTransactionHasOneDatabaseWinner(t *testing.T) {
 	_, err = database.PublishActionList(context.Background(), list.ListID, 1, request)
 	if !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("expected second publisher conflict, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRejectedCandidateDecisionIsTerminalAndIdempotent(t *testing.T) {
+	sqlDatabase, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database := store.New(sqlDatabase)
+	defer database.Close()
+	raw := storefrontActionList(t)
+	list, _ := manifest.DecodeActionList(raw)
+	canonical, _ := json.Marshal(list)
+	digest, _ := manifest.CandidateDigest(raw)
+	createdAt, _ := time.Parse(time.RFC3339, list.Publication.CreatedAt)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT candidate_digest").
+		WithArgs(list.ListID, 1).
+		WillReturnRows(sqlmock.NewRows([]string{"candidate_digest"}).AddRow(digest))
+	mock.ExpectQuery("SELECT decision").
+		WithArgs(list.ListID, 1, digest).
+		WillReturnRows(sqlmock.NewRows([]string{"decision"}))
+	mock.ExpectQuery("SELECT EXISTS").
+		WithArgs(list.ListID, 1).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectExec("INSERT INTO action_list_reviews").
+		WithArgs(sqlmock.AnyArg(), list.ListID, 1, digest, "local-user", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	if err := database.RecordCandidateRejection(context.Background(), list.ListID, 1, digest, "local-user"); err != nil {
+		t.Fatalf("record rejection: %v", err)
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT candidate_digest").
+		WithArgs(list.ListID, 1).
+		WillReturnRows(sqlmock.NewRows([]string{"candidate_digest"}).AddRow(digest))
+	mock.ExpectQuery("SELECT decision").
+		WithArgs(list.ListID, 1, digest).
+		WillReturnRows(sqlmock.NewRows([]string{"decision"}).AddRow("reject"))
+	mock.ExpectRollback()
+	if err := database.RecordCandidateRejection(context.Background(), list.ListID, 1, digest, "local-user"); err != nil {
+		t.Fatalf("repeat rejection: %v", err)
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT document_json, candidate_digest, created_at").
+		WithArgs(list.ListID, 1).
+		WillReturnRows(sqlmock.NewRows([]string{"document_json", "candidate_digest", "created_at"}).
+			AddRow(string(canonical), digest, createdAt))
+	mock.ExpectQuery("SELECT decision").
+		WithArgs(list.ListID, 1, digest).
+		WillReturnRows(sqlmock.NewRows([]string{"decision"}).AddRow("reject"))
+	mock.ExpectRollback()
+	_, err = database.PublishActionList(context.Background(), list.ListID, 1, store.PublishActionListRequest{
+		ExpectedDigest: digest, ReviewDecision: "approve", Reviewer: "local-user",
+		PolicyDecisionID: "policy_owned_demo_001", ReplayReportID: "replay_owned_demo_001",
+	})
+	if !errors.Is(err, store.ErrGate) {
+		t.Fatalf("rejected candidate should not publish, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPublishActionListRejectsAStaleBoundActionMapHead(t *testing.T) {
+	sqlDatabase, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database := store.New(sqlDatabase)
+	defer database.Close()
+	raw := storefrontActionList(t)
+	list, _ := manifest.DecodeActionList(raw)
+	canonical, _ := json.Marshal(list)
+	digest, _ := manifest.CandidateDigest(raw)
+	createdAt, _ := time.Parse(time.RFC3339, list.Publication.CreatedAt)
+	mapDigest := "sha256:" + strings.Repeat("a", 64)
+	newHeadDigest := "sha256:" + strings.Repeat("b", 64)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT document_json, candidate_digest, created_at").
+		WithArgs(list.ListID, 1).
+		WillReturnRows(sqlmock.NewRows([]string{"document_json", "candidate_digest", "created_at"}).
+			AddRow(string(canonical), digest, createdAt))
+	mock.ExpectQuery("SELECT decision").
+		WithArgs(list.ListID, 1, digest).
+		WillReturnRows(sqlmock.NewRows([]string{"decision"}))
+	mock.ExpectQuery("SELECT bindings.candidate_digest").
+		WithArgs(list.ListID, 1).
+		WillReturnRows(sqlmock.NewRows([]string{"candidate_digest", "scope_id", "action_map_revision", "action_map_digest", "head_revision", "head_digest"}).
+			AddRow(digest, "site_owned_storefront", 1, mapDigest, 2, newHeadDigest))
+	mock.ExpectRollback()
+	_, err = database.PublishActionList(context.Background(), list.ListID, 1, store.PublishActionListRequest{
+		ExpectedDigest: digest, ReviewDecision: "approve", Reviewer: "local-user",
+		PolicyDecisionID: "policy_owned_demo_001", ReplayReportID: "replay_owned_demo_001",
+	})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("stale action-map binding should not publish, got %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

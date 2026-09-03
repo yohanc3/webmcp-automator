@@ -66,11 +66,13 @@
     listId: 'owned_storefront',
     title: 'Owned storefront actions',
     revision: 3,
+    status: 'candidate',
     contentDigest: DIGEST,
     actionMapDigest: MAP_DIGEST,
     actionMapRevision: 2,
     replayStatus: 'passed',
     replayReportId: 'replay_3',
+    policyDecision: { status: 'allowed', scopes: ['inject', 'read'] },
     actions: [{
       id: 'search_products',
       tool: {
@@ -524,11 +526,12 @@
     controller.render({ context: context(), policy: policy(), candidate: reviewedCandidate });
     equal(buttonNamed(rootElement, 'Approve candidate').disabled, false);
     buttonNamed(rootElement, 'Approve candidate').click();
+    equal(buttonNamed(rootElement, 'Reject candidate').disabled, true);
+    buttonNamed(rootElement, 'Reject candidate').click();
     deepEqual(decisions, [policyReview.candidateDecision({
       candidate: reviewedCandidate,
       decision: 'approve',
       policyDecisionId: 'policy_3',
-      reviewer: 'local-user',
     })]);
 
     controller.render({
@@ -564,6 +567,32 @@
     });
     match(rootElement.textContent, /Action-map digest binding is missing/);
     match(rootElement.textContent, /Action-list digest binding is missing/);
+    equal(buttonNamed(rootElement, 'Approve candidate').disabled, true);
+    rootElement.remove();
+  });
+
+  test('requires current review digests rather than candidate-owned fallbacks', () => {
+    const rootElement = root();
+    const controller = policyReview.createController({
+      rootElement,
+      coordinator: {
+        getPolicyReviewState: async () => ({}),
+        submitCandidateReview: () => Promise.resolve(),
+      },
+      registry: {},
+    });
+    const reviewedCandidate = candidate({ policyDecisionId: 'policy_3' });
+    controller.render({
+      context: context({ actionMapDigest: null }),
+      policy: policy(),
+      candidate: reviewedCandidate,
+    });
+    equal(buttonNamed(rootElement, 'Approve candidate').disabled, true);
+    controller.render({
+      context: context({ listDigest: null }),
+      policy: policy(),
+      candidate: reviewedCandidate,
+    });
     equal(buttonNamed(rootElement, 'Approve candidate').disabled, true);
     rootElement.remove();
   });
@@ -626,9 +655,49 @@
     equal(buttonNamed(rootElement, 'Approve candidate').disabled, true);
     equal(buttonNamed(rootElement, 'Reject candidate').disabled, false);
 
+    controller.render({
+      context: context(),
+      policy: policy(),
+      candidate: candidate({
+        policyDecisionId: 'policy_3',
+        policyDecision: { status: 'allowed', scopes: ['inject'] },
+      }),
+    });
+    equal(buttonNamed(rootElement, 'Approve candidate').disabled, true);
+    match(rootElement.textContent, /every action safety class/);
+
     controller.render({ context: context(), policy: policy(), candidate: candidate() });
     equal(buttonNamed(rootElement, 'Approve candidate').disabled, true);
     match(rootElement.textContent, /authoritative policy and replay report IDs/);
+    rootElement.remove();
+  });
+
+  test('renders terminal candidate decisions without active review controls', () => {
+    const rootElement = root();
+    const controller = policyReview.createController({
+      rootElement,
+      coordinator: {
+        getPolicyReviewState: async () => ({}),
+        submitCandidateReview: () => Promise.resolve(),
+      },
+      registry: {},
+    });
+    controller.render({
+      context: context(),
+      policy: policy(),
+      candidate: candidate({ policyDecisionId: 'policy_3', status: 'rejected' }),
+    });
+    equal(buttonNamed(rootElement, 'Approve candidate').disabled, true);
+    equal(buttonNamed(rootElement, 'Reject candidate').disabled, true);
+    match(rootElement.textContent, /terminal rejected decision/);
+    controller.render({
+      context: context(),
+      policy: policy(),
+      candidate: candidate({ policyDecisionId: 'policy_3', status: null }),
+    });
+    equal(buttonNamed(rootElement, 'Approve candidate').disabled, true);
+    equal(buttonNamed(rootElement, 'Reject candidate').disabled, true);
+    match(rootElement.textContent, /no authoritative reviewable status/);
     rootElement.remove();
   });
 
@@ -698,16 +767,12 @@
     equal(rootElement.querySelectorAll('[aria-label="Run confirmation"]').length, 1);
     equal(rootElement.querySelector('[aria-label="Local retry spool"]'), null);
     buttonNamed(rootElement, 'Approve exact step').click();
+    equal(buttonNamed(rootElement, 'Deny run').disabled, true);
     buttonNamed(rootElement, 'Deny run').click();
-    equal(decisions.length, 2);
+    equal(decisions.length, 1);
     equal(decisions[0].approved, true);
-    equal(decisions[1].approved, false);
     deepEqual(decisions[0], {
       approved: true,
-      ...policyReview.confirmationBinding(confirmation()),
-    });
-    deepEqual(decisions[1], {
-      approved: false,
       ...policyReview.confirmationBinding(confirmation()),
     });
     rootElement.remove();
@@ -775,10 +840,10 @@
     equal(/START_RECORDING|STOP_RECORDING|CLEAR_RECORDING/.test(source), false);
   });
 
-  test('popup routes review, evidence, and confirmation through fail-closed ports', () => {
+  test('popup routes review and confirmation through fail-closed ports', () => {
     const source = loadText('../popup.js');
     match(source, /type: 'SUBMIT_CANDIDATE_REVIEW'/);
-    match(source, /type: 'OPEN_CANDIDATE_EVIDENCE'/);
+    equal(/type: 'OPEN_CANDIDATE_EVIDENCE'/.test(source), false);
     match(source, /type: 'SUBMIT_RUN_CONFIRMATION'/);
     match(source, /onError: \(error\) => showNotice\(error\.message, 'error'\)/);
   });

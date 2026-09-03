@@ -111,7 +111,6 @@ available and never publishes on its own. The exact candidate payload is:
 ```json
 {
   "decision": "approve | reject",
-  "reviewer": "local-user",
   "listId": "owned-storefront",
   "listRevision": 3,
   "listDigest": "sha256:...",
@@ -121,6 +120,8 @@ available and never publishes on its own. The exact candidate payload is:
   "replayReportId": "replay_..."
 }
 ```
+
+The trusted server assigns reviewer identity; the popup cannot assert it.
 
 Run approval requires an exact current `runId`, `stepId`, `listDigest`,
 `origin`, `documentId`, and `policyRevision`; denial stays available. G10 must

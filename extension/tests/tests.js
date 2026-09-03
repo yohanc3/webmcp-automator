@@ -240,10 +240,12 @@
   });
 
   test('installs coordinator listeners only once', () => {
+    const runtimeListenerCount = chrome.__test.runtimeListeners.length;
+    const tabRemovedListenerCount = chrome.__test.tabRemovedListeners.length;
     WebMcpCoordinatorBootstrap.start();
     WebMcpCoordinatorBootstrap.start();
-    equal(chrome.__test.runtimeListeners.length, 2);
-    equal(chrome.__test.tabRemovedListeners.length, 1);
+    equal(chrome.__test.runtimeListeners.length, runtimeListenerCount);
+    equal(chrome.__test.tabRemovedListeners.length, tabRemovedListenerCount);
   });
 
   test('preserves the unknown background message response', async () => {

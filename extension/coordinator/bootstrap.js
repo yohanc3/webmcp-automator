@@ -418,7 +418,14 @@
     };
 
     const handleMessage = async (message, sender = {}) => {
-      const extensionUiMessage = ['SUBMIT_CANDIDATE_REVIEW', 'SUBMIT_POLICY_DECISION', 'SET_OWNED_DEMO_OVERRIDE', 'REQUEST_RETRY_SPOOL_DELETION'].includes(message?.type);
+      const extensionUiMessage = [
+        'GET_POLICY_REVIEW_STATE',
+        'REQUEST_RETRY_SPOOL_DELETION',
+        'SET_OWNED_DEMO_OVERRIDE',
+        'SUBMIT_CANDIDATE_REVIEW',
+        'SUBMIT_POLICY_DECISION',
+        'SUBMIT_RUN_CONFIRMATION',
+      ].includes(message?.type);
       if (extensionUiMessage && (sender.tab || (sender.id && chromeApi.runtime?.id && sender.id !== chromeApi.runtime.id))) {
         return { ok: false, error: 'This decision is accepted only from trusted extension UI' };
       }
@@ -451,6 +458,8 @@
             context: {
               actionMapDigest: mapState.actionMap?.digest || null,
               actionMapRevision: mapState.actionMap?.revision || null,
+              listDigest: mapState.candidate?.listDigest || null,
+              listRevision: mapState.candidate?.listRevision || null,
               origin,
               policyRevision: policy?.revision ?? null,
               requestedScope: 'ambient_learn',

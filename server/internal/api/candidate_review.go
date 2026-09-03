@@ -48,7 +48,6 @@ type materializePolicyRequest struct {
 type candidateReviewRequest struct {
 	ExpectedDigest   string `json:"expectedDigest"`
 	Decision         string `json:"decision"`
-	Reviewer         string `json:"reviewer"`
 	PolicyDecisionID string `json:"policyDecisionId"`
 	ReplayReportID   string `json:"replayReportId"`
 }
@@ -57,6 +56,48 @@ type unavailableCandidateReplay struct{}
 
 func (unavailableCandidateReplay) Replay(_ context.Context, _ manifest.ActionList) (json.RawMessage, error) {
 	return nil, errors.New("production replay actor integration is unavailable")
+}
+
+type candidateReplayResult struct {
+	SchemaVersion string                        `json:"schemaVersion"`
+	Status        string                        `json:"status"`
+	Actions       []candidateReplayActionResult `json:"actions"`
+}
+
+type candidateReplayActionResult struct {
+	ActionID               string `json:"actionId"`
+	ActionVersion          int    `json:"actionVersion"`
+	StepsExecuted          int    `json:"stepsExecuted"`
+	PostconditionsVerified int    `json:"postconditionsVerified"`
+}
+
+func sanitizePassedReplay(raw json.RawMessage, list manifest.ActionList) (json.RawMessage, error) {
+	var result candidateReplayResult
+	if err := json.Unmarshal(raw, &result); err != nil || result.SchemaVersion != "candidate-replay/1" ||
+		result.Status != "passed" || len(result.Actions) != len(list.Actions) {
+		return nil, errors.New("replay executor did not return an explicit valid passed result")
+	}
+	byAction := make(map[string]candidateReplayActionResult, len(result.Actions))
+	for _, action := range result.Actions {
+		key := fmt.Sprintf("%s:%d", action.ActionID, action.ActionVersion)
+		if _, exists := byAction[key]; exists {
+			return nil, errors.New("replay executor returned duplicate action coverage")
+		}
+		byAction[key] = action
+	}
+	ordered := make([]candidateReplayActionResult, 0, len(list.Actions))
+	for _, action := range list.Actions {
+		key := fmt.Sprintf("%s:%d", action.ID, action.Version)
+		covered, exists := byAction[key]
+		expectedSteps := len(action.Steps)
+		if !exists || covered.StepsExecuted != expectedSteps ||
+			covered.PostconditionsVerified != expectedSteps {
+			return nil, errors.New("replay executor did not cover every candidate action and postcondition")
+		}
+		ordered = append(ordered, covered)
+	}
+	result.Actions = ordered
+	return json.Marshal(result)
 }
 
 func reviewIdentifier(prefix string) string {
@@ -83,6 +124,17 @@ func (server *Server) verifyCandidateActionMapBinding(ctx context.Context, state
 	return nil
 }
 
+func (server *Server) verifyCurrentCandidateActionMapBinding(ctx context.Context, state store.CandidateReviewState) error {
+	if err := server.verifyCandidateActionMapBinding(ctx, state); err != nil {
+		return err
+	}
+	head, err := server.actionMaps.GetActionMapHead(ctx, state.Binding.ScopeID)
+	if err != nil || head.Digest == nil || head.Revision != state.Binding.ActionMapRevision || *head.Digest != state.Binding.ActionMapDigest {
+		return errors.New("candidate action-map binding is no longer current")
+	}
+	return nil
+}
+
 func (server *Server) candidateState(writer http.ResponseWriter, request *http.Request) {
 	database, ok := server.candidateReviewStore()
 	if !ok || server.actionMaps == nil {
@@ -99,7 +151,7 @@ func (server *Server) candidateState(writer http.ResponseWriter, request *http.R
 		writeRegistryError(writer, err)
 		return
 	}
-	if err := server.verifyCandidateActionMapBinding(request.Context(), state); err != nil {
+	if err := server.verifyCurrentCandidateActionMapBinding(request.Context(), state); err != nil {
 		writeJSON(writer, http.StatusConflict, map[string]string{"error": "candidate action-map binding is unavailable or stale"})
 		return
 	}
@@ -127,8 +179,12 @@ func (server *Server) materializeCandidatePolicy(writer http.ResponseWriter, req
 		writeRegistryError(writer, err)
 		return
 	}
-	if err := server.verifyCandidateActionMapBinding(request.Context(), state); err != nil {
+	if err := server.verifyCurrentCandidateActionMapBinding(request.Context(), state); err != nil {
 		writeJSON(writer, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if state.Status != "candidate" {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": "candidate already has a terminal review decision"})
 		return
 	}
 	candidate, err := server.store.GetActionListRevision(request.Context(), state.Binding.ListID, state.Binding.Revision)
@@ -193,8 +249,12 @@ func (server *Server) replayCandidate(writer http.ResponseWriter, request *http.
 		writeRegistryError(writer, err)
 		return
 	}
-	if err := server.verifyCandidateActionMapBinding(request.Context(), state); err != nil {
+	if err := server.verifyCurrentCandidateActionMapBinding(request.Context(), state); err != nil {
 		writeJSON(writer, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if state.Status != "candidate" {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": "candidate already has a terminal review decision"})
 		return
 	}
 	candidate, err := server.store.GetActionListRevision(request.Context(), state.Binding.ListID, state.Binding.Revision)
@@ -212,6 +272,9 @@ func (server *Server) replayCandidate(writer http.ResponseWriter, request *http.
 		return
 	}
 	reportJSON, replayErr := server.replay.Replay(request.Context(), list)
+	if replayErr == nil {
+		reportJSON, replayErr = sanitizePassedReplay(reportJSON, list)
+	}
 	status := "passed"
 	if replayErr != nil {
 		status = "failed"
@@ -264,6 +327,14 @@ func (server *Server) submitCandidateReview(writer http.ResponseWriter, request 
 	}
 	if input.Decision != "approve" {
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "decision must be approve or reject"})
+		return
+	}
+	if state.Status != "candidate" {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": "candidate already has a terminal review decision"})
+		return
+	}
+	if err := server.verifyCurrentCandidateActionMapBinding(request.Context(), state); err != nil {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
 	published, err := server.store.PublishActionList(request.Context(), state.Binding.ListID, state.Binding.Revision, store.PublishActionListRequest{ExpectedDigest: input.ExpectedDigest, ReviewDecision: "approve", Reviewer: "local-user", PolicyDecisionID: input.PolicyDecisionID, ReplayReportID: input.ReplayReportID})

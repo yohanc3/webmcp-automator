@@ -21,20 +21,34 @@ POST /v1/action-lists/{listId}/revisions/{revision}/candidate-review
 The state endpoint verifies the candidate digest against a durable binding to
 one action-map scope, revision, and digest. A policy endpoint accepts the
 current origin policy only to materialize a new server-generated policy record
-bound to that candidate digest. It cannot make a foreign, revoked, expired, or
-non-ambient policy allowed.
+bound to that candidate digest. Ambient collection consent produces only a
+`learn` scope; it cannot authorize injection or execution. A separate
+authoritative execution policy must cover `inject` and every action safety
+class before publication.
 
-Replay is an intentionally narrow injected `action-list/1` executor seam. CI
-uses a deterministic owned-demo executor and stores only a compact report
-status, identifiers, and privacy-safe summary. It never stores page content,
-arguments, semantic XML, or evidence payloads.
+Replay is an intentionally narrow injected `action-list/1` executor seam. The
+production default is unavailable and therefore fails; it never reports a
+structural validation as replay. CI injects a deterministic owned-demo executor
+and the API accepts only an explicit `candidate-replay/1` passed result that
+enumerates every candidate action ID/version with exact step and postcondition
+coverage. It rejects partial, duplicate, or foreign action coverage and
+reconstructs the stored report from that allowlist. It never stores
+executor-supplied page content, arguments, semantic XML, evidence payloads, or
+arbitrary summary text.
 
 An explicit `approve` requires the current candidate digest, a nonblank
 reviewer, a server-issued allowed policy record, and a server-issued passed
 replay record. The transactional publication store checks all bindings again.
-An explicit `reject` stores a rejection and returns `published: false`.
-Duplicate approval, stale digests/revisions, forged IDs, failed replay, and
-blocked policy fail closed.
+An explicit `reject` stores a terminal, idempotent rejection and returns
+`published: false`. Rejection and approval serialize on the same candidate row,
+so a rejected candidate cannot later publish. Duplicate approval, stale
+digests/revisions, forged IDs, failed replay, and blocked policy fail closed.
+For map-bound ambient candidates, the publication transaction also locks the
+action-map scope and requires the bound revision/digest to remain the current
+head, closing the check-to-publish race.
+The generic registry publication route rejects map-bound ambient candidates;
+they must pass through the authoritative candidate-review route, and the server
+assigns reviewer identity.
 
 `OPEN_CANDIDATE_EVIDENCE` remains explicitly unavailable. It must not resolve a
 compact evidence handle until a resolver can prove that handle against this
@@ -43,4 +57,6 @@ unavailable for the same reason: no run or step binding is fabricated.
 
 After publication, ordinary registry discovery still returns only published
 lists whose exact origin and route match. Candidate revisions never escape the
-ready path.
+ready path. Candidate insertion, exact candidate reads, action-map reads,
+candidate review state, and run-observation writes require the extension
+boundary; exact published reads remain public.

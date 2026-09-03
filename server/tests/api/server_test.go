@@ -36,14 +36,40 @@ type orderedAmbientParser struct {
 
 type passingCandidateReplay struct{}
 
-func (passingCandidateReplay) Replay(_ context.Context, _ manifest.ActionList) (json.RawMessage, error) {
-	return json.RawMessage(`{"schemaVersion":"candidate-replay/1","status":"passed","privacy":"no captured values"}`), nil
+func (passingCandidateReplay) Replay(_ context.Context, list manifest.ActionList) (json.RawMessage, error) {
+	actions := make([]map[string]any, 0, len(list.Actions))
+	for _, action := range list.Actions {
+		actions = append(actions, map[string]any{
+			"actionId": action.ID, "actionVersion": action.Version,
+			"stepsExecuted": len(action.Steps), "postconditionsVerified": len(action.Steps),
+		})
+	}
+	return json.Marshal(map[string]any{"schemaVersion": "candidate-replay/1", "status": "passed", "actions": actions})
 }
 
 type failingCandidateReplay struct{}
 
 func (failingCandidateReplay) Replay(_ context.Context, _ manifest.ActionList) (json.RawMessage, error) {
 	return nil, errors.New("owned demo postcondition failed")
+}
+
+type unsafeCandidateReplay struct{}
+
+func (unsafeCandidateReplay) Replay(_ context.Context, _ manifest.ActionList) (json.RawMessage, error) {
+	return json.RawMessage(`{"schemaVersion":"candidate-replay/1","status":"failed","actions":[],"pageText":"private value"}`), nil
+}
+
+type partialCandidateReplay struct{}
+
+func (partialCandidateReplay) Replay(_ context.Context, list manifest.ActionList) (json.RawMessage, error) {
+	action := list.Actions[0]
+	return json.Marshal(map[string]any{
+		"schemaVersion": "candidate-replay/1", "status": "passed",
+		"actions": []map[string]any{{
+			"actionId": action.ID, "actionVersion": action.Version,
+			"stepsExecuted": len(action.Steps), "postconditionsVerified": len(action.Steps),
+		}},
+	})
 }
 
 func (parser *orderedAmbientParser) Discover(context.Context, json.RawMessage) (learning.Result, error) {
@@ -82,7 +108,10 @@ type memoryStore struct {
 	revisions    map[string]map[int]store.ActionListRevision
 	published    map[string]map[int]store.ActionListRevision
 	policies     map[string]store.PolicyRecord
+	policyOrder  []string
 	replays      map[string]store.ReplayReport
+	replayOrder  []string
+	reviews      map[string]string
 	bindings     map[string]store.CandidateBinding
 	observations map[string]store.RunObservation
 }
@@ -104,6 +133,7 @@ func newMemoryStore() *memoryStore {
 		published:    map[string]map[int]store.ActionListRevision{},
 		policies:     map[string]store.PolicyRecord{},
 		replays:      map[string]store.ReplayReport{},
+		reviews:      map[string]string{},
 		bindings:     map[string]store.CandidateBinding{},
 		observations: map[string]store.RunObservation{},
 	}
@@ -138,15 +168,19 @@ func (database *memoryStore) GetCandidateReviewState(_ context.Context, listID s
 	status := candidate.Status
 	if published := database.published[listID][revision]; published.Revision > 0 {
 		status = "published"
+	} else if database.reviews[candidateBindingKey(listID, revision)] == "reject" {
+		status = "rejected"
 	}
 	state := store.CandidateReviewState{Binding: binding, Status: status}
-	for _, policy := range database.policies {
+	for _, id := range database.policyOrder {
+		policy := database.policies[id]
 		if policy.ListID == listID && policy.Revision == revision && policy.CandidateDigest == binding.CandidateDigest {
 			copy := policy
 			state.Policy = &copy
 		}
 	}
-	for _, replay := range database.replays {
+	for _, id := range database.replayOrder {
+		replay := database.replays[id]
 		if replay.ListID == listID && replay.Revision == revision && replay.CandidateDigest == binding.CandidateDigest {
 			copy := replay
 			state.ReplayReport = &copy
@@ -162,6 +196,7 @@ func (database *memoryStore) SavePolicyDecision(_ context.Context, policy store.
 		return store.ErrConflict
 	}
 	database.policies[policy.ID] = policy
+	database.policyOrder = append(database.policyOrder, policy.ID)
 	return nil
 }
 
@@ -172,6 +207,7 @@ func (database *memoryStore) SaveReplayReport(_ context.Context, replay store.Re
 		return store.ErrConflict
 	}
 	database.replays[replay.ID] = replay
+	database.replayOrder = append(database.replayOrder, replay.ID)
 	return nil
 }
 
@@ -182,6 +218,11 @@ func (database *memoryStore) RecordCandidateRejection(_ context.Context, listID 
 	if candidate.Revision == 0 || candidate.CandidateDigest != digest || strings.TrimSpace(reviewer) == "" || database.published[listID][revision].Revision > 0 {
 		return store.ErrGate
 	}
+	key := candidateBindingKey(listID, revision)
+	if database.reviews[key] == "approve" {
+		return store.ErrGate
+	}
+	database.reviews[key] = "reject"
 	return nil
 }
 
@@ -389,6 +430,13 @@ func (database *memoryStore) PublishActionList(
 	if request.ExpectedDigest != candidate.CandidateDigest {
 		return store.ActionListRevision{}, store.ErrConflict
 	}
+	key := candidateBindingKey(listID, revisionNumber)
+	if database.reviews[key] == "reject" {
+		return store.ActionListRevision{}, store.ErrGate
+	}
+	if database.reviews[key] == "approve" {
+		return store.ActionListRevision{}, store.ErrConflict
+	}
 	policy := database.policies[request.PolicyDecisionID]
 	if policy.Decision != "allowed" || policy.ListID != listID || policy.Revision != revisionNumber ||
 		policy.CandidateDigest != candidate.CandidateDigest || policy.ExpiresAt != nil && !policy.ExpiresAt.After(time.Now()) {
@@ -409,6 +457,9 @@ func (database *memoryStore) PublishActionList(
 	if policy.ExpiresAt != nil {
 		value := policy.ExpiresAt.Format(time.RFC3339Nano)
 		list.Policy.ExpiresAt = &value
+	}
+	if err := manifest.PolicyAllows(list, time.Now().UTC()); err != nil {
+		return store.ActionListRevision{}, store.ErrGate
 	}
 	adjusted, _ := json.Marshal(list)
 	now := time.Now().UTC()
@@ -432,6 +483,7 @@ func (database *memoryStore) PublishActionList(
 		database.published[listID] = map[int]store.ActionListRevision{}
 	}
 	database.published[listID][revisionNumber] = published
+	database.reviews[key] = "approve"
 	return published, nil
 }
 
@@ -503,18 +555,22 @@ func TestHealthReportsPostgres(t *testing.T) {
 	}
 }
 
-func TestAmbientMutationRejectsWebpageOriginBeforeBodyParsing(t *testing.T) {
+func TestExtensionMutationsRejectWebpageOriginBeforeBodyParsing(t *testing.T) {
 	database := newAmbientMemoryStore()
 	server := api.New(database, &fakeDiscoverer{}, false, "openrouter", "fake", "")
-	request := httptest.NewRequest(http.MethodPost, "/v1/ambient/layers", strings.NewReader("not json"))
-	request.Header.Set("Origin", "https://untrusted.example")
-	response := httptest.NewRecorder()
-	server.ServeHTTP(response, request)
-	if response.Code != http.StatusForbidden {
-		t.Fatalf("expected webpage origin rejection, got %d: %s", response.Code, response.Body.String())
-	}
-	if response.Header().Get("Access-Control-Allow-Origin") != "" {
-		t.Fatalf("webpage origin received CORS permission: %q", response.Header().Get("Access-Control-Allow-Origin"))
+	for _, path := range []string{"/v1/ambient/layers", "/v1/action-lists", "/v1/run-observations"} {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader("not json"))
+			request.Header.Set("Origin", "https://untrusted.example")
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, request)
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("expected webpage origin rejection, got %d: %s", response.Code, response.Body.String())
+			}
+			if response.Header().Get("Access-Control-Allow-Origin") != "" {
+				t.Fatalf("webpage origin received CORS permission: %q", response.Header().Get("Access-Control-Allow-Origin"))
+			}
+		})
 	}
 }
 
@@ -531,6 +587,20 @@ func TestAmbientOrdersLifecycleThroughHTTP(t *testing.T) {
 	head, err := database.GetActionMapHead(context.Background(), first.SiteScope.ScopeID)
 	if err != nil || head.Revision != 1 {
 		t.Fatalf("layer 1 head: %#v %v", head, err)
+	}
+	actionMapPath := "/v1/action-maps/" + first.SiteScope.ScopeID + "/head"
+	untrustedMap := httptest.NewRecorder()
+	server.ServeHTTP(untrustedMap, httptest.NewRequest(http.MethodGet, actionMapPath, nil))
+	if untrustedMap.Code != http.StatusForbidden {
+		t.Fatalf("untrusted caller read action map: %d %s", untrustedMap.Code, untrustedMap.Body.String())
+	}
+	trustedMapRequest := httptest.NewRequest(http.MethodGet, actionMapPath, nil)
+	trustedMapRequest.Header.Set("Origin", "chrome-extension://orders-test")
+	trustedMapRequest.Header.Set("X-WebMCP-Internal", "ambient-v1")
+	trustedMap := httptest.NewRecorder()
+	server.ServeHTTP(trustedMap, trustedMapRequest)
+	if trustedMap.Code != http.StatusOK || !strings.Contains(trustedMap.Body.String(), `"revision":1`) {
+		t.Fatalf("trusted action-map read failed: %d %s", trustedMap.Code, trustedMap.Body.String())
 	}
 	if _, err := database.GetActionListRevision(context.Background(), learning.AmbientCandidateListID(first.SiteScope.ScopeID), 1); err != nil {
 		t.Fatalf("candidate 1: %v", err)
@@ -568,8 +638,16 @@ func TestAmbientOrdersLifecycleThroughHTTP(t *testing.T) {
 	if err != nil || candidate.CandidateDigest == "" {
 		t.Fatalf("exact candidate: %#v %v", candidate, err)
 	}
+	untrustedState := httptest.NewRecorder()
+	server.ServeHTTP(untrustedState, httptest.NewRequest(http.MethodGet, "/v1/action-lists/"+listID+"/revisions/2/candidate-review", nil))
+	if untrustedState.Code != http.StatusForbidden {
+		t.Fatalf("untrusted caller read candidate review state: %d %s", untrustedState.Code, untrustedState.Body.String())
+	}
 	state := httptest.NewRecorder()
-	server.ServeHTTP(state, httptest.NewRequest(http.MethodGet, "/v1/action-lists/"+listID+"/revisions/2/candidate-review", nil))
+	stateRequest := httptest.NewRequest(http.MethodGet, "/v1/action-lists/"+listID+"/revisions/2/candidate-review", nil)
+	stateRequest.Header.Set("Origin", "chrome-extension://candidate-review-test")
+	stateRequest.Header.Set("X-WebMCP-Internal", "ambient-v1")
+	server.ServeHTTP(state, stateRequest)
 	if state.Code != http.StatusOK || !strings.Contains(state.Body.String(), candidate.CandidateDigest) {
 		t.Fatalf("candidate review state: %d %s", state.Code, state.Body.String())
 	}
@@ -591,14 +669,55 @@ func TestAmbientOrdersLifecycleThroughHTTP(t *testing.T) {
 	if firstErr != nil {
 		t.Fatal(firstErr)
 	}
-	if rejected := postReviewJSON("/v1/action-lists/"+listID+"/revisions/1/candidate-review", map[string]any{"expectedDigest": firstCandidate.CandidateDigest, "decision": "reject", "reviewer": "local-user"}); rejected.Code != http.StatusOK || !strings.Contains(rejected.Body.String(), `"published":false`) {
+	if rejected := postReviewJSON("/v1/action-lists/"+listID+"/revisions/1/candidate-review", map[string]any{"expectedDigest": firstCandidate.CandidateDigest, "decision": "reject"}); rejected.Code != http.StatusOK || !strings.Contains(rejected.Body.String(), `"published":false`) {
 		t.Fatalf("reject must not publish: %d %s", rejected.Code, rejected.Body.String())
+	}
+	if rejectedAgain := postReviewJSON("/v1/action-lists/"+listID+"/revisions/1/candidate-review", map[string]any{"expectedDigest": firstCandidate.CandidateDigest, "decision": "reject"}); rejectedAgain.Code != http.StatusOK {
+		t.Fatalf("repeat rejection must be idempotent: %d %s", rejectedAgain.Code, rejectedAgain.Body.String())
 	}
 	if database.published[listID][1].Revision != 0 {
 		t.Fatal("rejected candidate was published")
 	}
+	rejectedPolicy := store.PolicyRecord{
+		ID: "policy_rejected_orders_1", ListID: listID, Revision: 1,
+		CandidateDigest: firstCandidate.CandidateDigest, Decision: "allowed",
+		Scopes: []string{"inject", "read"}, CheckedAt: time.Now().UTC(),
+	}
+	if err := database.SavePolicyDecision(context.Background(), rejectedPolicy); err != nil {
+		t.Fatal(err)
+	}
+	rejectedReplay := store.ReplayReport{
+		ID: "replay_rejected_orders_1", ListID: listID, Revision: 1,
+		CandidateDigest: firstCandidate.CandidateDigest, Status: "passed",
+		Report: json.RawMessage(`{"summary":"owned fixture passed"}`),
+	}
+	if err := database.SaveReplayReport(context.Background(), rejectedReplay); err != nil {
+		t.Fatal(err)
+	}
+	if approvedAfterReject := postReviewJSON("/v1/action-lists/"+listID+"/revisions/1/candidate-review", map[string]any{
+		"expectedDigest": firstCandidate.CandidateDigest, "decision": "approve",
+		"policyDecisionId": rejectedPolicy.ID, "replayReportId": rejectedReplay.ID,
+	}); approvedAfterReject.Code != http.StatusConflict {
+		t.Fatalf("rejected candidate became publishable: %d %s", approvedAfterReject.Code, approvedAfterReject.Body.String())
+	}
+	if replayAfterReject := postReviewJSON("/v1/action-lists/"+listID+"/revisions/1/candidate-review/replay", map[string]any{"expectedDigest": firstCandidate.CandidateDigest}); replayAfterReject.Code != http.StatusConflict {
+		t.Fatalf("rejected candidate accepted replay: %d %s", replayAfterReject.Code, replayAfterReject.Body.String())
+	}
+	server.SetCandidateReplayExecutor(unsafeCandidateReplay{})
+	if unsafeReplay := postReviewJSON(base+"/replay", map[string]any{"expectedDigest": candidate.CandidateDigest}); unsafeReplay.Code != http.StatusCreated || !strings.Contains(unsafeReplay.Body.String(), `"status":"failed"`) || strings.Contains(unsafeReplay.Body.String(), "private value") {
+		t.Fatalf("unsafe replay output escaped sanitization: %d %s", unsafeReplay.Code, unsafeReplay.Body.String())
+	}
+	for _, storedReplay := range database.replays {
+		if strings.Contains(string(storedReplay.Report), "private value") {
+			t.Fatalf("unsafe replay output reached storage: %s", storedReplay.Report)
+		}
+	}
+	server.SetCandidateReplayExecutor(partialCandidateReplay{})
+	if partialReplay := postReviewJSON(base+"/replay", map[string]any{"expectedDigest": candidate.CandidateDigest}); partialReplay.Code != http.StatusCreated || !strings.Contains(partialReplay.Body.String(), `"status":"failed"`) {
+		t.Fatalf("partial replay certified the whole candidate: %d %s", partialReplay.Code, partialReplay.Body.String())
+	}
 	server.SetCandidateReplayExecutor(failingCandidateReplay{})
-	if failed := postReviewJSON("/v1/action-lists/"+listID+"/revisions/1/candidate-review/replay", map[string]any{"expectedDigest": firstCandidate.CandidateDigest}); failed.Code != http.StatusCreated || !strings.Contains(failed.Body.String(), `"status":"failed"`) {
+	if failed := postReviewJSON(base+"/replay", map[string]any{"expectedDigest": candidate.CandidateDigest}); failed.Code != http.StatusCreated || !strings.Contains(failed.Body.String(), `"status":"failed"`) {
 		t.Fatalf("failed replay: %d %s", failed.Code, failed.Body.String())
 	}
 	server.SetCandidateReplayExecutor(passingCandidateReplay{})
@@ -613,7 +732,7 @@ func TestAmbientOrdersLifecycleThroughHTTP(t *testing.T) {
 	if expired.Code != http.StatusCreated || !strings.Contains(expired.Body.String(), `"status":"denied"`) {
 		t.Fatalf("expired policy: %d %s", expired.Code, expired.Body.String())
 	}
-	if forged := postReviewJSON(base, map[string]any{"expectedDigest": candidate.CandidateDigest, "decision": "approve", "reviewer": "local-user", "policyDecisionId": "forged", "replayReportId": "forged"}); forged.Code != http.StatusConflict {
+	if forged := postReviewJSON(base, map[string]any{"expectedDigest": candidate.CandidateDigest, "decision": "approve", "policyDecisionId": "forged", "replayReportId": "forged"}); forged.Code != http.StatusConflict {
 		t.Fatalf("forged approve: %d %s", forged.Code, forged.Body.String())
 	}
 	policy := postReviewJSON(base+"/policy", map[string]any{"expectedDigest": candidate.CandidateDigest, "originPolicy": map[string]any{"origin": second.SiteScope.Origin, "status": "allowed", "scopes": []string{"ambient_learn"}, "checkedAt": "2026-09-03T12:11:01Z"}})
@@ -640,9 +759,38 @@ func TestAmbientOrdersLifecycleThroughHTTP(t *testing.T) {
 	if err := json.Unmarshal(replay.Body.Bytes(), &replayBody); err != nil || replayBody.ReplayReport.ID == "" {
 		t.Fatalf("replay identifier: %v %s", err, replay.Body.String())
 	}
-	published := postReviewJSON(base, map[string]any{"expectedDigest": candidate.CandidateDigest, "decision": "approve", "reviewer": "local-user", "policyDecisionId": policyBody.PolicyDecision.ID, "replayReportId": replayBody.ReplayReport.ID})
+	if ambientConsent := postReviewJSON(base, map[string]any{"expectedDigest": candidate.CandidateDigest, "decision": "approve", "policyDecisionId": policyBody.PolicyDecision.ID, "replayReportId": replayBody.ReplayReport.ID}); ambientConsent.Code != http.StatusConflict {
+		t.Fatalf("ambient collection consent authorized execution: %d %s", ambientConsent.Code, ambientConsent.Body.String())
+	}
+	executionPolicy := store.PolicyRecord{
+		ID: "policy_execution_orders_2", ListID: listID, Revision: 2,
+		CandidateDigest: candidate.CandidateDigest, Decision: "allowed",
+		Scopes: []string{"inject", "read"}, CheckedAt: time.Now().UTC(),
+	}
+	if err := database.SavePolicyDecision(context.Background(), executionPolicy); err != nil {
+		t.Fatal(err)
+	}
+	currentState := httptest.NewRecorder()
+	currentStateRequest := httptest.NewRequest(http.MethodGet, base, nil)
+	currentStateRequest.Header.Set("Origin", "chrome-extension://candidate-review-test")
+	currentStateRequest.Header.Set("X-WebMCP-Internal", "ambient-v1")
+	server.ServeHTTP(currentState, currentStateRequest)
+	if currentState.Code != http.StatusOK || !strings.Contains(currentState.Body.String(), executionPolicy.ID) || !strings.Contains(currentState.Body.String(), replayBody.ReplayReport.ID) {
+		t.Fatalf("candidate review did not expose latest exact gates: %d %s", currentState.Code, currentState.Body.String())
+	}
+	bypass := postReviewJSON("/v1/action-lists/"+listID+"/revisions/2/publish", map[string]any{
+		"expectedDigest": candidate.CandidateDigest, "reviewDecision": "approve", "reviewer": "untrusted-assertion",
+		"policyDecisionId": executionPolicy.ID, "replayReportId": replayBody.ReplayReport.ID,
+	})
+	if bypass.Code != http.StatusConflict || database.published[listID][2].Revision != 0 {
+		t.Fatalf("ambient candidate bypassed candidate review: %d %s", bypass.Code, bypass.Body.String())
+	}
+	published := postReviewJSON(base, map[string]any{"expectedDigest": candidate.CandidateDigest, "decision": "approve", "policyDecisionId": executionPolicy.ID, "replayReportId": replayBody.ReplayReport.ID})
 	if published.Code != http.StatusOK || !strings.Contains(published.Body.String(), `"status":"published"`) {
 		t.Fatalf("publication: %d %s", published.Code, published.Body.String())
+	}
+	if rejectedAfterPublish := postReviewJSON(base, map[string]any{"expectedDigest": candidate.CandidateDigest, "decision": "reject"}); rejectedAfterPublish.Code != http.StatusConflict {
+		t.Fatalf("published candidate accepted a rejection: %d %s", rejectedAfterPublish.Code, rejectedAfterPublish.Body.String())
 	}
 	discovery := httptest.NewRecorder()
 	server.ServeHTTP(discovery, httptest.NewRequest(http.MethodGet, "/v1/action-lists?origin=https%3A%2F%2Fshop.example&url=https%3A%2F%2Fshop.example%2Forders", nil))
@@ -794,10 +942,12 @@ func seedPassingGate(database *memoryStore, revision store.ActionListRevision) s
 		CandidateDigest: revision.CandidateDigest, Decision: "allowed",
 		Scopes: []string{"learn", "inject", "read", "write"}, CheckedAt: checkedAt,
 	}
+	database.policyOrder = append(database.policyOrder, "policy_owned_demo_001")
 	database.replays["replay_owned_demo_001"] = store.ReplayReport{
 		ID: "replay_owned_demo_001", ListID: revision.ListID, Revision: revision.Revision,
 		CandidateDigest: revision.CandidateDigest, Status: "passed", Report: json.RawMessage(`{"summary":"owned fixture passed"}`),
 	}
+	database.replayOrder = append(database.replayOrder, "replay_owned_demo_001")
 	return store.PublishActionListRequest{
 		ExpectedDigest: revision.CandidateDigest, ReviewDecision: "approve", Reviewer: "local-user",
 		PolicyDecisionID: "policy_owned_demo_001", ReplayReportID: "replay_owned_demo_001",
@@ -826,6 +976,23 @@ func TestRegistryInsertReviewPublishRetrieveOwnedStorefront(t *testing.T) {
 	database := newMemoryStore()
 	server := registryServer(database)
 	revision := insertStorefront(t, server)
+	untrustedCandidate := httptest.NewRecorder()
+	server.ServeHTTP(untrustedCandidate, httptest.NewRequest(
+		http.MethodGet, "/v1/action-lists/owned_storefront/revisions/1", nil,
+	))
+	if untrustedCandidate.Code != http.StatusForbidden {
+		t.Fatalf("untrusted caller read an unpublished candidate: %d %s", untrustedCandidate.Code, untrustedCandidate.Body.String())
+	}
+	trustedCandidateRequest := httptest.NewRequest(
+		http.MethodGet, "/v1/action-lists/owned_storefront/revisions/1", nil,
+	)
+	trustedCandidateRequest.Header.Set("Origin", "chrome-extension://registry-test")
+	trustedCandidateRequest.Header.Set("X-WebMCP-Internal", "ambient-v1")
+	trustedCandidate := httptest.NewRecorder()
+	server.ServeHTTP(trustedCandidate, trustedCandidateRequest)
+	if trustedCandidate.Code != http.StatusOK || trustedCandidate.Header().Get("X-Content-Digest") != revision.Digest {
+		t.Fatalf("trusted candidate retrieval failed: %d %s", trustedCandidate.Code, trustedCandidate.Body.String())
+	}
 
 	before := httptest.NewRecorder()
 	server.ServeHTTP(before, httptest.NewRequest(
@@ -838,6 +1005,7 @@ func TestRegistryInsertReviewPublishRetrieveOwnedStorefront(t *testing.T) {
 	}
 
 	gate := seedPassingGate(database, revision)
+	gate.Reviewer = "untrusted-assertion"
 	publishedResponse := publishRequest(t, server, gate)
 	if publishedResponse.Code != http.StatusOK {
 		t.Fatalf("publish action list: %d %s", publishedResponse.Code, publishedResponse.Body.String())
@@ -848,6 +1016,10 @@ func TestRegistryInsertReviewPublishRetrieveOwnedStorefront(t *testing.T) {
 	}
 	if published.Status != "published" || published.Digest == revision.CandidateDigest {
 		t.Fatalf("unexpected published revision: %#v", published)
+	}
+	publishedList, err := manifest.DecodeActionList(published.Document)
+	if err != nil || publishedList.Actions[0].Provenance.ReviewedBy == nil || *publishedList.Actions[0].Provenance.ReviewedBy != "local-user" {
+		t.Fatalf("server did not assign canonical reviewer: %#v %v", publishedList.Actions[0].Provenance.ReviewedBy, err)
 	}
 
 	exactRequest := httptest.NewRequest(
@@ -905,9 +1077,12 @@ func TestRegistryRevisionsAreAppendOnlyAndExpectedDigestIsCompared(t *testing.T)
 	server := registryServer(database)
 	revision := insertStorefront(t, server)
 	duplicate := httptest.NewRecorder()
-	server.ServeHTTP(duplicate, httptest.NewRequest(
+	duplicateRequest := httptest.NewRequest(
 		http.MethodPost, "/v1/action-lists", bytes.NewReader(ownedStorefrontList(t)),
-	))
+	)
+	duplicateRequest.Header.Set("Origin", "chrome-extension://registry-test")
+	duplicateRequest.Header.Set("X-WebMCP-Internal", "ambient-v1")
+	server.ServeHTTP(duplicate, duplicateRequest)
 	if duplicate.Code != http.StatusConflict {
 		t.Fatalf("expected append-only conflict, got %d: %s", duplicate.Code, duplicate.Body.String())
 	}
@@ -988,7 +1163,7 @@ func TestRunObservationAcceptsOnlyPrivacySafeTerminalShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	unsafe := httptest.NewRecorder()
-	server.ServeHTTP(unsafe, httptest.NewRequest(
+	unsafeRequest := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/run-observations",
 		bytes.NewBufferString(`{
@@ -999,12 +1174,15 @@ func TestRunObservationAcceptsOnlyPrivacySafeTerminalShape(t *testing.T) {
 			"status":"completed","steps":[],"finalStateId":"search_results","errorCode":null,
 			"extractedContent":"private page text"
 		}`),
-	))
+	)
+	unsafeRequest.Header.Set("Origin", "chrome-extension://registry-test")
+	unsafeRequest.Header.Set("X-WebMCP-Internal", "ambient-v1")
+	server.ServeHTTP(unsafe, unsafeRequest)
 	if unsafe.Code != http.StatusBadRequest || !strings.Contains(unsafe.Body.String(), "unknown field") {
 		t.Fatalf("unsafe observation was accepted: %d %s", unsafe.Code, unsafe.Body.String())
 	}
 	safe := httptest.NewRecorder()
-	server.ServeHTTP(safe, httptest.NewRequest(
+	safeRequest := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/run-observations",
 		bytes.NewBufferString(`{
@@ -1016,7 +1194,10 @@ func TestRunObservationAcceptsOnlyPrivacySafeTerminalShape(t *testing.T) {
 			"locatorStrategyIndex":0,"matchCount":1,"postconditionSatisfied":true}],
 			"finalStateId":"search_results","errorCode":null
 		}`),
-	))
+	)
+	safeRequest.Header.Set("Origin", "chrome-extension://registry-test")
+	safeRequest.Header.Set("X-WebMCP-Internal", "ambient-v1")
+	server.ServeHTTP(safe, safeRequest)
 	if safe.Code != http.StatusCreated || len(database.observations) != 1 {
 		t.Fatalf("safe observation was not recorded: %d %s", safe.Code, safe.Body.String())
 	}

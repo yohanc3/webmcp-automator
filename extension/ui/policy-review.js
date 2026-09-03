@@ -283,11 +283,10 @@
     policyRevision: confirmation.policyRevision || confirmation.binding?.policyRevision || null,
   });
 
-  const candidateDecision = ({ candidate = {}, decision, reviewer, policyDecisionId } = {}) => {
+  const candidateDecision = ({ candidate = {}, decision, policyDecisionId } = {}) => {
     const binding = reviewBinding(candidate);
     return {
       decision,
-      reviewer,
       listId: candidate.listId || null,
       listRevision: binding.listRevision,
       listDigest: binding.listDigest,
@@ -634,9 +633,18 @@
     const policyDecisionId = state.policyDecisionId || state.policy?.policyDecisionId || candidate.policyDecisionId;
     const replayReportId = candidate.replayReportId || candidate.replay?.reportId;
     const executionPolicy = candidate.policyDecision;
+    const executionScopes = asArray(executionPolicy?.scopes);
+    const requiredExecutionScopes = [
+      'inject',
+      ...new Set(asArray(candidate.actions).map((action) => (
+        action.safety?.class || action.safety
+      )).filter(Boolean)),
+    ];
     const executionAuthorized = executionPolicy?.status === 'allowed'
-      && asArray(executionPolicy.scopes).includes('inject');
-    const mayApprove = reviewIsExact
+      && requiredExecutionScopes.every((scope) => executionScopes.includes(scope));
+    const reviewable = candidate.status === 'candidate';
+    const mayApprove = reviewable
+      && reviewIsExact
       && replay === 'passed'
       && revisionsAreCurrent
       && digestsAreCurrent
@@ -711,6 +719,15 @@
       staleReasons.forEach((reason) => warning.append(createElement('li', '', reason)));
       section.append(warning);
     }
+    if (!reviewable) {
+      section.append(createElement(
+        'p',
+        'policy-blocked-note',
+        candidate.status
+          ? `This candidate already has a terminal ${candidate.status} decision.`
+          : 'This candidate has no authoritative reviewable status.',
+      ));
+    }
 
     if (!policyDecision.eligible) {
       section.append(createElement(
@@ -730,7 +747,7 @@
       section.append(createElement(
         'p',
         'policy-blocked-note',
-        'Approval is blocked until an authoritative execution-scope policy allows injection.',
+        'Approval is blocked until an authoritative execution policy allows every action safety class.',
       ));
     }
     if (!revisionsAreCurrent) {
@@ -754,6 +771,7 @@
       const approve = createElement('button', 'button button-verified', 'Approve candidate');
       reject.type = 'button';
       approve.type = 'button';
+      reject.disabled = !reviewable;
       approve.disabled = !mayApprove;
       const submit = (decision, button) => {
         reject.disabled = true;
@@ -887,15 +905,16 @@
       deny.type = 'button';
       approve.type = 'button';
       approve.disabled = stale || !binding.runId || !policyDecision.eligible;
-      const submit = (approved, button) => {
-        button.disabled = true;
+      const submit = (approved) => {
+        deny.disabled = true;
+        approve.disabled = true;
         void coordinator.submitRunConfirmation({
           approved,
           ...binding,
         }).then(refresh).catch(failClosed);
       };
-      deny.addEventListener('click', () => submit(false, deny));
-      approve.addEventListener('click', () => submit(true, approve));
+      deny.addEventListener('click', () => submit(false));
+      approve.addEventListener('click', () => submit(true));
       controls.append(deny, approve);
       section.append(controls);
     }

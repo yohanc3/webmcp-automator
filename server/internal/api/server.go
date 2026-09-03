@@ -92,20 +92,20 @@ func New(
 	mux.HandleFunc("GET /api/adapters", server.listAdapters)
 	mux.HandleFunc("POST /api/adapters/publish", server.publish)
 	mux.HandleFunc("POST /api/runs", server.recordRun)
-	mux.HandleFunc("POST /v1/action-lists", server.insertActionList)
+	mux.HandleFunc("POST /v1/action-lists", server.requireExtensionBoundary(server.insertActionList))
 	mux.HandleFunc("GET /v1/action-lists", server.discoverActionLists)
 	mux.HandleFunc("GET /v1/action-lists/{listID}/revisions/{revision}", server.getActionListRevision)
 	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/publish", server.requireExtensionBoundary(server.publishActionList))
-	mux.HandleFunc("GET /v1/action-lists/{listID}/revisions/{revision}/candidate-review", server.candidateState)
+	mux.HandleFunc("GET /v1/action-lists/{listID}/revisions/{revision}/candidate-review", server.requireExtensionBoundary(server.candidateState))
 	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/candidate-review/policy", server.requireExtensionBoundary(server.materializeCandidatePolicy))
 	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/candidate-review/replay", server.requireExtensionBoundary(server.replayCandidate))
 	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/candidate-review", server.requireExtensionBoundary(server.submitCandidateReview))
-	mux.HandleFunc("POST /v1/run-observations", server.recordRunObservation)
+	mux.HandleFunc("POST /v1/run-observations", server.requireExtensionBoundary(server.recordRunObservation))
 	if server.actionMaps != nil {
 		actionMapHandlers := actionmapapi.New(server.actionMaps)
-		mux.HandleFunc("GET /v1/action-maps/{scopeId}/head", actionMapHandlers.Head)
-		mux.HandleFunc("GET /v1/action-maps/{scopeId}/context", actionMapHandlers.Context)
-		mux.HandleFunc("GET /v1/action-maps/{scopeId}/revisions/{revision}", actionMapHandlers.Revision)
+		mux.HandleFunc("GET /v1/action-maps/{scopeId}/head", server.requireExtensionBoundary(actionMapHandlers.Head))
+		mux.HandleFunc("GET /v1/action-maps/{scopeId}/context", server.requireExtensionBoundary(actionMapHandlers.Context))
+		mux.HandleFunc("GET /v1/action-maps/{scopeId}/revisions/{revision}", server.requireExtensionBoundary(actionMapHandlers.Revision))
 		mux.HandleFunc("POST /v1/action-maps/{scopeId}/patches", server.requireExtensionBoundary(actionMapHandlers.ApplyPatch))
 		mux.HandleFunc("POST /v1/ambient/layers", server.requireExtensionBoundary(server.processAmbientLayer))
 	}
@@ -334,6 +334,10 @@ func (server *Server) getActionListRevision(writer http.ResponseWriter, request 
 		writeRegistryError(writer, err)
 		return
 	}
+	if revision.Status != "published" && !extensionRequest(request) {
+		writeJSON(writer, http.StatusForbidden, map[string]string{"error": "candidate revisions require a Chrome extension boundary"})
+		return
+	}
 	setRegistryHeaders(writer, revision.Digest)
 	if requestETagMatches(request, revision.Digest) {
 		writer.WriteHeader(http.StatusNotModified)
@@ -348,13 +352,26 @@ func (server *Server) publishActionList(writer http.ResponseWriter, request *htt
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	listID := strings.TrimSpace(request.PathValue("listID"))
+	if database, ok := server.candidateReviewStore(); ok {
+		_, reviewErr := database.GetCandidateReviewState(request.Context(), listID, revisionNumber)
+		if reviewErr == nil {
+			writeJSON(writer, http.StatusConflict, map[string]string{"error": "bound ambient candidates require the candidate-review endpoint"})
+			return
+		}
+		if !errors.Is(reviewErr, store.ErrNotFound) {
+			writeRegistryError(writer, reviewErr)
+			return
+		}
+	}
 	var input store.PublishActionListRequest
 	if err := readJSON(writer, request, &input); err != nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	input.Reviewer = "local-user"
 	revision, err := server.store.PublishActionList(
-		request.Context(), strings.TrimSpace(request.PathValue("listID")), revisionNumber, input,
+		request.Context(), listID, revisionNumber, input,
 	)
 	if err != nil {
 		writeRegistryError(writer, err)
@@ -432,7 +449,7 @@ func (server *Server) withCORS(next http.Handler) http.Handler {
 			writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, If-None-Match, X-WebMCP-Internal")
 		} else {
 			writer.Header().Set("Access-Control-Allow-Origin", "*")
-			writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, If-None-Match")
+			writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, If-None-Match, X-WebMCP-Internal")
 		}
 		writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		writer.Header().Set("Access-Control-Expose-Headers", "ETag, X-Content-Digest")
@@ -452,7 +469,7 @@ func (server *Server) withCORS(next http.Handler) http.Handler {
 // values explicitly without a hidden global dependency.
 func (server *Server) requireExtensionBoundary(next http.HandlerFunc) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		if !extensionOrigin(request.Header.Get("Origin")) || request.Header.Get("X-WebMCP-Internal") != "ambient-v1" {
+		if !extensionRequest(request) {
 			writeJSON(writer, http.StatusForbidden, map[string]any{"outcome": "rejected", "error": "ambient mutation requires a Chrome extension boundary"})
 			return
 		}
@@ -461,7 +478,11 @@ func (server *Server) requireExtensionBoundary(next http.HandlerFunc) http.Handl
 }
 
 func isAmbientMutation(request *http.Request) bool {
-	return request.Method == http.MethodPost && (request.URL.Path == "/v1/ambient/layers" || strings.HasPrefix(request.URL.Path, "/v1/action-maps/") || strings.Contains(request.URL.Path, "/candidate-review") || strings.HasSuffix(request.URL.Path, "/publish"))
+	return request.Method == http.MethodPost && (request.URL.Path == "/v1/action-lists" || request.URL.Path == "/v1/ambient/layers" || request.URL.Path == "/v1/run-observations" || strings.HasPrefix(request.URL.Path, "/v1/action-maps/") || strings.Contains(request.URL.Path, "/candidate-review") || strings.HasSuffix(request.URL.Path, "/publish"))
+}
+
+func extensionRequest(request *http.Request) bool {
+	return extensionOrigin(request.Header.Get("Origin")) && request.Header.Get("X-WebMCP-Internal") == "ambient-v1"
 }
 
 func extensionOrigin(origin string) bool {

@@ -407,30 +407,62 @@ func (store *Store) RecordCandidateRejection(ctx context.Context, listID string,
 	if strings.TrimSpace(reviewer) == "" || !validDigest(digest) {
 		return errors.New("candidate rejection is invalid")
 	}
-	var alreadyRejected bool
-	if err := store.db.QueryRowContext(ctx, `SELECT EXISTS (
-		SELECT 1 FROM action_list_reviews WHERE list_id = $1 AND revision = $2 AND candidate_digest = $3 AND decision = 'reject'
-	)`, listID, revision, digest).Scan(&alreadyRejected); err != nil {
-		return err
-	}
-	if alreadyRejected {
-		return nil
-	}
-	result, err := store.db.ExecContext(ctx, `
-		INSERT INTO action_list_reviews (id, list_id, revision, candidate_digest, decision, reviewer, created_at)
-		SELECT $1, $2, $3, $4, 'reject', $5, $6
-		WHERE EXISTS (
-			SELECT 1 FROM action_list_revisions WHERE list_id = $2 AND revision = $3 AND candidate_digest = $4
-		) AND NOT EXISTS (
-			SELECT 1 FROM action_list_publications WHERE list_id = $2 AND revision = $3
-		) AND NOT EXISTS (
-			SELECT 1 FROM action_list_reviews WHERE list_id = $2 AND revision = $3 AND candidate_digest = $4 AND decision = 'approve'
-		)`, newID("review"), listID, revision, digest, reviewer, time.Now().UTC())
+	transaction, err := store.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
-		return err
+		return fmt.Errorf("begin candidate rejection transaction: %w", err)
 	}
-	if affected, _ := result.RowsAffected(); affected != 1 {
+	defer transaction.Rollback()
+
+	var candidateDigest string
+	if err := transaction.QueryRowContext(ctx, `
+		SELECT candidate_digest
+		FROM action_list_revisions
+		WHERE list_id = $1 AND revision = $2
+		FOR UPDATE`, listID, revision).Scan(&candidateDigest); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lock rejected action list revision: %w", err)
+	}
+	if candidateDigest != digest {
+		return fmt.Errorf("%w: expected digest is stale", ErrConflict)
+	}
+
+	var existingDecision string
+	err = transaction.QueryRowContext(ctx, `
+		SELECT decision
+		FROM action_list_reviews
+		WHERE list_id = $1 AND revision = $2 AND candidate_digest = $3
+		ORDER BY created_at ASC LIMIT 1`, listID, revision, digest).Scan(&existingDecision)
+	if err == nil {
+		if existingDecision == "reject" {
+			return nil
+		}
+		return fmt.Errorf("%w: candidate already has a terminal review decision", ErrGate)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read candidate review decision: %w", err)
+	}
+
+	var published bool
+	if err := transaction.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM action_list_publications WHERE list_id = $1 AND revision = $2
+		)`, listID, revision).Scan(&published); err != nil {
+		return fmt.Errorf("read candidate publication state: %w", err)
+	}
+	if published {
 		return ErrGate
+	}
+	if _, err := transaction.ExecContext(ctx, `
+		INSERT INTO action_list_reviews
+		  (id, list_id, revision, candidate_digest, decision, reviewer, created_at)
+		VALUES ($1, $2, $3, $4, 'reject', $5, $6)`, newID("review"), listID, revision,
+		digest, reviewer, time.Now().UTC()); err != nil {
+		return fmt.Errorf("record candidate rejection: %w", err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit candidate rejection: %w", err)
 	}
 	return nil
 }
@@ -470,6 +502,44 @@ func (store *Store) PublishActionList(
 	actualCandidateDigest, err := manifest.CandidateDigest(json.RawMessage(document))
 	if err != nil || actualCandidateDigest != candidateDigest {
 		return ActionListRevision{}, fmt.Errorf("%w: stored candidate digest is invalid", ErrGate)
+	}
+	var existingDecision string
+	err = transaction.QueryRowContext(ctx, `
+		SELECT decision
+		FROM action_list_reviews
+		WHERE list_id = $1 AND revision = $2 AND candidate_digest = $3
+		ORDER BY created_at ASC LIMIT 1`, listID, revision, candidateDigest).Scan(&existingDecision)
+	if err == nil {
+		if existingDecision == "reject" {
+			return ActionListRevision{}, fmt.Errorf("%w: candidate was rejected", ErrGate)
+		}
+		return ActionListRevision{}, fmt.Errorf("%w: candidate already has a terminal review decision", ErrConflict)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return ActionListRevision{}, fmt.Errorf("read candidate review decision: %w", err)
+	}
+
+	var bindingDigest string
+	var scopeID string
+	var actionMapRevision int
+	var actionMapDigest string
+	var headRevision int
+	var headDigest string
+	err = transaction.QueryRowContext(ctx, `
+		SELECT bindings.candidate_digest, bindings.scope_id,
+		       bindings.action_map_revision, bindings.action_map_digest,
+		       scopes.head_revision, scopes.head_digest
+		FROM action_list_candidate_bindings AS bindings
+		JOIN action_map_scopes AS scopes ON scopes.scope_id = bindings.scope_id
+		WHERE bindings.list_id = $1 AND bindings.revision = $2
+		FOR SHARE OF scopes`, listID, revision).Scan(
+		&bindingDigest, &scopeID, &actionMapRevision, &actionMapDigest, &headRevision, &headDigest,
+	)
+	if err == nil && (bindingDigest != candidateDigest || scopeID == "" || actionMapRevision != headRevision || actionMapDigest != headDigest) {
+		return ActionListRevision{}, fmt.Errorf("%w: candidate action-map binding is no longer current", ErrConflict)
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return ActionListRevision{}, fmt.Errorf("lock candidate action-map binding: %w", err)
 	}
 
 	var policyDecision string
