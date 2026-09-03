@@ -162,7 +162,7 @@ test('service worker serializes policy revisions and tab-scoped causal lifecycle
   const coordinator = coordinatorApi.createCoordinator({ chromeApi });
   const sender = { tab: { id: 7, url: 'https://shop.test/catalog' } };
   const saved = await Promise.all([1, 2, 3].map(() => coordinator.handleMessage({
-    type: 'SET_OWNED_DEMO_OVERRIDE', override: { enabled: false, origin: 'https://wrong.test' },
+    type: 'SUBMIT_POLICY_DECISION', decision: { decision: 'revoked', scope: 'ambient_learn' },
   }, sender)));
   assert.deepEqual(saved.map(({ policy: value }) => value.revision), [1, 2, 3]);
   assert.equal(saved.at(-1).policy.status, 'revoked');

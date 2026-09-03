@@ -196,16 +196,31 @@
         case 'AMBIENT_DELIVER_LAYER': return { ok: true, receipt: await deliverAmbientLayer(message.completedLayer) };
         case 'GET_POLICY_REVIEW_STATE': {
           const tabs = sender.tab ? [sender.tab] : await chromeApi.tabs.query({ active: true, lastFocusedWindow: true });
-          const origin = originFromUrl(tabs[0]?.url) || 'http://127.0.0.1:4317';
-          const policy = await get('local', policyKey(origin));
-          return { ok: true, state: { context: { origin, policyRevision: policy?.revision ?? null }, policy, retrySpool: await retryMetadata() } };
+          const origin = originFromUrl(tabs[0]?.url);
+          if (!origin) return { ok: true, state: { context: { origin: null, requestedScope: 'ambient_learn' }, policy: { status: 'denied', scopes: [] }, retrySpool: { count: 0 } } };
+          const stored = await get('local', policyKey(origin));
+          const policy = await currentPolicy({ origin, scope: 'ambient_learn', revision: stored?.revision ?? null });
+          return { ok: true, state: { context: { origin, policyRevision: policy?.revision ?? null, requestedScope: 'ambient_learn' }, policy, retrySpool: await retryMetadata() } };
         }
         case 'SET_OWNED_DEMO_OVERRIDE':
+        {
+          const tabs = sender.tab ? [sender.tab] : await chromeApi.tabs.query({ active: true, lastFocusedWindow: true });
+          const override = message.override;
+          const origin = originFromUrl(tabs[0]?.url);
+          if (!override?.enabled || origin !== 'http://127.0.0.1:4317' || override.origin !== origin || override.requestedScope !== 'ambient_learn' || override.reasonCode !== 'OWNED_DEMO_EXPLICIT_OVERRIDE' || Number.isNaN(Date.parse(override.acknowledgedAt || ''))) return { ok: false, error: 'Owned demo override is not valid for this active origin' };
+          return { ok: true, policy: await savePolicy({ ...override, decision: 'allowed', scope: 'ambient_learn', source: 'owned_demo_override' }, tabs[0]?.url) };
+        }
         case 'SUBMIT_POLICY_DECISION': {
           const tabs = sender.tab ? [sender.tab] : await chromeApi.tabs.query({ active: true, lastFocusedWindow: true });
-          return { ok: true, policy: await savePolicy(message.override || message.decision, tabs[0]?.url) };
+          const decision = message.decision || {};
+          if (!['denied', 'revoked'].includes(decision.decision) || decision.scope !== 'ambient_learn') return { ok: false, error: 'Only ambient deny or revoke decisions are supported' };
+          return { ok: true, policy: await savePolicy(decision, tabs[0]?.url) };
         }
         case 'REQUEST_RETRY_SPOOL_DELETION': await serial(() => chromeApi.storage.local.remove([RECORD_KEY])); return { ok: true };
+        case 'SUBMIT_CANDIDATE_REVIEW':
+        case 'OPEN_CANDIDATE_EVIDENCE':
+        case 'SUBMIT_RUN_CONFIRMATION':
+          return { ok: false, error: 'Unsupported: ambient candidates are read-only until an authoritative review resolver exists' };
         case protocol.MESSAGE_TYPES.pageReady:
           return pageReady(sender);
         case protocol.MESSAGE_TYPES.getBackendHealth:
