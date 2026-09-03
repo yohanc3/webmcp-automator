@@ -23,14 +23,18 @@
   });
   const ALLOWED = Object.freeze({
     decisionId: 'policy_shop_ambient',
+    origin: 'https://shop.test',
+    revision: 1,
+    scopes: ['ambient_learn'],
     status: 'allowed',
-    scope: 'ambient_learn',
     checkedAt: '2026-09-03T12:00:00.000Z',
   });
   const DENIED = Object.freeze({
     decisionId: 'policy_shop_revoked',
+    origin: 'https://shop.test',
+    revision: 2,
+    scopes: ['ambient_learn'],
     status: 'denied',
-    scope: 'ambient_learn',
     checkedAt: '2026-09-03T12:00:01.000Z',
   });
   const SECRET = 'canary-ambient-secret-7f31c9';

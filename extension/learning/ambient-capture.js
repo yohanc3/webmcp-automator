@@ -60,17 +60,26 @@
 
   const normalizePolicy = (decision) => ({
     decisionId: decision.decisionId,
+    expiresAt: decision.expiresAt || null,
+    origin: decision.origin,
+    revision: decision.revision,
     status: decision.status,
     scope: AMBIENT_SCOPE,
     checkedAt: decision.checkedAt,
   });
 
-  const allowedDecision = (decision) => (
+  const allowedDecision = (decision, expectedOrigin = null) => (
     decision?.status === 'allowed'
-    && decision?.scope === AMBIENT_SCOPE
+    && Array.isArray(decision?.scopes)
+    && decision.scopes.includes(AMBIENT_SCOPE)
     && EVIDENCE_ID.test(decision?.decisionId || '')
+    && typeof decision?.origin === 'string'
+    && decision.origin === expectedOrigin
+    && (typeof decision?.revision === 'string' || Number.isInteger(decision?.revision))
     && typeof decision.checkedAt === 'string'
     && !Number.isNaN(Date.parse(decision.checkedAt))
+    && (!decision.expiresAt || (!Number.isNaN(Date.parse(decision.expiresAt))
+      && Date.parse(decision.expiresAt) > Date.now()))
   );
 
   const normalizeSiteScope = (siteScope) => {
@@ -293,7 +302,7 @@
             route: new URL(record.completedLayer.layer.url).pathname,
           };
           const decision = await currentDecision(context);
-          if (!allowedDecision(decision)) {
+          if (!allowedDecision(decision, context.siteScope.origin)) {
             revoke(decision);
             return;
           }
@@ -439,7 +448,7 @@
       const normalizedSiteScope = normalizeSiteScope(siteScope);
       const context = { siteScope: normalizedSiteScope, route };
       const decision = await currentDecision(context);
-      if (!allowedDecision(decision)) {
+      if (!allowedDecision(decision, normalizedSiteScope.origin)) {
         return { attached: false, reason: 'policy_denied' };
       }
       const current = {

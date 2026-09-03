@@ -1,131 +1,114 @@
 (function initializeAmbientRuntime(root, factory) {
-  root.WebMcpAmbientRuntime = factory(
-    root.WebMcpAmbientCapture,
-    root.WebMcpAmbientRetrySpool,
-    root.WebMcpLearningSemantic,
+  const runtime = factory(
+    root.WebMcpAmbientCapture || (typeof module === 'object' && module.exports ? require('./ambient-capture.js') : null),
+    root.WebMcpLearningSemantic || (typeof module === 'object' && module.exports ? { capturePageState: () => ({ nodes: [], semanticXml: '' }) } : null),
   );
-}(typeof globalThis === 'undefined' ? this : globalThis, (capture, retrySpool, semantic) => {
+  root.WebMcpAmbientRuntime = runtime;
+  if (typeof module === 'object' && module.exports) module.exports = runtime;
+}(typeof globalThis === 'undefined' ? this : globalThis, (capture, semantic) => {
   'use strict';
 
   const BACKEND = 'http://127.0.0.1:4317';
-  const POLICY_SCOPE = 'ambient_learn';
-
-  const policyKey = (origin) => `ambientPolicy:${origin}`;
-  const lifecycleKey = (scopeId) => `ambientLifecycle:${scopeId}`;
+  const SCOPE = 'ambient_learn';
   const scopeFor = (origin) => `site_${origin.replace(/[^a-z0-9]/gi, '_').toLowerCase().slice(-80)}`;
-
-  const projection = () => {
-    const page = semantic.capturePageState({ document });
-    return {
-      ...page,
-      evidenceIds: page.nodes.map(({ id }) => id),
-      privacy: { rawPersisted: false, sanitizerVersion: 'semantic-sanitizer/1' },
-      redactions: { counts: {}, total: 0 },
-    };
+  const message = (runtime, value) => new Promise((resolve, reject) => {
+    runtime.sendMessage(value, (response) => {
+      if (runtime.lastError) reject(new Error(runtime.lastError.message));
+      else if (!response?.ok) reject(new Error(response?.error || 'Ambient background request failed'));
+      else resolve(response);
+    });
+  });
+  const policyPort = (runtime) => ({
+    current: async ({ origin, scope, revision = null }) => (await message(runtime, {
+      type: 'AMBIENT_POLICY_CURRENT', origin, revision, scope,
+    })).policy,
+  });
+  const spoolPort = (runtime) => ({
+    enqueue: async (completedLayer) => (await message(runtime, { type: 'AMBIENT_SPOOL_OPERATION', operation: 'enqueue', payload: { completedLayer } })).result,
+    handleReceipt: async (id, receipt) => (await message(runtime, { type: 'AMBIENT_SPOOL_OPERATION', operation: 'handleReceipt', payload: { id, receipt } })).result,
+    markAttempt: async (id) => (await message(runtime, { type: 'AMBIENT_SPOOL_OPERATION', operation: 'markAttempt', payload: { id } })).result,
+    next: async () => (await message(runtime, { type: 'AMBIENT_SPOOL_OPERATION', operation: 'next' })).result,
+  });
+  const classify = async (response) => {
+    const body = await response.json().catch(() => null);
+    if (response.status === 409) return { outcome: 'conflict', receiptId: body?.requestId || null };
+    if (!response.ok || !body || typeof body.outcome !== 'string') throw new Error(`Ambient transfer retryable: ${response.status}`);
+    if (['applied', 'duplicate', 'no_change', 'rejected'].includes(body.outcome)) return { outcome: body.outcome, receiptId: body.requestId || null };
+    throw new Error('Ambient transfer returned an unrecognized outcome');
   };
-
-  const observer = {
+  const defaultObserver = ({ documentApi, windowApi }) => ({
     attach({ onObservation, onSettled }) {
+      let timer = null;
       const pending = new Map();
-      let quietTimer = null;
-      const settlePending = (kind = 'semantic_update') => {
-        clearTimeout(quietTimer);
-        quietTimer = setTimeout(() => pending.forEach((entry, observationId) => {
-          pending.delete(observationId);
-          const page = projection(); onSettled(observationId, { projection: page, outcome: { kind, evidenceIds: page.evidenceIds } });
-          if (globalThis.__webMcpAmbientLastObservation?.observationId === observationId) globalThis.__webMcpAmbientLastObservation = null;
+      const project = () => {
+        const page = semantic.capturePageState({ document: documentApi });
+        return { ...page, evidenceIds: page.nodes.map(({ id }) => id), rawPersisted: false };
+      };
+      const settle = (kind = 'semantic_update') => {
+        clearTimeout(timer);
+        timer = setTimeout(() => pending.forEach((value, id) => {
+          pending.delete(id);
+          const projection = project();
+          onSettled(id, { outcome: { kind, evidenceIds: projection.evidenceIds }, projection });
         }), 180);
       };
-      const settle = (observationId) => {
-        pending.set(observationId, true);
-        settlePending('semantic_update');
-      };
       const observe = (event, kind) => {
-        if (!event.isTrusted || globalThis.__webMcpRunnerActive) return;
-        const target = event.target instanceof Element ? semantic.describeElement(event.target, {
-          argumentsByValue: new Map(), ledger: WebMcpLearningPrivacy.createLedger(),
-        }) : null;
-        const observationId = onObservation({ kind, targetEvidenceId: target?.id, trusted: event.isTrusted });
-        if (observationId) {
-          globalThis.__webMcpAmbientLastObservation = { observationId, kind, targetEvidenceId: target?.id || null };
-          settle(observationId);
-        }
+        if (!event.isTrusted || windowApi.__webMcpRunnerActive || windowApi.__webMcpActorActive) return;
+        const target = event.target instanceof windowApi.Element ? semantic.describeElement(event.target, { argumentsByValue: new Map() }) : null;
+        const id = onObservation({ kind, targetEvidenceId: target?.id, trusted: true });
+        if (id) { pending.set(id, true); settle(); }
       };
-      const onClick = (event) => observe(event, 'click');
-      const onInput = (event) => observe(event, 'fill');
-      const onFocus = (event) => observe(event, 'other');
-      const onSubmit = (event) => observe(event, 'submit');
-      const onKeydown = (event) => { if (event.key === 'Enter') observe(event, 'press'); };
-      const mutations = new MutationObserver(() => settlePending());
-      mutations.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-      document.addEventListener('click', onClick, true); document.addEventListener('input', onInput, true);
-      document.addEventListener('focusin', onFocus, true); document.addEventListener('submit', onSubmit, true);
-      const onPopstate = () => settlePending('same_document_route');
-      document.addEventListener('keydown', onKeydown, true); window.addEventListener('popstate', onPopstate);
-      return {
-        disconnect() { document.removeEventListener('click', onClick, true); document.removeEventListener('input', onInput, true); document.removeEventListener('focusin', onFocus, true); document.removeEventListener('submit', onSubmit, true); document.removeEventListener('keydown', onKeydown, true); window.removeEventListener('popstate', onPopstate); mutations.disconnect(); clearTimeout(quietTimer); pending.clear(); },
-        discard(observationId) { pending.delete(observationId); },
+      const click = (event) => observe(event, 'click');
+      const focus = (event) => observe(event, 'other');
+      const input = (event) => observe(event, 'fill');
+      const submit = (event) => observe(event, 'submit');
+      const keydown = (event) => { if (event.key === 'Enter') observe(event, 'press'); };
+      const mutations = new windowApi.MutationObserver(() => settle());
+      const history = windowApi.history;
+      const wrap = (name) => {
+        const original = history[name];
+        history[name] = function wrappedHistory(...args) { const result = original.apply(this, args); settle('same_document_route'); return result; };
+        return () => { history[name] = original; };
       };
+      const undoPush = wrap('pushState'); const undoReplace = wrap('replaceState');
+      documentApi.addEventListener('click', click, true); documentApi.addEventListener('focusin', focus, true); documentApi.addEventListener('input', input, true); documentApi.addEventListener('submit', submit, true); documentApi.addEventListener('keydown', keydown, true);
+      windowApi.addEventListener('popstate', () => settle('same_document_route'));
+      mutations.observe(documentApi.documentElement, { childList: true, subtree: true, characterData: true });
+      return { disconnect() { clearTimeout(timer); pending.clear(); mutations.disconnect(); undoPush(); undoReplace(); documentApi.removeEventListener('click', click, true); documentApi.removeEventListener('focusin', focus, true); documentApi.removeEventListener('input', input, true); documentApi.removeEventListener('submit', submit, true); documentApi.removeEventListener('keydown', keydown, true); } };
     },
-    async captureInitial() { return projection(); },
-  };
-
-  const start = async () => {
-    const origin = window.location.origin;
-    const result = await chrome.storage.local.get(policyKey(origin));
-    const storedPolicy = result[policyKey(origin)];
-    const policy = storedPolicy && {
-      ...storedPolicy,
-      status: storedPolicy.status || storedPolicy.decision,
-      scope: POLICY_SCOPE,
-    };
-    const scopeId = scopeFor(origin);
-    const lifecycle = await chrome.storage.session.get(lifecycleKey(scopeId));
-    const prior = lifecycle[lifecycleKey(scopeId)] || { sequence: 0, pending: null };
-    const storage = await retrySpool.createChromeEncryptedStorage({ chromeApi: chrome });
+    async captureInitial() {
+      const page = semantic.capturePageState({ document: documentApi });
+      return { ...page, evidenceIds: page.nodes.map(({ id }) => id), rawPersisted: false };
+    },
+  });
+  const createRuntime = ({ chromeApi = chrome, documentApi = document, fetchApi = fetch, observer = null, windowApi = window } = {}) => {
+    const origin = windowApi.location.origin;
+    const siteScope = { origin, routePatterns: ['^/.*$'], scopeId: scopeFor(origin) };
+    const runtime = chromeApi.runtime;
     const controller = capture.createAmbientCapture({
-      eligibility: {
-        async current({ scope }) {
-          if (scope !== POLICY_SCOPE || policy?.status !== 'allowed' || policy?.origin !== origin
-            || !policy.decisionId || !policy.checkedAt) return { status: 'denied' };
-          return policy;
-        },
-      },
-      observer,
-      layerSequence: { async next() { prior.sequence += 1; await chrome.storage.session.set({ [lifecycleKey(scopeId)]: prior }); return prior.sequence; } },
-      spool: retrySpool.createRetrySpool({ storage }),
-      delivery: {
-        async deliver(completedLayer) {
-          const response = await fetch(`${BACKEND}/v1/ambient/layers`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(completedLayer),
-          });
-          const body = await response.json().catch(() => ({}));
-          return { outcome: body.outcome || (response.status === 409 ? 'conflict' : 'rejected'), receiptId: body.requestId };
-        },
-      },
+      delivery: { deliver: async (layer) => classify(await fetchApi(`${BACKEND}/v1/ambient/layers`, { body: JSON.stringify(layer), headers: { 'Content-Type': 'application/json' }, method: 'POST' })) },
+      eligibility: policyPort(runtime),
+      layerSequence: { next: async (scopeId) => (await message(runtime, { type: 'AMBIENT_NEXT_LAYER_SEQUENCE', scopeId })).sequence },
+      observer: observer || defaultObserver({ documentApi, windowApi }),
+      spool: spoolPort(runtime),
     });
-    const attached = await controller.start({
-      siteScope: { scopeId, origin, routePatterns: ['^/.*$'] },
-      route: window.location.pathname,
-      initialObservation: prior.pending,
-    });
-    prior.pending = null;
-    await chrome.storage.session.set({ [lifecycleKey(scopeId)]: prior });
-    window.addEventListener('pagehide', () => {
+    const start = async () => {
+      const pending = (await message(runtime, { type: 'AMBIENT_CONSUME_PENDING', scopeId: siteScope.scopeId, documentId: 'top' })).pending;
+      const result = await controller.start({ initialObservation: pending, route: windowApi.location.pathname, siteScope });
+      documentApi.documentElement.dataset.webMcpAmbient = result.attached ? 'attached' : 'policy_denied';
+      return result;
+    };
+    windowApi.addEventListener('pagehide', () => {
       const status = controller.status();
-      const observed = globalThis.__webMcpAmbientLastObservation;
-      prior.pending = observed && status.lastLayerId ? { observationId: observed.observationId, eventSequence: status.eventSequence, fromLayerId: status.lastLayerId, kind: observed.kind, targetEvidenceId: observed.targetEvidenceId, argumentTokens: [] } : null;
-      void chrome.storage.session.set({ [lifecycleKey(scopeId)]: prior });
+      if (!status.lastLayerId) return;
+      const pending = { fromLayerId: status.lastLayerId, kind: 'navigate', observationId: `nav_${status.eventSequence + 1}`, eventSequence: status.eventSequence + 1, targetEvidenceId: null, argumentTokens: [] };
+      void message(runtime, { type: 'AMBIENT_PUT_PENDING', scopeId: siteScope.scopeId, documentId: 'top', pending });
     }, { once: true });
-    chrome.storage.onChanged?.addListener((changes, areaName) => {
-      if (areaName !== 'local' || !changes[policyKey(origin)]) return;
-      const next = changes[policyKey(origin)].newValue;
-      if (!next || next.status !== 'allowed' || next.origin !== origin
-        || next.revision !== policy.revision) controller.revoke({ status: 'revoked' });
+    chromeApi.storage.onChanged?.addListener((changes, area) => {
+      if (area === 'local' && changes[`ambientPolicy:${origin}`]) void controller.requestDelivery();
     });
-    document.documentElement.dataset.webMcpAmbient = attached.attached ? 'attached' : 'policy_denied';
-    return controller;
+    return Object.freeze({ controller, start });
   };
-
-  return Object.freeze({ start });
+  const start = () => createRuntime().start();
+  return Object.freeze({ classify, createRuntime, start });
 }));

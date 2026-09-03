@@ -25,6 +25,11 @@
   });
 
   const MESSAGE_TYPES = Object.freeze({
+    ambientConsumePending: 'AMBIENT_CONSUME_PENDING',
+    ambientNextLayerSequence: 'AMBIENT_NEXT_LAYER_SEQUENCE',
+    ambientPolicyCurrent: 'AMBIENT_POLICY_CURRENT',
+    ambientPutPending: 'AMBIENT_PUT_PENDING',
+    ambientSpoolOperation: 'AMBIENT_SPOOL_OPERATION',
     executeStep: 'EXECUTE_STEP',
     getAdapters: 'GET_ADAPTERS',
     getBackendHealth: 'GET_BACKEND_HEALTH',
