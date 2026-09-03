@@ -9,6 +9,7 @@ const coordinatorApi = require('../../coordinator/bootstrap.js');
 const retrySpool = require('../retry-spool.js');
 const privacy = require('../privacy.js');
 const semantic = require('../semantic.js');
+const policyReview = require('../../ui/policy-review.js');
 
 const policy = (overrides = {}) => ({
   checkedAt: '2026-09-03T12:00:00.000Z',
@@ -25,6 +26,36 @@ const projection = () => ({
   semanticXml: '<semantic-ui schema="semantic-ui/2"><node ref="node_catalog" /></semantic-ui>',
   url: 'https://shop.test/catalog',
 });
+const completedLayer = ({ id, origin, scopeId }) => ({
+  layer: {
+    completedAt: '2026-09-03T12:00:00.000Z',
+    completionReason: 'initial_document',
+    layerId: id,
+    semanticXmlVersion: 'semantic-ui/2',
+  },
+  observation: {},
+  policy: {},
+  privacy: { rawPersisted: false },
+  siteScope: { origin, scopeId },
+});
+
+const coordinatorFixture = ({ activeUrl = 'https://shop.test/catalog', now = () => '2026-09-03T12:00:00.000Z' } = {}) => {
+  const areas = { local: { unrelatedLocal: 'kept' }, session: { unrelatedSession: 'kept' } };
+  const sideEffects = { fetch: 0, storage: 0, tabs: 0 };
+  const chromeApi = {
+    storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
+      async get(key) { return { [key]: areas[area][key] }; },
+      async set(values) { sideEffects.storage += 1; Object.assign(areas[area], values); },
+      async remove(keys) { keys.forEach((key) => delete areas[area][key]); },
+    }])),
+    tabs: {
+      async create() { sideEffects.tabs += 1; return { id: 99 }; },
+      async query() { sideEffects.tabs += 1; return [{ url: activeUrl }]; },
+      async sendMessage() { sideEffects.tabs += 1; return { ok: true }; },
+    },
+  };
+  return { areas, chromeApi, sideEffects, coordinator: coordinatorApi.createCoordinator({ chromeApi, fetchApi: async () => { sideEffects.fetch += 1; throw new Error('fetch should not run'); }, now, retrySpoolApi: retrySpool }) };
+};
 
 const eventTarget = (target) => {
   const listeners = new Map();
@@ -177,6 +208,71 @@ test('service worker serializes policy revisions and tab-scoped causal lifecycle
   await coordinator.handleMessage({ type: 'AMBIENT_PUT_PENDING', scopeId: 'shop_scope', documentId: 'ignored', pending: { observationId: 'obs_1' } }, sender);
   assert.deepEqual((await coordinator.handleMessage({ type: 'AMBIENT_CONSUME_PENDING', scopeId: 'shop_scope', documentId: 'ignored' }, sender)).pending, { observationId: 'obs_1' });
   assert.equal((await coordinator.handleMessage({ type: 'AMBIENT_CONSUME_PENDING', scopeId: 'shop_scope', documentId: 'ignored' }, sender)).pending, null);
+});
+
+test('coordinator AMBIENT_POLICY_CURRENT denies malformed, stale, foreign, unscoped, denied, and revoked records', async () => {
+  const { areas, coordinator } = coordinatorFixture();
+  const key = 'ambientPolicy:https://shop.test';
+  const valid = policy({ expiresAt: '2099-09-03T12:00:00.000Z' });
+  const cases = [
+    ['missing checkedAt', { ...valid, checkedAt: undefined }], ['malformed checkedAt', { ...valid, checkedAt: 'not-a-time' }],
+    ['expired', { ...valid, expiresAt: '2000-09-03T12:00:00.000Z' }], ['wrong origin', { ...valid, origin: 'https://other.test' }],
+    ['missing scope', { ...valid, scopes: ['read'] }], ['denied', { ...valid, status: 'denied' }], ['revoked', { ...valid, status: 'revoked' }],
+  ];
+  for (const [label, stored] of cases) {
+    areas.local[key] = stored;
+    const response = await coordinator.handleMessage({ type: 'AMBIENT_POLICY_CURRENT', origin: 'https://shop.test', revision: 4, scope: 'ambient_learn' });
+    assert.deepEqual(response, { ok: true, policy: { origin: 'https://shop.test', revision: 4, scopes: [], status: 'denied' } }, label);
+  }
+});
+
+test('only the active owned demo can create an audited ambient override state', async () => {
+  const general = coordinatorFixture({ activeUrl: 'https://shop.test/catalog' });
+  const enable = { acknowledgedAt: '2026-09-03T12:00:00.000Z', enabled: true, origin: 'http://127.0.0.1:4317', reasonCode: 'OWNED_DEMO_EXPLICIT_OVERRIDE', requestedScope: 'ambient_learn' };
+  const forged = await general.coordinator.handleMessage({ type: 'SET_OWNED_DEMO_OVERRIDE', override: enable });
+  assert.deepEqual(forged, { ok: false, error: 'Owned demo override is not valid for this active origin' });
+  assert.equal(general.areas.local['ambientPolicy:https://shop.test'], undefined);
+  const demo = coordinatorFixture({ activeUrl: 'http://127.0.0.1:4317/demo/' });
+  assert.equal((await demo.coordinator.handleMessage({ type: 'SET_OWNED_DEMO_OVERRIDE', override: enable })).ok, true);
+  assert.deepEqual((await demo.coordinator.handleMessage({ type: 'GET_POLICY_REVIEW_STATE' })).state.overrideAudit, { actor: 'local user', changedAt: '2026-09-03T12:00:00.000Z', enabled: true, reason: 'OWNED_DEMO_EXPLICIT_OVERRIDE' });
+  const disable = { ...enable, enabled: false, reasonCode: 'OWNED_DEMO_OVERRIDE_DISABLED' };
+  assert.equal((await demo.coordinator.handleMessage({ type: 'SET_OWNED_DEMO_OVERRIDE', override: disable })).ok, true);
+  assert.deepEqual((await demo.coordinator.handleMessage({ type: 'GET_POLICY_REVIEW_STATE' })).state.overrideAudit, { actor: 'local user', changedAt: '2026-09-03T12:00:00.000Z', enabled: false, reason: 'OWNED_DEMO_OVERRIDE_DISABLED' });
+  assert.deepEqual(await general.coordinator.handleMessage({ type: 'SET_OWNED_DEMO_OVERRIDE', override: disable }), { ok: false, error: 'Owned demo override is not valid for this active origin' });
+});
+
+test('scope-specific retry metadata and deletion preserve unrelated stored values and records', async () => {
+  const fixture = coordinatorFixture({ activeUrl: 'https://shop.test/catalog' });
+  const shopScope = 'site_https___shop_test';
+  await fixture.coordinator.handleMessage({ type: 'AMBIENT_SPOOL_OPERATION', operation: 'enqueue', payload: { completedLayer: completedLayer({ id: 'shop_1', origin: 'https://shop.test', scopeId: shopScope }) } });
+  await fixture.coordinator.handleMessage({ type: 'AMBIENT_SPOOL_OPERATION', operation: 'enqueue', payload: { completedLayer: completedLayer({ id: 'other_1', origin: 'https://other.test', scopeId: 'site_other_test' }) } });
+  const metadata = (await fixture.coordinator.handleMessage({ type: 'GET_POLICY_REVIEW_STATE' })).state.retrySpool;
+  assert.equal(metadata.count, 1); assert.equal(metadata.scopeId, shopScope);
+  assert.match(metadata.oldestAt, /^\d{4}-\d{2}-\d{2}T/); assert.match(metadata.expiresAt, /^\d{4}-\d{2}-\d{2}T/);
+  const deletion = await fixture.coordinator.handleMessage({ type: 'REQUEST_RETRY_SPOOL_DELETION', request: { count: 99, origin: 'https://other.test', scopeId: 'site_other_test' } });
+  assert.deepEqual(deletion, { deleted: 1, ok: true, scopeId: shopScope });
+  assert.deepEqual((await fixture.coordinator.handleMessage({ type: 'AMBIENT_SPOOL_OPERATION', operation: 'list' })).result.map(({ id }) => id), ['other_1']);
+  assert.equal(fixture.areas.local.unrelatedLocal, 'kept'); assert.equal(fixture.areas.session.unrelatedSession, 'kept');
+  assert.deepEqual(await fixture.coordinator.handleMessage({ type: 'REQUEST_RETRY_SPOOL_DELETION' }), { deleted: 0, ok: true, scopeId: shopScope });
+});
+
+test('candidate review and confirmation protocol messages fail closed without side effects', async () => {
+  const fixture = coordinatorFixture(); const before = { ...fixture.sideEffects };
+  for (const type of ['SUBMIT_CANDIDATE_REVIEW', 'OPEN_CANDIDATE_EVIDENCE', 'SUBMIT_RUN_CONFIRMATION']) {
+    assert.deepEqual(await fixture.coordinator.handleMessage({ type }), { ok: false, error: 'Unsupported: ambient candidates are read-only until an authoritative review resolver exists' });
+  }
+  assert.deepEqual(fixture.sideEffects, before);
+  assert.deepEqual(fixture.areas, { local: { unrelatedLocal: 'kept' }, session: { unrelatedSession: 'kept' } });
+});
+
+test('action-map heads and candidate bindings require the exact current digests', () => {
+  const mapDigest = `sha256:${'a'.repeat(64)}`; const listDigest = `sha256:${'b'.repeat(64)}`;
+  const actionMap = { head: { digest: mapDigest, revision: 7 } }; const candidate = { actionMap, contentDigest: listDigest, revision: 3 };
+  assert.deepEqual(policyReview.actionMapBinding(actionMap), { digest: mapDigest, revision: 7 });
+  assert.deepEqual(policyReview.reviewBinding(candidate), { actionMapDigest: mapDigest, actionMapRevision: 7, listDigest, listRevision: 3 });
+  assert.deepEqual(policyReview.staleReviewReasons(candidate, { actionMap: { head: { digest: mapDigest } }, listDigest }), []);
+  assert.deepEqual(policyReview.staleReviewReasons(candidate, { actionMapDigest: `sha256:${'c'.repeat(64)}`, listDigest }), ['Action-map digest changed.']);
+  assert.deepEqual(policyReview.staleConfirmationReasons({ documentId: 'doc_1', listDigest, origin: 'https://shop.test', policyRevision: 5, stepId: 'step_1' }, { documentId: 'doc_1', listDigest, origin: 'https://shop.test', policyRevision: 5, stepId: 'step_1' }), []);
 });
 
 test('coordinator preserves backend, adapter, job, page-ready, and status dispatch', async () => {

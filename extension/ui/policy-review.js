@@ -183,13 +183,18 @@
     });
   };
 
+  const actionMapBinding = (actionMap = {}) => ({
+    digest: actionMap.digest || actionMap.head?.digest || null,
+    revision: actionMap.revision ?? actionMap.head?.revision ?? null,
+  });
+
   const reviewBinding = (candidate = {}) => ({
     actionMapDigest: candidate.actionMapDigest
-      || candidate.actionMap?.digest
+      || actionMapBinding(candidate.actionMap).digest
       || candidate.sourceMap?.digest
       || null,
     actionMapRevision: candidate.actionMapRevision
-      || candidate.actionMap?.revision
+      || actionMapBinding(candidate.actionMap).revision
       || candidate.sourceMap?.revision
       || null,
     listDigest: candidate.listDigest
@@ -493,8 +498,7 @@
   const renderActionMap = ({ state, registry }) => {
     if (!state.actionMap) return null;
     const { actionMap } = state;
-    const revision = actionMap.revision ?? actionMap.head?.revision;
-    const digest = actionMap.digest || actionMap.head?.digest || null;
+    const { digest, revision } = actionMapBinding(actionMap);
     const actions = asArray(actionMap.actions || actionMap.context?.actions);
     const section = createElement('section', 'trust-section action-map-review');
     section.setAttribute('aria-label', 'Ambient action map revision');
@@ -809,6 +813,7 @@
   return Object.freeze({
     AMBIENT_LEARN_SCOPE,
     OWNED_DEMO_ORIGIN,
+    actionMapBinding,
     compactEvidenceHandles,
     confirmationBinding,
     createController,
