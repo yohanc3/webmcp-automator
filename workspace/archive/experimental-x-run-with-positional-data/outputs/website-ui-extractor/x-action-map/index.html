@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="A human-readable map of every action detected in an X Home snapshot.">
+    <title>X Action Atlas</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body data-page="atlas">
+    <a class="skip-link" href="#action-list">Skip to actions</a>
+    <header class="app-header">
+      <a class="brand" href="index.html" aria-label="X Action Atlas home">
+        <span class="brand-mark">X</span>
+        <span>
+          <strong>Action Atlas</strong>
+          <small>XML → human intent</small>
+        </span>
+      </a>
+      <nav class="view-switcher" aria-label="Views">
+        <a class="is-active" href="index.html" aria-current="page">Action map</a>
+        <a href="ui.html">UI reconstruction</a>
+      </nav>
+      <span class="snapshot-source">x.com/home · XML snapshot</span>
+    </header>
+
+    <main class="atlas-layout">
+      <section class="atlas-workspace" aria-labelledby="page-title">
+        <div class="title-row">
+          <div>
+            <p class="eyebrow">Complete interaction inventory</p>
+            <h1 id="page-title">Every detected action, translated.</h1>
+            <p class="lede">
+              Confirmed destinations stay factual. Icon-only controls are marked as inferred or unclear.
+            </p>
+          </div>
+          <a class="secondary-link" href="ui.html">See the reconstructed page →</a>
+        </div>
+
+        <div class="stat-line" id="snapshot-stats" aria-label="Snapshot summary"></div>
+
+        <section class="filter-panel" aria-label="Action filters">
+          <label class="search-field" for="action-search">
+            <span>Search actions</span>
+            <input
+              id="action-search"
+              type="search"
+              autocomplete="off"
+              placeholder="Try “reply”, “profile”, “a64”, or a URL"
+            >
+            <kbd>/</kbd>
+          </label>
+          <div class="filter-row">
+            <span class="filter-label">Region</span>
+            <div class="chip-group" id="region-filters" aria-label="Filter by page region"></div>
+          </div>
+          <div class="filter-row">
+            <span class="filter-label">Confidence</span>
+            <div class="chip-group" id="confidence-filters" aria-label="Filter by confidence"></div>
+          </div>
+          <div class="filter-row">
+            <span class="filter-label">Kind</span>
+            <div class="chip-group" id="category-filters" aria-label="Filter by action kind"></div>
+          </div>
+        </section>
+
+        <div class="results-heading">
+          <p id="results-summary" aria-live="polite"></p>
+          <button class="text-button" id="clear-filters" type="button">Clear filters</button>
+        </div>
+        <div class="action-list" id="action-list"></div>
+        <div class="empty-state" id="empty-state" hidden>
+          <strong>No actions match those filters.</strong>
+          <span>Clear the search or choose a broader region.</span>
+        </div>
+      </section>
+
+      <aside class="atlas-overview" aria-labelledby="overview-title">
+        <div class="overview-sticky">
+          <div class="overview-heading">
+            <div>
+              <p class="eyebrow">Spatial index</p>
+              <h2 id="overview-title">10,906px page strip</h2>
+            </div>
+            <span id="coverage-count"></span>
+          </div>
+          <p class="overview-note">Each mark is one XML action. Select a mark to reveal its ledger entry.</p>
+          <div class="page-strip" id="page-strip" aria-label="Spatial map of actions">
+            <div class="strip-zone strip-zone-nav"><span>Nav</span></div>
+            <div class="strip-zone strip-zone-feed"><span>Feed</span></div>
+            <div class="strip-zone strip-zone-rail"><span>Rail</span></div>
+            <div class="strip-markers" id="strip-markers"></div>
+          </div>
+          <div class="confidence-key" aria-label="Confidence legend">
+            <span><i class="key-dot confirmed"></i> Confirmed</span>
+            <span><i class="key-dot inferred"></i> Inferred</span>
+            <span><i class="key-dot unclear"></i> Unclear</span>
+          </div>
+          <p class="overview-caveat">
+            “Unclear” means the XML retained a clickable box but not its icon, aria label, or destination.
+          </p>
+        </div>
+      </aside>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="data.js"></script>
+    <script src="model.js"></script>
+    <script src="map-app.js"></script>
+  </body>
+</html>
