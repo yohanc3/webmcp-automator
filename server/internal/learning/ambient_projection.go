@@ -18,6 +18,9 @@ func CompileAmbientCandidate(scopeID string, snapshot actionmap.Map, mapRevision
 	if err := snapshot.Validate(); err != nil {
 		return nil, fmt.Errorf("validate source action map: %w", err)
 	}
+	if diagnostics := compilerDiagnostics(snapshot); len(diagnostics) > 0 {
+		return nil, fmt.Errorf("action map is not review-projectable: %s", diagnostics[0].Code)
+	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
