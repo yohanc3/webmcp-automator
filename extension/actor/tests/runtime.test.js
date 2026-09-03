@@ -2,6 +2,8 @@
   'use strict';
 
   const tests = [];
+  const entryURL = location.href;
+  const outcomes = [];
   const sandbox = document.querySelector('#sandbox');
   const origin = window.location.origin;
   const evidence = [{
@@ -61,11 +63,13 @@
     if (actual !== expected) throw new Error(`${message} expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
   };
   const completed = (outcome) => {
+    outcomes.push(outcome);
     equal(outcome.type, 'step.completed');
     equal(outcome.payload.effect.postconditionSatisfied, true);
     return outcome.payload;
   };
   const failed = (outcome, code) => {
+    outcomes.push(outcome);
     equal(outcome.type, 'step.failed');
     equal(outcome.payload.error.code, code);
     equal(outcome.payload.error.stepId, outcome.payload.stepId);
@@ -349,8 +353,8 @@
     const full = baseStep('click', {
       target: css('#full'), expect: expectation({ kind: 'url', pattern: '/full-result$' }),
     });
-    const fullEffect = completed(await execute(full)).effect;
-    equal(fullEffect.navigationObserved, true);
+    const fullFailure = failed(await execute(full), 'TRANSPORT_DISCONNECTED');
+    equal(fullFailure.error.observed.navigationObserved, true);
   });
 
   test('navigation outside runtime allowlist fails closed', async () => {
@@ -424,18 +428,34 @@
     });
     const args = { query: 'headphones' };
     let finalResult = null;
-    for (let index = 0; index < action.steps.length; index += 1) {
-      const step = action.steps[index];
-      const outcome = await WebMcpActor.executeStep({
-        action,
-        command: { commandId: `fixture_command_${index}`, stepIndex: index, step, arguments: args },
-        document,
-        signal: new AbortController().signal,
-        states: list.states,
-      });
-      const payload = completed(outcome);
-      if (step.op === 'extract') finalResult = payload.result;
+    const originalFetch = window.fetch;
+    const originalXHR = window.XMLHttpRequest;
+    const originalWebSocket = window.WebSocket;
+    const forbidNetwork = () => { throw new Error('Actor fixture used the network'); };
+    window.fetch = forbidNetwork;
+    window.XMLHttpRequest = forbidNetwork;
+    window.WebSocket = forbidNetwork;
+    const actionStartedAt = Date.now();
+    try {
+      for (let index = 0; index < action.steps.length; index += 1) {
+        const step = action.steps[index];
+        const outcome = await WebMcpActor.executeStep({
+          action,
+          command: { commandId: `fixture_command_${index}`, stepIndex: index, step, arguments: args },
+          document,
+          signal: new AbortController().signal,
+          states: list.states,
+          actionStartedAt,
+        });
+        const payload = completed(outcome);
+        if (step.op === 'extract') finalResult = payload.result;
+      }
+    } finally {
+      window.fetch = originalFetch;
+      window.XMLHttpRequest = originalXHR;
+      window.WebSocket = originalWebSocket;
     }
+    document.querySelector('#fixture-result').textContent = JSON.stringify(finalResult, null, 2);
     equal(finalResult.count, 1);
     equal(finalResult.items[0].name, 'Field H1');
     equal(finalResult.items[0].price, '$129');
@@ -465,6 +485,174 @@
     }
   });
 
+
+  test('item label lookup cannot escape its product card', async () => {
+    reset('<input id="outside" value="secret"><article><label for="outside">Price</label></article>');
+    const output = { mode: 'collection', collectionRoot: css('#sandbox'),
+      item: css('article', { cardinality: 'many' }), limit: 10,
+      fields: [{ name: 'price', type: 'string', read: 'value', required: true, untrusted: true,
+        locator: locator([{ kind: 'label', text: 'Price', exact: true }]) }] };
+    failed(await execute(baseStep('extract'), { output }), 'TARGET_NOT_FOUND');
+  });
+
+  test('altered command with matching id and op is rejected before clicking', async () => {
+    reset('<button id="safe">Safe</button><button id="other">Other</button><div id="success">ok</div>');
+    let clicks = 0;
+    sandbox.querySelector('#other').onclick = () => { clicks += 1; };
+    const step = baseStep('click', { target: css('#safe') });
+    failed(await execute(step, { command: commandFor({ ...step, target: css('#other') }) }), 'PLAN_VERSION_MISMATCH');
+    equal(clicks, 0);
+  });
+
+  test('disallowed starting origin fails before any side effect', async () => {
+    reset('<button id="go">Go</button><div id="success">ok</div>');
+    let clicks = 0;
+    sandbox.querySelector('button').onclick = () => { clicks += 1; };
+    const step = baseStep('click', { target: css('#go') });
+    failed(await execute(step, { runtime: { allowedOrigins: ['https://elsewhere.example'], maxDurationMs: 2000 } }), 'NAVIGATION_OUT_OF_SCOPE');
+    equal(clicks, 0);
+  });
+
+  test('abort during state detection prevents the pending click', async () => {
+    reset('<button id="go">Go</button><div id="success">ok</div>');
+    let clicks = 0;
+    sandbox.querySelector('button').onclick = () => { clicks += 1; };
+    const controller = new AbortController();
+    const getStateId = async () => { controller.abort(); return 'ready'; };
+    failed(await execute(baseStep('click', { target: css('#go') }), { signal: controller.signal, getStateId }), 'CANCELLED');
+    equal(clicks, 0);
+  });
+
+  test('stalled state detection is bounded by the step deadline', async () => {
+    reset();
+    failed(await execute(waitStep(present('#success'), 100), {
+      getStateId: () => new Promise(() => {}),
+    }), 'TIMEOUT');
+  });
+
+  test('action deadline expiring during a click postcondition is TIMEOUT', async () => {
+    reset('<button id="go">Go</button>');
+    failed(await execute(baseStep('click', { target: css('#go'), timeoutMs: 500 }), {
+      actionStartedAt: Date.now() - 1950,
+    }), 'TIMEOUT');
+  });
+
+  test('interaction rejects readonly, inherited disabled, and covered targets', async () => {
+    reset('<input id="readonly" readonly><fieldset disabled><button id="disabled-child">No</button></fieldset><button id="covered">Covered</button><div id="success">ok</div>');
+    failed(await execute(baseStep('fill', { target: css('#readonly'), value: { literal: 'x' } })), 'TARGET_NOT_INTERACTABLE');
+    equal(sandbox.querySelector('#readonly').value, '');
+    failed(await execute(baseStep('click', { target: css('#disabled-child') })), 'TARGET_NOT_INTERACTABLE');
+    const cover = document.createElement('div');
+    cover.style.cssText = 'position:fixed;inset:0;z-index:99999;background:white';
+    document.body.append(cover);
+    try { failed(await execute(baseStep('click', { target: css('#covered') })), 'TARGET_NOT_INTERACTABLE'); }
+    finally { cover.remove(); }
+  });
+
+  test('mutating primitives reject a many locator without choosing one', async () => {
+    reset('<button>A</button><button>B</button><div id="success">ok</div>');
+    let clicks = 0;
+    sandbox.querySelectorAll('button').forEach(el => { el.onclick = () => { clicks += 1; }; });
+    failed(await execute(baseStep('click', { target: css('#sandbox button', { cardinality: 'many' }) })), 'TARGET_AMBIGUOUS');
+    equal(clicks, 0);
+  });
+
+  test('optional extraction is null, item limit enforced, malformed numbers rejected', async () => {
+    reset('<main><article><span>1</span></article><article><span>2</span></article></main><div id="success">ok</div>');
+    const output = { mode: 'collection', collectionRoot: css('main'), item: css('article', { cardinality: 'many' }), limit: 1,
+      fields: [{ name: 'n', type: 'integer', locator: css('span'), read: 'text', required: true, untrusted: true },
+      { name: 'missing', type: 'string', locator: css('.missing', { cardinality: 'zero_or_one' }), read: 'text', required: false, untrusted: true }] };
+    const result = completed(await execute(baseStep('extract'), { output })).result;
+    equal(result.count, 1); equal(result.items[0].n, 1); equal(result.items[0].missing, null);
+    sandbox.querySelector('span').textContent = '12oops';
+    failed(await execute(baseStep('extract'), { output }), 'POSTCONDITION_FAILED');
+  });
+
+  test('argument string limits count Unicode characters and numeric constraints hold', async () => {
+    const schema = { type: 'object', properties: { query: { type: 'string', maxLength: 1 } }, required: ['query'], additionalProperties: false };
+    equal(WebMcpActor.validateArguments(schema, { query: '😀' }), null);
+    assert(WebMcpActor.validateArguments(schema, { query: 'ab' }), 'maxLength ignored');
+    const numeric = { ...schema, properties: { query: { type: 'integer', minimum: 1, maximum: 3, enum: [1, 3] } } };
+    equal(WebMcpActor.validateArguments(numeric, { query: 3 }), null);
+    for (const query of [0, 2, 4, 1.5, Infinity, NaN]) assert(WebMcpActor.validateArguments(numeric, { query }), 'invalid integer accepted');
+  });
+
+  test('any condition set and zero-or-one locator work', async () => {
+    reset();
+    completed(await execute(baseStep('wait', { expect: { mode: 'any', checks: [present('#missing'), present('#success')] } })));
+    equal(WebMcpActor.resolveLocator(css('#missing', { cardinality: 'zero_or_one' }), { document }).elements.length, 0);
+  });
+
+  test('Space uses the DOM key value and cancelled keydown suppresses keypress', async () => {
+    reset('<input id="key"><div id="success">ok</div>');
+    const seen = [];
+    const target = sandbox.querySelector('input');
+    target.onkeydown = e => { seen.push(e.key); e.preventDefault(); };
+    target.onkeypress = () => seen.push('keypress');
+    target.onkeyup = () => seen.push('keyup');
+    completed(await execute(baseStep('press', { target: css('#key'), key: 'Space' })));
+    equal(seen.join(','), ' ,keyup');
+  });
+
+  test('real navigation replaces the document and never falsely completes the old command', async () => {
+    reset();
+    const frame = document.createElement('iframe');
+    frame.title = 'Navigation fixture';
+    frame.style.cssText = 'width:500px;height:150px';
+    const nextLoad = () => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Navigation fixture did not load')), 3000);
+      frame.addEventListener('load', () => { clearTimeout(timer); resolve(); }, { once: true });
+    });
+    const loaded = nextLoad();
+    frame.src = '/extension/actor/tests/navigation-start.html';
+    sandbox.append(frame);
+    try {
+      await loaded;
+      const oldDocument = frame.contentDocument;
+      const navigated = nextLoad();
+      const step = baseStep('click', { target: css('#navigate'), timeoutMs: 2000,
+        expect: expectation({ kind: 'url', pattern: '/navigation-end\\.html$' }) });
+      const outcome = await WebMcpActor.executeStep({ action: actionFor(step), command: commandFor(step), document: oldDocument });
+      const payload = failed(outcome, 'TRANSPORT_DISCONNECTED');
+      equal(payload.error.observed.navigationObserved, true);
+      await navigated;
+      assert(frame.contentDocument !== oldDocument, 'document was not replaced');
+      assert(frame.contentDocument.querySelector('#destination'), 'destination missing');
+      const verify = waitStep({ kind: 'element', target: css('#destination'), assertion: 'present' });
+      completed(await WebMcpActor.executeStep({ action: actionFor(verify), command: commandFor(verify), document: frame.contentDocument }));
+    } finally { frame.remove(); }
+  });
+
+  test('command envelope version is enforced and equivalent JSON ordering is accepted', async () => {
+    reset();
+    const step = waitStep(present('#success'));
+    const payload = commandFor(step);
+    completed(await execute(step, { command: { protocol: 'webmcp-run/1', type: 'step.command', payload } }));
+    failed(await execute(step, { command: { protocol: 'webmcp-run/2', type: 'step.command', payload } }), 'PLAN_VERSION_MISMATCH');
+    completed(await execute(step, { command: commandFor(Object.fromEntries(Object.entries(step).reverse())) }));
+  });
+
+  test('input value disappearing during a fill fails its postcondition', async () => {
+    reset('<input id="vanish">');
+    sandbox.querySelector('input').oninput = e => e.target.remove();
+    failed(await execute(baseStep('fill', { target: css('#vanish'), value: { literal: 'x' },
+      expect: expectation({ kind: 'target_value', value: { literal: 'x' } }) })), 'POSTCONDITION_FAILED');
+  });
+
+  test('active-element, text, and fallback strategies remain deterministic', async () => {
+    reset('<input id="active"><button>Continue</button><div id="success">ok</div>');
+    sandbox.querySelector('input').focus();
+    equal(WebMcpActor.resolveLocator(locator([{ kind: 'active_element' }]), { document }).elements[0].id, 'active');
+    equal(WebMcpActor.resolveLocator(locator([{ kind: 'text', text: 'Continue', exact: true }]), { document }).elements[0].localName, 'button');
+    const step = baseStep('click', { target: locator([
+      { kind: 'role', role: 'button', name: 'Missing', exact: true },
+      { kind: 'label', text: 'Missing', exact: true },
+      { kind: 'attribute', attribute: 'data-testid', value: 'missing' },
+      { kind: 'css', selector: '#sandbox button' },
+    ]) });
+    completed(await execute(step));
+  });
+
   const results = [];
   for (const entry of tests) {
     try {
@@ -474,9 +662,11 @@
       results.push({ name: entry.name, passed: false, error: error.stack || error.message });
     }
   }
+  history.replaceState({}, '', entryURL);
   const failures = results.filter(({ passed }) => !passed);
   document.body.dataset.status = failures.length ? 'failed' : 'passed';
   document.querySelector('#summary').textContent = `${results.length - failures.length}/${results.length} tests passed`;
+  document.querySelector('#outcomes').textContent = JSON.stringify(outcomes);
   document.querySelector('#results').innerHTML = results.map((result) => (
     `<li class="${result.passed ? 'pass' : 'fail'}">${result.passed ? 'PASS' : 'FAIL'} — ${result.name}${result.error ? `: ${result.error}` : ''}</li>`
   )).join('');

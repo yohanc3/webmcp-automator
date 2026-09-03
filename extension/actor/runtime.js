@@ -35,7 +35,7 @@
   }
 
   const normalizeText = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
-  const comparableText = (value) => normalizeText(value).toLocaleLowerCase();
+  const comparableText = (value) => normalizeText(value).toLowerCase();
   const boundedText = (value, limit = 500) => {
     const text = normalizeText(value);
     return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
@@ -125,12 +125,16 @@
     if (style && (style.display === 'none' || style.visibility === 'hidden'
       || Number.parseFloat(style.opacity || '1') <= 0.01)) return false;
     if (element.closest('[hidden], [aria-hidden="true"]')) return false;
+    for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+      if (Number.parseFloat(view?.getComputedStyle(parent).opacity || '1') <= 0.01) return false;
+    }
     const rect = element.getBoundingClientRect?.();
     return !rect || rect.width > 0.5 || rect.height > 0.5;
   };
 
   const isEnabled = (element) => !(
     element.disabled
+    || element.matches(':disabled')
     || element.getAttribute('aria-disabled') === 'true'
     || element.closest('[inert]')
   );
@@ -204,7 +208,8 @@
   }) => {
     let sawNonInteractable = false;
     for (let index = 0; index < locator.strategies.length; index += 1) {
-      const raw = uniqueElements(candidatesForStrategy(locator.strategies[index], scope, document));
+      const raw = uniqueElements(candidatesForStrategy(locator.strategies[index], scope, document))
+        .filter((element) => scope === document || scope.contains(element));
       const matches = filteredMatches(raw, locator);
       if (raw.length > 0 && matches.length === 0) sawNonInteractable = true;
       if (matches.length === 0) continue;
@@ -220,7 +225,7 @@
         matchCount: matches.length,
       };
     }
-    if (allowEmpty) return { elements: [], strategyIndex: null, matchCount: 0 };
+    if (allowEmpty || locator.cardinality === 'zero_or_one') return { elements: [], strategyIndex: null, matchCount: 0 };
     if (sawNonInteractable) {
       throw new ActorError('TARGET_NOT_INTERACTABLE', 'The target exists but is not interactable', {
         stepId, observed: { matchCount: 0 },
@@ -262,10 +267,10 @@
       if (rule.enum && !rule.enum.some((candidate) => Object.is(candidate, value))) {
         return `Argument ${name} is not an allowed value`;
       }
-      if (typeof value === 'string' && rule.minLength != null && value.length < rule.minLength) {
+      if (typeof value === 'string' && rule.minLength != null && Array.from(value).length < rule.minLength) {
         return `Argument ${name} is shorter than ${rule.minLength}`;
       }
-      if (typeof value === 'string' && rule.maxLength != null && value.length > rule.maxLength) {
+      if (typeof value === 'string' && rule.maxLength != null && Array.from(value).length > rule.maxLength) {
         return `Argument ${name} is longer than ${rule.maxLength}`;
       }
       if (typeof value === 'number' && rule.minimum != null && value < rule.minimum) {
@@ -301,13 +306,12 @@
     const view = windowFor(document);
     if (!ALLOWED_KEYS.has(key)) throw new ActorError('INTERNAL_ERROR', `Unsupported key: ${key}`);
     element.focus?.();
-    ['keydown', 'keypress', 'keyup'].forEach((type) => element.dispatchEvent(new view.KeyboardEvent(type, {
-      key,
-      code: key === 'Space' ? 'Space' : key,
-      bubbles: true,
-      composed: true,
-      cancelable: true,
-    })));
+    const dispatch = (type) => element.dispatchEvent(new view.KeyboardEvent(type, {
+      key: key === 'Space' ? ' ' : key, code: key,
+      bubbles: true, composed: true, cancelable: true,
+    }));
+    if (dispatch('keydown') && ['Enter', 'Space'].includes(key)) dispatch('keypress');
+    dispatch('keyup');
   };
 
   const createObservation = (document) => {
@@ -372,7 +376,8 @@
         )) === condition.stateId;
       case 'target_value': {
         if (!step?.target) return false;
-        const target = resolveLocator(step.target, { document, stepId: step.id }).elements[0];
+        const target = resolveLocator(step.target, { document, stepId: step.id, allowEmpty: true }).elements[0];
+        if (!target) return false;
         const expected = resolveValue(condition.value, args, step.id);
         const actual = 'value' in target ? target.value : target.textContent;
         return String(actual ?? '') === String(expected ?? '');
@@ -408,15 +413,26 @@
     let value;
     if (field.read === 'text') value = normalizeText(element.innerText || element.textContent);
     else if (field.read === 'value') value = element.value;
-    else if (field.read === 'href') value = element.href;
-    else if (field.read === 'src') value = element.src;
-    else if (field.read === 'checked') value = Boolean(element.checked);
-    else if (field.read === 'selected') value = Boolean(element.selected);
-    if (field.type === 'url') return new URL(value, currentURL(document)).href;
-    if (field.type === 'number') return Number(value);
-    if (field.type === 'integer') return Number.parseInt(value, 10);
-    if (field.type === 'boolean') return typeof value === 'boolean' ? value : value === 'true';
-    return String(value ?? '');
+    else if (field.read === 'href' || field.read === 'src') value = element.getAttribute(field.read);
+    else if (field.read === 'checked') value = element.checked;
+    else if (field.read === 'selected') value = element.selected;
+    const invalid = () => { throw new ActorError('POSTCONDITION_FAILED', 'Extracted field does not match its declared type'); };
+    if (value == null) { if (!field.required) return null; return invalid(); }
+    if (field.type === 'url') {
+      try { return new URL(value, currentURL(document)).href; } catch { return invalid(); }
+    }
+    if (field.type === 'number' || field.type === 'integer') {
+      const number = Number(value);
+      if (String(value).trim() === '' || !Number.isFinite(number)
+        || (field.type === 'integer' && !Number.isInteger(number))) return invalid();
+      return number;
+    }
+    if (field.type === 'boolean') {
+      if (typeof value === 'boolean') return value;
+      if (value === 'true' || value === 'false') return value === 'true';
+      return invalid();
+    }
+    return String(value);
   };
 
   const extractFields = (fields, scope, document, stepId) => {
@@ -429,7 +445,8 @@
         output[field.name] = null;
         return;
       }
-      output[field.name] = normalizeReadValue(field, located.elements[0], document);
+      if (located.elements.length > 1) throw new ActorError('TARGET_AMBIGUOUS', 'An output field matched multiple elements', { stepId });
+      Object.defineProperty(output, field.name, { value: normalizeReadValue(field, located.elements[0], document), enumerable: true });
     });
     return output;
   };
@@ -437,7 +454,9 @@
   const extractOutput = (output, document, stepId) => {
     if (output.mode === 'none') return null;
     if (output.mode === 'page') return extractFields(output.fields, document, document, stepId);
-    const root = resolveLocator(output.collectionRoot, { document, stepId }).elements[0];
+    const roots = resolveLocator(output.collectionRoot, { document, stepId }).elements;
+    if (roots.length !== 1) throw new ActorError(roots.length ? 'TARGET_AMBIGUOUS' : 'TARGET_NOT_FOUND', 'Extraction requires one collection root', { stepId });
+    const root = roots[0];
     const items = resolveLocator(output.item, {
       document, scope: root, allowEmpty: true, stepId,
     }).elements.slice(0, output.limit);
@@ -484,111 +503,154 @@
     };
   };
 
-  const effectiveDeadline = (action, step, actionStartedAt) => {
-    const now = Date.now();
-    const actionDeadline = actionStartedAt + action.runtime.maxDurationMs;
-    return Math.min(now + step.timeoutMs, actionDeadline);
+  // JSON comparison ignores property order but never ignores changed plan fields.
+  const sameJSON = (left, right) => {
+    if (left === right) return true;
+    if (!left || !right || typeof left !== 'object' || typeof right !== 'object'
+      || Array.isArray(left) !== Array.isArray(right)) return false;
+    const keys = Object.keys(left);
+    return keys.length === Object.keys(right).length
+      && keys.every((key) => Object.hasOwn(right, key) && sameJSON(left[key], right[key]));
+  };
+
+  const interactionTarget = (step, document) => {
+    const targets = resolveLocator(step.target, { document, stepId: step.id }).elements;
+    if (targets.length !== 1) throw new ActorError(targets.length ? 'TARGET_AMBIGUOUS' : 'TARGET_NOT_FOUND',
+      'The operation requires exactly one target', { stepId: step.id });
+    const target = targets[0];
+    if (!isVisible(target) || !isEnabled(target) || (step.op === 'fill' && target.readOnly)) {
+      throw new ActorError('TARGET_NOT_INTERACTABLE', 'The target is not interactable', { stepId: step.id });
+    }
+    target.scrollIntoView?.({ block: 'center', inline: 'center' });
+    if (step.op === 'click' && document.elementFromPoint) {
+      const rect = target.getBoundingClientRect();
+      const view = windowFor(document);
+      const x = (Math.max(0, rect.left) + Math.min(view.innerWidth, rect.right)) / 2;
+      const y = (Math.max(0, rect.top) + Math.min(view.innerHeight, rect.bottom)) / 2;
+      const hit = document.elementFromPoint(x, y);
+      if (!hit || (hit !== target && !target.contains(hit))) {
+        throw new ActorError('TARGET_NOT_INTERACTABLE', 'The click target is obstructed', { stepId: step.id });
+      }
+    }
+    return target;
   };
 
   const executeStep = async ({
-      action,
-    command: envelopeOrPayload,
-    arguments: explicitArguments,
-    document,
-    signal,
-    actionStartedAt = Date.now(),
-    states = [],
-    getStateId = null,
+    action, command: envelopeOrPayload, arguments: explicitArguments, document, signal,
+    actionStartedAt = Date.now(), states = [], getStateId = null,
   }) => {
     const command = envelopeOrPayload?.payload || envelopeOrPayload;
     const step = command?.step;
+    let cleanup = () => {};
     try {
       if (!action || !command || !step || !document) {
         throw new ActorError('INTERNAL_ERROR', 'Actor input is missing action, command, step, or document');
       }
-      if (signal?.aborted) throw new ActorError('CANCELLED', 'The actor command was cancelled', { stepId: step.id });
-      if (action.steps?.[command.stepIndex]?.id !== step.id
-        || action.steps?.[command.stepIndex]?.op !== step.op) {
-        throw new ActorError('PLAN_VERSION_MISMATCH', 'The command step does not match the pinned action', {
-          stepId: step.id,
-        });
+      if (signal?.aborted) throw new ActorError('CANCELLED', 'The actor command was cancelled');
+      if (envelopeOrPayload?.payload && (envelopeOrPayload.protocol !== 'webmcp-run/1'
+        || envelopeOrPayload.type !== 'step.command')) {
+        throw new ActorError('PLAN_VERSION_MISMATCH', 'Unsupported command envelope');
       }
-      const args = explicitArguments || command.arguments || {};
+      if (!sameJSON(action.steps?.[command.stepIndex], step)) {
+        throw new ActorError('PLAN_VERSION_MISMATCH', 'The command step does not match the pinned action');
+      }
+      const args = explicitArguments ?? command.arguments ?? {};
+      if (explicitArguments !== undefined && !sameJSON(explicitArguments, command.arguments)) {
+        throw new ActorError('INVALID_ARGUMENTS', 'Arguments differ from the command arguments');
+      }
       const argumentError = validateArguments(action.tool?.inputSchema, args);
-      if (argumentError) throw new ActorError('INVALID_ARGUMENTS', argumentError, { stepId: step.id });
-      const deadline = effectiveDeadline(action, step, actionStartedAt);
-      if (deadline <= Date.now()) throw new ActorError('TIMEOUT', 'The action duration has expired', { stepId: step.id });
-
+      if (argumentError) throw new ActorError('INVALID_ARGUMENTS', argumentError);
+      const actionDeadline = actionStartedAt + action.runtime.maxDurationMs;
+      const deadline = Math.min(Date.now() + step.timeoutMs, actionDeadline);
+      let operationStarted = false;
+      let documentReplaced = false;
+      const timeoutCode = () => operationStarted && step.op !== 'wait' && deadline !== actionDeadline
+        ? 'POSTCONDITION_FAILED' : 'TIMEOUT';
+      const check = () => {
+        if (documentReplaced) throw new ActorError('TRANSPORT_DISCONNECTED', 'The document was replaced', {
+          observed: { navigationObserved: true },
+        });
+        if (signal?.aborted) throw new ActorError('CANCELLED', 'The actor command was cancelled');
+        if (Date.now() >= deadline) throw new ActorError(timeoutCode(), 'The actor duration has expired');
+        if (!action.runtime.allowedOrigins.includes(new URL(currentURL(document)).origin)) {
+          throw new ActorError('NAVIGATION_OUT_OF_SCOPE', 'The page is outside the action origin allowlist');
+        }
+      };
+      check();
       const beforeURL = currentURL(document);
       const observation = createObservation(document);
       observation.navigationObserved = false;
       const view = windowFor(document);
-      const markNavigation = () => { observation.navigationObserved = true; };
-      view.addEventListener?.('pagehide', markNavigation, { once: true });
-      view.addEventListener?.('beforeunload', markNavigation, { once: true });
-      const runtimeContext = { ...action, states, getStateId };
-      const context = {
-        action: runtimeContext, args, document, observation, signal, step, excludedStates: new Set(),
+      const waiting = new AbortController();
+      let rejectStopped;
+      const stopped = new Promise((_, reject) => { rejectStopped = reject; });
+      // Attach a handler immediately; this also covers a synchronous pagehide during click.
+      stopped.catch(() => {});
+      const onAbort = () => rejectStopped(new ActorError('CANCELLED', 'The actor command was cancelled'));
+      const onNavigation = () => {
+        documentReplaced = true;
+        observation.navigationObserved = true;
+        rejectStopped(new ActorError('TRANSPORT_DISCONNECTED', 'The document was replaced; the execution client must reconcile navigation', {
+          observed: { navigationObserved: true },
+        }));
       };
-      const beforeState = await detectState(runtimeContext, document, args, observation, signal);
-      let result = null;
-      try {
-        if (step.op === 'fill') {
-          const target = resolveLocator(step.target, { document, stepId: step.id }).elements[0];
-          setNativeValue(target, resolveValue(step.value, args, step.id), document);
-        } else if (step.op === 'click') {
-          const target = resolveLocator(step.target, { document, stepId: step.id }).elements[0];
-          target.scrollIntoView?.({ block: 'center', inline: 'center' });
-          target.click();
-        } else if (step.op === 'press') {
-          const target = resolveLocator(step.target, { document, stepId: step.id }).elements[0];
-          dispatchKey(target, step.key, document);
-        } else if (step.op === 'wait') {
-          // Waiting is entirely expressed by the condition set below.
-        } else if (step.op === 'extract') {
-          result = extractOutput(action.output, document, step.id);
-        } else {
-          throw new ActorError('INTERNAL_ERROR', `Unsupported operation: ${step.op}`, { stepId: step.id });
-        }
-
-        const passed = await waitForConditions(step.expect, context, deadline);
-        if (!passed) {
-          throw new ActorError(step.op === 'wait' ? 'TIMEOUT' : 'POSTCONDITION_FAILED',
-            `Postcondition did not pass for step ${step.id}`, {
-              stepId: step.id,
-              observed: {
-                added: Math.min(observation.counts.added, MAX_MATCH_OBSERVATIONS),
-                removed: Math.min(observation.counts.removed, MAX_MATCH_OBSERVATIONS),
-                changed: Math.min(observation.counts.changed, MAX_MATCH_OBSERVATIONS),
-              },
-            });
-        }
-        const afterURL = currentURL(document);
-        const allowedOrigins = new Set(action.runtime.allowedOrigins);
-        if (!allowedOrigins.has(new URL(afterURL).origin)) {
-          throw new ActorError('NAVIGATION_OUT_OF_SCOPE', 'The page navigated outside the action origin allowlist', {
-            stepId: step.id, observed: { origin: new URL(afterURL).origin },
-          });
-        }
-        return {
-          type: COMPLETED,
-          payload: {
-            commandId: command.commandId,
-            stepId: step.id,
-            stepIndex: command.stepIndex,
-            effect: await effectFor({
-              action: runtimeContext, args, document, observation, signal, step, beforeURL, beforeState,
-            }),
-            result,
-          },
-        };
-      } finally {
+      const timer = setTimeout(() => rejectStopped(new ActorError(
+        timeoutCode(),
+        'The declared condition did not complete within the actor budget',
+      )), Math.max(0, deadline - Date.now()));
+      signal?.addEventListener('abort', onAbort, { once: true });
+      view.addEventListener('pagehide', onNavigation, { once: true });
+      cleanup = () => {
+        clearTimeout(timer);
+        waiting.abort();
         observation.observer.disconnect();
-        view.removeEventListener?.('pagehide', markNavigation);
-        view.removeEventListener?.('beforeunload', markNavigation);
+        signal?.removeEventListener('abort', onAbort);
+        view.removeEventListener('pagehide', onNavigation);
+      };
+      const bounded = async (promise) => { const result = await Promise.race([promise, stopped]); check(); return result; };
+      const runtimeContext = { ...action, states, getStateId };
+      const context = { action: runtimeContext, args, document, observation, signal: waiting.signal, step, excludedStates: new Set() };
+      const beforeState = await bounded(detectState(runtimeContext, document, args, observation, signal));
+      check();
+      let result = null;
+      operationStarted = true;
+      if (step.op === 'fill') {
+        const target = interactionTarget(step, document);
+        check();
+        setNativeValue(target, resolveValue(step.value, args, step.id), document);
+      } else if (step.op === 'click') {
+        const target = interactionTarget(step, document);
+        check();
+        target.click();
+      } else if (step.op === 'press') {
+        const target = interactionTarget(step, document);
+        check();
+        dispatchKey(target, step.key, document);
+      } else if (step.op === 'extract') {
+        result = extractOutput(action.output, document, step.id);
+      } else if (step.op !== 'wait') {
+        throw new ActorError('INTERNAL_ERROR', `Unsupported operation: ${step.op}`);
       }
+      const passed = await bounded(waitForConditions(step.expect, context, deadline));
+      if (!passed) throw new ActorError(
+        timeoutCode(),
+        'The declared postcondition did not pass',
+        { observed: {
+          added: Math.min(observation.counts.added, MAX_MATCH_OBSERVATIONS),
+          removed: Math.min(observation.counts.removed, MAX_MATCH_OBSERVATIONS),
+          changed: Math.min(observation.counts.changed, MAX_MATCH_OBSERVATIONS),
+        } },
+      );
+      const effect = await bounded(effectFor({
+        action: runtimeContext, args, document, observation, signal, step, beforeURL, beforeState,
+      }));
+      return { type: COMPLETED, payload: {
+        commandId: command.commandId, stepId: step.id, stepIndex: command.stepIndex, effect, result,
+      } };
     } catch (error) {
       return { type: FAILED, payload: failurePayload(command || {}, error) };
+    } finally {
+      cleanup();
     }
   };
 
