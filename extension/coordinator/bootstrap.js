@@ -177,10 +177,11 @@
         default: throw new Error('Unknown ambient spool operation');
       }
     });
-    const retryMetadata = async () => {
+    const retryMetadata = async (origin = null, scopeId = null) => {
       const records = await spool('list');
-      const oldest = [...records].sort((a, b) => a.enqueuedAt - b.enqueuedAt)[0];
-      return { count: records.length, expiresAt: oldest ? new Date(oldest.expiresAt).toISOString() : null, oldestAt: oldest ? new Date(oldest.enqueuedAt).toISOString() : null };
+      const matching = records.filter((record) => record.completedLayer?.siteScope?.origin === origin && record.completedLayer?.siteScope?.scopeId === scopeId);
+      const oldest = [...matching].sort((a, b) => a.enqueuedAt - b.enqueuedAt)[0];
+      return { count: matching.length, scopeId, expiresAt: oldest ? new Date(oldest.expiresAt).toISOString() : null, oldestAt: oldest ? new Date(oldest.enqueuedAt).toISOString() : null };
     };
 
     const handleMessage = async (message, sender = {}) => {
@@ -198,7 +199,8 @@
           if (!origin) return { ok: true, state: { context: { origin: null, requestedScope: 'ambient_learn' }, policy: { status: 'denied', scopes: [] }, retrySpool: { count: 0 } } };
           const stored = await get('local', policyKey(origin));
           const policy = await currentPolicy({ origin, scope: 'ambient_learn', revision: stored?.revision ?? null });
-          return { ok: true, state: { context: { origin, policyRevision: policy?.revision ?? null, requestedScope: 'ambient_learn' }, policy, retrySpool: await retryMetadata() } };
+          const scopeId = ambientScope.scopeFor(origin);
+          return { ok: true, state: { context: { origin, siteScopeId: scopeId, policyRevision: policy?.revision ?? null, requestedScope: 'ambient_learn' }, policy, retrySpool: await retryMetadata(origin, scopeId) } };
         }
         case 'SET_OWNED_DEMO_OVERRIDE':
         {
@@ -216,7 +218,16 @@
           if (!['denied', 'revoked'].includes(decision.decision) || decision.scope !== 'ambient_learn') return { ok: false, error: 'Only ambient deny or revoke decisions are supported' };
           return { ok: true, policy: await savePolicy(decision, tabs[0]?.url) };
         }
-        case 'REQUEST_RETRY_SPOOL_DELETION': await serial(() => chromeApi.storage.local.remove([RECORD_KEY])); return { ok: true };
+        case 'REQUEST_RETRY_SPOOL_DELETION': {
+          const tabs = sender.tab ? [sender.tab] : await chromeApi.tabs.query({ active: true, lastFocusedWindow: true });
+          const origin = originFromUrl(tabs[0]?.url);
+          const scopeId = ambientScope.scopeFor(origin);
+          if (!origin || !scopeId) return { ok: false, error: 'An active HTTP(S) tab is required' };
+          const records = await spool('list');
+          const ids = records.filter((record) => record.completedLayer?.siteScope?.origin === origin && record.completedLayer?.siteScope?.scopeId === scopeId).map((record) => record.id);
+          await Promise.all(ids.map((id) => spool('remove', { id })));
+          return { ok: true, deleted: ids.length, scopeId };
+        }
         case 'SUBMIT_CANDIDATE_REVIEW':
         case 'OPEN_CANDIDATE_EVIDENCE':
         case 'SUBMIT_RUN_CONFIRMATION':
