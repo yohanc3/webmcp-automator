@@ -664,7 +664,11 @@ test('confirmation masks arguments, approves the exact step, and ignores stale i
     sender: { context: 'review_ui', documentId: null, tabId: null },
     payload: { approved: true, stepId: 'submit_search' },
   };
-  await harness.coordinator.receive(review, reviewBinding, confirmation);
+  await harness.coordinator.submitConfirmation({
+    approved: true,
+    runId: run.runId,
+    stepId: 'submit_search',
+  });
   run = await harness.storage.load(run.runId);
   assert.equal(run.status, RUN_STATUSES.waitingForNavigation);
   assert.equal(actor.sent.at(-1).payload.step.id, 'submit_search');
@@ -847,7 +851,7 @@ test('restart recovery reconciles waiting page, prepared dispatch, and pending e
   );
   const prepared = await dispatchStorage.load(dispatchRun.runId);
   assert.equal(prepared.status, RUN_STATUSES.dispatchingStep);
-  assert.equal(dispatchActor.sent.length, 0);
+  assert.equal(dispatchActor.sent.filter(({ type }) => type === MESSAGE_TYPES.stepCommand).length, 0);
 
   const dispatchRestart = createHarness({ storage: dispatchStorage, tabs: dispatchTabs });
   await dispatchRestart.coordinator.recover();
@@ -873,8 +877,8 @@ test('restart recovery reconciles waiting page, prepared dispatch, and pending e
   const effectActor = actorPort(effectAccepted.execution.tabId, 'execution_document_1');
   effectRestart.coordinator.bindPort(effectActor);
   await new Promise((resolve) => { setImmediate(resolve); });
-  assert.equal(effectActor.sent.length, 1);
-  assert.equal(effectActor.sent[0].payload.commandId, originalCommand.payload.commandId);
+  assert.equal(effectActor.sent.filter(({ type }) => type === MESSAGE_TYPES.stepCommand).length, 1);
+  assert.equal(effectActor.sent.at(-1).payload.commandId, originalCommand.payload.commandId);
 });
 
 test('restart recovery replays confirmation and extraction without creating new commands', async () => {
@@ -934,8 +938,8 @@ test('restart recovery replays confirmation and extraction without creating new 
   const extractionActor = actorPort(extractionAccepted.execution.tabId, 'execution_document_1');
   extractionRestart.coordinator.bindPort(extractionActor);
   await new Promise((resolve) => { setImmediate(resolve); });
-  assert.equal(extractionActor.sent.length, 1);
-  assert.equal(extractionActor.sent[0].payload.commandId, extractCommand.payload.commandId);
+  assert.equal(extractionActor.sent.filter(({ type }) => type === MESSAGE_TYPES.stepCommand).length, 1);
+  assert.equal(extractionActor.sent.at(-1).payload.commandId, extractCommand.payload.commandId);
 });
 
 test('source tab closure produces one transport failure', async () => {

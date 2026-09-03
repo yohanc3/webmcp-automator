@@ -5,6 +5,9 @@
   "description": "The versioned event envelope shared by the source bridge, MV3 coordinator, and execution-tab actor.",
   "oneOf": [
     {
+      "$ref": "#/$defs/executionInitialize"
+    },
+    {
       "$ref": "#/$defs/runRequest"
     },
     {
@@ -78,6 +81,34 @@
             "null"
           ],
           "maxLength": 300
+        }
+      }
+    },
+    "executionInitialize": {
+      "$ref": "#/$defs/standardMessage",
+      "properties": {
+        "type": {
+          "const": "execution.initialize"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "states"
+          ],
+          "properties": {
+            "action": {
+              "$ref": "action-list.schema.json#/$defs/action"
+            },
+            "states": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "$ref": "action-list.schema.json#/$defs/state"
+              }
+            }
+          }
         }
       }
     },

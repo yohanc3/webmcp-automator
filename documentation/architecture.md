@@ -7,8 +7,10 @@ Action Mapper is currently testing one narrow question:
 > Can one demonstrated workflow plus semantic UI evidence produce a useful map
 > of what a website can do and the steps required to do it?
 
-WebMCP registration and generalized background execution are intentionally
-paused while that question is evaluated.
+Published actions are registered as WebMCP tools. Invocation crosses one named
+source port into a durable coordinator, which opens an inactive execution tab,
+supplies the pinned action and state definitions to the deterministic actor,
+and returns one correlated result or typed error.
 
 ## Mental model
 
@@ -54,6 +56,20 @@ includes roles, accessible names, labels, values, stable attributes, visible
 text, partial links, repeated-item signatures, fingerprints, and before/after
 deltas. Geometry supports interpretation but is not used as a replay locator.
 
+## Ready execution pipeline
+
+```text
+published action-list/1 revision
+  -> source bridge registers the public WebMCP tool
+  -> durable coordinator resolves the exact list, action version, digest, and policy
+  -> execution client identifies the current learned state
+  -> actor executes pinned steps without network or model access
+  -> write/danger steps pause on an exact run confirmation
+  -> coordinator stores the terminal observation and settles the source call once
+```
+
+The model participates in learning and compilation. It is never in the execution loop.
+
 ## Current limits
 
 - One recording is evidence, not universal site understanding.
@@ -61,4 +77,5 @@ deltas. Geometry supports interpretation but is not used as a replay locator.
 - Generated CSS, A/B layouts, virtualized content, closed Shadow DOM, and
   cross-origin frames can weaken the evidence.
 - Privacy stripping is heuristic.
-- Dangerous workflows still need an explicit confirmation design.
+- The owned demo has a deterministic published basket action; broader sites still need
+  more demonstrations, replay coverage, and reviewed publication before tools appear.

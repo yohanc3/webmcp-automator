@@ -3,15 +3,19 @@ SHELL := /bin/sh
 BROWSER ?= /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 GO_CACHE ?= $(CURDIR)/workspace/.cache/go-build
 
-.PHONY: run test test-server test-extension test-node test-documentation check
+.PHONY: run seed-demo test test-server test-extension test-node test-documentation check
 
 run:
 	cd server && GOCACHE="$(GO_CACHE)" go run ./cmd/server
+
+seed-demo:
+	cd server && GOCACHE="$(GO_CACHE)" go run ./cmd/seed-demo
 
 test: test-server test-node test-extension test-documentation
 
 test-node:
 	node --test \
+		extension/actor/client.test.cjs \
 		extension/source/bootstrap.test.js \
 		extension/coordinator/tests/adapters.test.cjs \
 		extension/coordinator/tests/run-coordinator.test.cjs \

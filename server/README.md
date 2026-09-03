@@ -37,6 +37,14 @@ Then run:
 make run
 ```
 
+Publish the reviewed owned-demo basket fixture into the configured database with:
+
+```bash
+make seed-demo
+```
+
+The command is idempotent after the fixture revision is published.
+
 Configuration:
 
 | Variable | Default | Purpose |

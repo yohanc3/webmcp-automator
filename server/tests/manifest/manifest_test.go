@@ -27,6 +27,32 @@ func ownedStorefrontActionList(t *testing.T) json.RawMessage {
 	return raw
 }
 
+func ownedStorefrontBasketActionList(t *testing.T) json.RawMessage {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(
+		"..", "..", "..", "documentation", "contracts", "examples", "owned-storefront-basket.action-list.json",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestOwnedStorefrontBasketRequiresExactWriteConfirmation(t *testing.T) {
+	list, err := manifest.DecodeActionList(ownedStorefrontBasketActionList(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Actions) != 1 || list.Actions[0].ID != "add_field_h1_to_basket" {
+		t.Fatalf("unexpected basket fixture actions: %#v", list.Actions)
+	}
+	action := list.Actions[0]
+	if action.Safety.Class != "write" || action.Safety.Confirmation != "before_step" ||
+		action.Safety.ConfirmationStepID == nil || *action.Safety.ConfirmationStepID != "add_field_h1" {
+		t.Fatalf("basket action is not bound to exact write confirmation: %#v", action.Safety)
+	}
+}
+
 func TestActionListAcceptsOwnedStorefrontContract(t *testing.T) {
 	list, err := manifest.DecodeActionList(ownedStorefrontActionList(t))
 	if err != nil {

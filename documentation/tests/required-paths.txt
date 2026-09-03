@@ -29,6 +29,7 @@ documentation/contracts/action-map-patch.schema.json
 documentation/contracts/action-map-revision.schema.json
 documentation/contracts/system-contract.md
 documentation/contracts/examples/owned-storefront.action-list.json
+documentation/contracts/examples/owned-storefront-basket.action-list.json
 documentation/contracts/examples/owned-storefront.run-messages.json
 documentation/contracts/examples/x-posts.layer-001.parse-request.json
 documentation/contracts/examples/x-posts.layer-001.patch.json

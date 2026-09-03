@@ -11,6 +11,7 @@
 
   const RUN_PROTOCOL = 'webmcp-run/1';
   const RUN_MESSAGE_TYPES = Object.freeze({
+    executionInitialize: 'execution.initialize',
     pageReady: 'page.ready',
     runAccepted: 'run.accepted',
     runAwaitingConfirmation: 'run.awaiting_confirmation',

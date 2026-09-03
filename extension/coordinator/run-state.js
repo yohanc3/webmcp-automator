@@ -144,6 +144,7 @@
     actionId: request.payload.actionId,
     actionVersion: request.payload.actionVersion,
     action: null,
+    states: [],
     arguments: clone(request.payload.arguments),
     status: RUN_STATUSES.created,
     stepIndex: 0,

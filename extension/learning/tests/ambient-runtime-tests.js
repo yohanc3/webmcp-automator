@@ -40,7 +40,7 @@ const completedLayer = ({ id, origin, scopeId }) => ({
 });
 const delay = (milliseconds = 0) => new Promise((resolve) => { setTimeout(resolve, milliseconds); });
 
-const coordinatorFixture = ({ activeUrl = 'https://shop.test/catalog', now = () => '2026-09-03T12:00:00.000Z' } = {}) => {
+const coordinatorFixture = ({ activeUrl = 'https://shop.test/catalog', durableCoordinator = null, now = () => '2026-09-03T12:00:00.000Z' } = {}) => {
   const areas = { local: { unrelatedLocal: 'kept' }, session: { unrelatedSession: 'kept' } };
   const sideEffects = { fetch: 0, storage: 0, tabs: 0 };
   const chromeApi = {
@@ -55,7 +55,7 @@ const coordinatorFixture = ({ activeUrl = 'https://shop.test/catalog', now = () 
       async sendMessage() { sideEffects.tabs += 1; return { ok: true }; },
     },
   };
-  return { areas, chromeApi, sideEffects, coordinator: coordinatorApi.createCoordinator({ chromeApi, fetchApi: async () => { sideEffects.fetch += 1; throw new Error('fetch should not run'); }, now, retrySpoolApi: retrySpool }) };
+  return { areas, chromeApi, sideEffects, coordinator: coordinatorApi.createCoordinator({ chromeApi, durableCoordinator, fetchApi: async () => { sideEffects.fetch += 1; throw new Error('fetch should not run'); }, now, retrySpoolApi: retrySpool }) };
 };
 
 const eventTarget = (target) => {
@@ -270,6 +270,56 @@ test('candidate review and confirmation protocol messages fail closed without si
   }
   assert.deepEqual(fixture.sideEffects, before);
   assert.deepEqual(fixture.areas, { local: { unrelatedLocal: 'kept' }, session: { unrelatedSession: 'kept' } });
+});
+
+test('popup confirmation is bound to and advances the exact durable run', async () => {
+  const submitted = [];
+  const run = {
+    action: {
+      steps: [{ id: 'add_field_h1', op: 'click' }],
+      safety: { sensitiveArguments: [] },
+      tool: { title: 'Add Field H1 headphones to basket' },
+    },
+    confirmation: {
+      argumentPreview: {}, stepId: 'add_field_h1',
+      summary: 'Approve the basket change',
+    },
+    execution: { documentId: 'document_1' },
+    listDigest: `sha256:${'d'.repeat(64)}`,
+    listPolicy: {
+      checkedAt: '2026-09-03T12:00:00.000Z',
+      expiresAt: null,
+      scopes: ['write'],
+      status: 'allowed',
+    },
+    runId: 'run_1', site: { origin: 'https://shop.test' },
+    status: 'awaiting_confirmation',
+  };
+  const durableCoordinator = {
+    storage: { async list() { return [run]; } },
+    async submitConfirmation(value) { submitted.push(value); },
+  };
+  const fixture = coordinatorFixture({ durableCoordinator });
+  fixture.areas.local['ambientPolicy:https://shop.test'] = policy();
+  const response = await fixture.coordinator.handleMessage({ type: 'GET_POLICY_REVIEW_STATE' });
+  assert.equal(response.state.confirmation.runId, 'run_1');
+  assert.equal(response.state.context.stepId, 'add_field_h1');
+  const decision = {
+    approved: true,
+    documentId: 'document_1',
+    listDigest: run.listDigest,
+    origin: 'https://shop.test',
+    policyRevision: '2026-09-03T12:00:00.000Z',
+    runId: 'run_1',
+    stepId: 'add_field_h1',
+  };
+  assert.deepEqual(await fixture.coordinator.handleMessage({
+    type: 'SUBMIT_RUN_CONFIRMATION', decision,
+  }), { ok: true });
+  assert.deepEqual(submitted, [{ approved: true, runId: 'run_1', stepId: 'add_field_h1' }]);
+  assert.equal((await fixture.coordinator.handleMessage({
+    type: 'SUBMIT_RUN_CONFIRMATION', decision: { ...decision, documentId: 'stale' },
+  })).ok, false);
 });
 
 test('action-map heads and candidate bindings require the exact current digests', () => {

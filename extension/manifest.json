@@ -31,6 +31,8 @@
         "shared/protocol.js",
         "shared/ambient-scope.js",
         "shared/errors.js",
+        "actor/runtime.js",
+        "actor/client.js",
         "source/bootstrap.js",
         "learning/privacy.js",
         "learning/semantic.js",

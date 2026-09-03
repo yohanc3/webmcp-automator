@@ -654,9 +654,21 @@
     }
   };
 
+  const detectStateId = ({ states = [], document, arguments: args = {}, signal } = {}) => {
+    if (!document) return Promise.resolve(null);
+    return detectState(
+      { states },
+      document,
+      args,
+      { counts: { added: 0, changed: 0, removed: 0 }, lastMutationAt: Date.now() },
+      signal || new AbortController().signal,
+    );
+  };
+
   return {
     ActorError,
     accessibleName,
+    detectStateId,
     executeStep,
     extractOutput,
     isEnabled,

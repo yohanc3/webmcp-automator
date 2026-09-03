@@ -2,6 +2,7 @@
   'use strict';
 
   const source = WebMcpSourceBootstrap;
+  const actor = WebMcpActorClient;
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const sourceResult = source.handleMessage(message, sender, sendResponse);
@@ -9,6 +10,7 @@
   });
 
   void source.initialize().catch(() => {});
+  actor.start();
 
   void WebMcpAmbientRuntime.start().catch(() => {
     document.documentElement.dataset.webMcpAmbient = 'unavailable';

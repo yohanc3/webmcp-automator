@@ -23,12 +23,14 @@ The extension expects the local service at `http://127.0.0.1:4317`.
 - `recorder-core.js` builds ordered recording state without Chrome dependencies.
 - `content.js` is the thin content-context composition root.
 - `background.js` is the thin service-worker composition root.
-- `shared/` owns legacy message compatibility and future run-envelope helpers.
-- `source/bootstrap.js` adapts the paused registration and execution path.
+- `shared/` owns the versioned run-envelope protocol and public errors.
+- `source/bootstrap.js` discovers published action lists and exposes their WebMCP tools.
+- `actor/runtime.js` executes pinned deterministic action primitives without network access.
+- `actor/client.js` binds an execution document to the durable coordinator port.
 - `learning/bootstrap.js` captures page interactions and semantic evidence.
-- `coordinator/bootstrap.js` preserves recording, discovery, and job coordination.
-- `runner.js` contains the paused deterministic replay path.
-- `manifest-contract.js` validates the paused adapter contract.
+- `coordinator/run-coordinator.js` persists runs, confirmations, navigation, and outcomes.
+- `coordinator/bootstrap.js` composes ready-path execution with ambient learning and review.
+- `runner.js` and `manifest-contract.js` remain only for learned-adapter compatibility tests.
 - `popup.*` renders the ambient policy and review console.
 - `ui/policy-review.js` renders fail-closed policy, candidate review, and exact
   confirmation state through injected coordinator and registry ports.
@@ -37,6 +39,7 @@ The extension expects the local service at `http://127.0.0.1:4317`.
 ## Test
 
 ```bash
+make test-node
 make test-extension
 ```
 
@@ -48,4 +51,5 @@ path when needed:
 make test-extension BROWSER="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 ```
 
-No Node.js test runner is used.
+The Node suites cover transport, durable state, recovery, and integration adapters. The
+browser suite covers DOM execution and extension composition.

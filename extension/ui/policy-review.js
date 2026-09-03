@@ -856,8 +856,11 @@
     const staleReasons = staleConfirmationReasons(confirmation, state.context);
     const stale = staleReasons.length > 0;
     const policyDecision = evaluatePolicy({
-      policy: state.policy,
-      context: state.context,
+      policy: confirmation.policy || state.policy,
+      context: {
+        ...state.context,
+        requestedScope: confirmation.requiredScope || state.context?.requestedScope,
+      },
       now: now(),
     });
     const binding = confirmationBinding(confirmation);

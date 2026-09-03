@@ -145,10 +145,30 @@
     const tabRemovedListeners = [];
     const sentMessages = [];
     const tabMessages = [];
+    const connectedPorts = [];
     let runtimeResponder = () => ({ ok: true });
     let tabResponder = () => ({ ok: true });
     const runtime = {
       lastError: null,
+      connect({ name }) {
+        const messageListeners = new Set();
+        const disconnectListeners = new Set();
+        const port = {
+          name,
+          disconnect() { disconnectListeners.forEach((listener) => listener()); },
+          onDisconnect: {
+            addListener(listener) { disconnectListeners.add(listener); },
+            removeListener(listener) { disconnectListeners.delete(listener); },
+          },
+          onMessage: {
+            addListener(listener) { messageListeners.add(listener); },
+            removeListener(listener) { messageListeners.delete(listener); },
+          },
+          postMessage() {},
+        };
+        connectedPorts.push(port);
+        return port;
+      },
       onMessage: {
         addListener(listener) {
           runtimeListeners.push(listener);
@@ -189,6 +209,7 @@
         },
       },
       __test: {
+        connectedPorts,
         portListeners,
         runtimeListeners,
         sentMessages,

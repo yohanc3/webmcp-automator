@@ -29,6 +29,7 @@
   });
 
   const MESSAGE_TYPES = Object.freeze({
+    executionInitialize: 'execution.initialize',
     pageReady: 'page.ready',
     runAccepted: 'run.accepted',
     runAwaitingConfirmation: 'run.awaiting_confirmation',
@@ -256,6 +257,7 @@
       this.afterPersist = afterPersist;
       this.sourcePorts = new Map();
       this.executionPorts = new Map();
+      this.executionPortReady = new WeakMap();
       this.reviewPorts = new Set();
       this.runQueues = new Map();
       this.deadlineTimers = new Map();
@@ -311,7 +313,8 @@
         void this.resumeSource(binding, port);
       } else if (port.name === PORT_NAMES.execution) {
         this.executionPorts.set(tabId, port);
-        void this.resumeExecutionTab(tabId);
+        const ready = this.resumeExecutionTab(tabId).catch(() => {});
+        this.executionPortReady.set(port, ready);
       } else {
         this.reviewPorts.add(port);
         void this.resumeReview(port);
@@ -344,6 +347,7 @@
         return;
       }
       if (port.name === PORT_NAMES.execution) {
+        this.executionPortReady.delete(port);
         if (this.executionPorts.get(binding.tabId) === port) {
           this.executionPorts.delete(binding.tabId);
         }
@@ -354,6 +358,9 @@
 
     async receive(port, binding, message) {
       try {
+        if (port.name === PORT_NAMES.execution) {
+          await this.executionPortReady.get(port);
+        }
         const trustedMessage = port.name === PORT_NAMES.review ? message : {
           ...message,
           sender: {
@@ -490,6 +497,7 @@
 
       record = await this.persist(transitionRun(record, RUN_STATUSES.policyChecked, {
         action: clone(action),
+        states: clone(list.states || []),
         listDigest: planDigest,
         policyDecision: {
           checkedAt: this.now(),
@@ -614,6 +622,28 @@
       } else {
         await this.prepareConfirmedStep(next);
       }
+    }
+
+    async submitConfirmation({ approved, runId, stepId }) {
+      const record = await this.storage.load(runId);
+      if (!record || record.status !== RUN_STATUSES.awaitingConfirmation
+        || record.confirmation?.stepId !== stepId || typeof approved !== 'boolean') {
+        throw new Error('Confirmation does not match an active durable run');
+      }
+      const identity = 'review_ui:none:none';
+      const sequence = (record.lastAcceptedSequenceBySender[identity] || 0) + 1;
+      const message = {
+        protocol: RUN_PROTOCOL,
+        type: MESSAGE_TYPES.runConfirm,
+        requestId: record.requestId,
+        runId,
+        sequence,
+        sentAt: this.now(),
+        sender: { context: 'review_ui', documentId: null, tabId: null },
+        payload: { approved, stepId },
+      };
+      await this.enqueue(runId, () => this.receiveReviewEvent(message));
+      return this.storage.load(runId);
     }
 
     async openExecutionTabFromConfirmation(record) {
@@ -1321,18 +1351,34 @@
       for (const run of runs.filter((candidate) => (
         !isTerminal(candidate.status) && candidate.execution.tabId === tabId
       ))) {
-        if ([RUN_STATUSES.waitingForEffect, RUN_STATUSES.extracting].includes(run.status)
-          && run.pendingCommand) {
-          if (run.action.safety.idempotency === 'safe') {
-            await this.dispatchPreparedStep(run);
-          } else {
-            await this.fail(run.runId, createError(
-              ERROR_CODES.transportDisconnected,
-              'A non-repeatable command has an uncertain completion state after restart',
-              { stepId: run.pendingCommand.stepId },
-            ));
+        await this.enqueue(run.runId, async () => {
+          let current = await this.storage.load(run.runId);
+          if (!current || isTerminal(current.status) || current.execution.tabId !== tabId) return;
+
+          const port = this.executionPorts.get(tabId);
+          if (!port) return;
+          const initialization = makeEnvelope(current, MESSAGE_TYPES.executionInitialize, {
+            action: clone(current.action),
+            states: clone(current.states || []),
+          }, current.nextCoordinatorSequence);
+          current = await this.persist(updateRun(current, {
+            nextCoordinatorSequence: current.nextCoordinatorSequence + 1,
+          }, this.now()));
+          port.postMessage(initialization);
+
+          if ([RUN_STATUSES.waitingForEffect, RUN_STATUSES.extracting].includes(current.status)
+            && current.pendingCommand) {
+            if (current.action.safety.idempotency === 'safe') {
+              await this.dispatchPreparedStep(current);
+            } else {
+              await this.fail(current.runId, createError(
+                ERROR_CODES.transportDisconnected,
+                'A non-repeatable command has an uncertain completion state after restart',
+                { stepId: current.pendingCommand.stepId },
+              ));
+            }
           }
-        }
+        });
       }
     }
   }

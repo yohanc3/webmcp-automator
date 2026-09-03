@@ -37,6 +37,7 @@
 
   const createCoordinator = ({
     chromeApi = chrome,
+    durableCoordinator = null,
     fetchApi = fetch,
     isExecutionTab = async () => false,
     now = () => new Date().toISOString(),
@@ -57,6 +58,37 @@
     const policyKey = (origin) => `${POLICY_PREFIX}${origin}`;
     const lifecycleKey = (scopeId) => `${LIFECYCLE_PREFIX}${scopeId}`;
     const candidateKey = (scopeId) => `${CANDIDATE_PREFIX}${scopeId}`;
+    const confirmationFor = async ({ origin, runId = null } = {}) => {
+      if (!durableCoordinator) return null;
+      const runs = await durableCoordinator.storage.list();
+      const record = runs.find((run) => (
+        run.status === 'awaiting_confirmation'
+        && (!runId || run.runId === runId)
+        && (!origin || run.site?.origin === origin)
+      ));
+      if (!record) return null;
+      const stepIndex = record.action.steps.findIndex(({ id }) => id === record.confirmation.stepId);
+      return {
+        actionTitle: record.action.tool.title,
+        argumentPreview: record.confirmation.argumentPreview,
+        documentId: record.execution.documentId,
+        listDigest: record.listDigest,
+        origin: record.site.origin,
+        policy: {
+          ...record.listPolicy,
+          origin: record.site.origin,
+          policyRevision: record.listPolicy?.checkedAt || record.policyDecision?.checkedAt,
+        },
+        policyRevision: record.listPolicy?.checkedAt || record.policyDecision?.checkedAt,
+        requiredScope: record.action.safety.class,
+        runId: record.runId,
+        sensitiveArguments: record.action.safety.sensitiveArguments,
+        step: record.action.steps[stepIndex] || null,
+        stepId: record.confirmation.stepId,
+        stepIndex,
+        summary: record.confirmation.summary,
+      };
+    };
 
     const currentPolicy = async ({ origin, scope, revision = null }) => {
       const normalized = explicitOrigin(origin);
@@ -325,18 +357,23 @@
           if (mapState.actionMap) {
             mapState.candidate = await currentCandidate({ actionMap: mapState.actionMap, scopeId });
           }
+          const confirmation = await confirmationFor({ origin });
           return { ok: true, state: {
             ...mapState,
             context: {
               actionMapDigest: mapState.actionMap?.digest || null,
               actionMapRevision: mapState.actionMap?.revision || null,
-              listDigest: mapState.candidate?.listDigest || null,
+              documentId: confirmation?.documentId || null,
+              listDigest: confirmation?.listDigest || mapState.candidate?.listDigest || null,
               listRevision: mapState.candidate?.listRevision || null,
               origin,
-              policyRevision: policy?.revision ?? null,
+              policyRevision: confirmation?.policyRevision ?? policy?.revision ?? null,
+              runId: confirmation?.runId || null,
               requestedScope: 'ambient_learn',
               siteScopeId: scopeId,
+              stepId: confirmation?.stepId || null,
             },
+            confirmation,
             overrideAudit: stored?.overrideAudit || null,
             policy,
             retrySpool: await retryMetadata(origin, scopeId),
@@ -401,8 +438,34 @@
         case 'OPEN_CANDIDATE_EVIDENCE':
           return { ok: false, error: 'Candidate evidence is explicitly unavailable without an exact server-bound evidence resolver' };
         case 'SUBMIT_RUN_CONFIRMATION':
-          return { ok: false, error: 'Run confirmation remains unavailable without an exact coordinator run and step binding' };
+        {
+          if (!durableCoordinator) {
+            return { ok: false, error: 'No matching exact coordinator run confirmation is pending' };
+          }
+          const supplied = message.decision || {};
+          const tabs = await chromeApi.tabs?.query?.({ active: true, lastFocusedWindow: true }) || [];
+          const origin = originFromUrl(tabs[0]?.url);
+          const expected = await confirmationFor({ origin, runId: supplied.runId });
+          if (!expected || typeof supplied.approved !== 'boolean') {
+            return { ok: false, error: 'No matching exact coordinator run confirmation is pending' };
+          }
+          const fields = ['runId', 'listDigest', 'stepId', 'origin', 'documentId', 'policyRevision'];
+          if (fields.some((field) => supplied[field] !== expected[field])) {
+            return { ok: false, error: 'Run confirmation does not match the current exact binding' };
+          }
+          await durableCoordinator.submitConfirmation({
+            approved: supplied.approved,
+            runId: expected.runId,
+            stepId: expected.stepId,
+          });
+          return { ok: true };
+        }
         case protocol.MESSAGE_TYPES.pageReady:
+          if (Number.isInteger(sender.tab?.id)) {
+            void Promise.resolve(chromeApi.tabs.sendMessage?.(sender.tab.id, {
+              type: protocol.MESSAGE_TYPES.refreshAdapters,
+            })).catch(() => {});
+          }
           return { recordingActive: false, recordingId: null };
         case protocol.MESSAGE_TYPES.getBackendHealth:
           return { ok: true, health: await requestBackend('/health') };
@@ -454,6 +517,7 @@
     const durable = createDurableCoordinator();
     chromeAdapters.installChromeCoordinator({ chromeApi: chrome, coordinator: durable });
     const coordinator = createCoordinator({
+      durableCoordinator: durable,
       isExecutionTab: async (tabId) => (await durable.storage.list()).some((run) => (
         run.execution?.tabId === tabId && !['completed', 'failed', 'cancelled'].includes(run.status)
       )),

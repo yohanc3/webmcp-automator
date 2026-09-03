@@ -1,0 +1,225 @@
+{
+  "schemaVersion": "action-list/1",
+  "listId": "owned_storefront_basket",
+  "site": {
+    "origin": "http://127.0.0.1:4317",
+    "routePatterns": [
+      "^/demo/?$",
+      "^/demo/search(?:\\?.*)?$"
+    ],
+    "topFrameOnly": true
+  },
+  "publication": {
+    "status": "candidate",
+    "revision": 2,
+    "createdAt": "2026-09-03T00:00:00Z",
+    "updatedAt": "2026-09-03T00:00:00Z",
+    "sourceMapId": "map_storefront_basket",
+    "contentDigest": null
+  },
+  "policy": {
+    "status": "allowed",
+    "scopes": [
+      "learn",
+      "inject",
+      "read",
+      "write"
+    ],
+    "basis": "local_fixture",
+    "evidenceUrl": null,
+    "checkedAt": "2026-09-03T00:00:00Z",
+    "expiresAt": null,
+    "reviewedBy": "repository owner",
+    "note": "Owned deterministic demo served by the local Action Mapper service."
+  },
+  "states": [
+    {
+      "id": "search_results",
+      "label": "Search results",
+      "description": "A result collection for the submitted catalog query is visible.",
+      "match": {
+        "mode": "all",
+        "checks": [
+          {
+            "kind": "url",
+            "pattern": "^http://127\\.0\\.0\\.1:4317/demo/search(?:\\?.*)?$"
+          },
+          {
+            "kind": "collection",
+            "target": {
+              "cardinality": "many",
+              "visible": true,
+              "enabled": false,
+              "strategies": [
+                {
+                  "kind": "role",
+                  "role": "article",
+                  "name": "Product",
+                  "exact": false
+                },
+                {
+                  "kind": "css",
+                  "selector": "[data-product-id]"
+                }
+              ]
+            },
+            "minimumItems": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "field_h1_in_basket",
+      "label": "Field H1 added",
+      "description": "The owned demo confirms Field H1 was added to the basket.",
+      "match": {
+        "mode": "all",
+        "checks": [
+          {
+            "kind": "url",
+            "pattern": "^http://127\\.0\\.0\\.1:4317/demo/search(?:\\?.*)?$"
+          },
+          {
+            "kind": "element",
+            "target": {
+              "cardinality": "one",
+              "visible": true,
+              "enabled": false,
+              "strategies": [
+                {
+                  "kind": "css",
+                  "selector": "[data-product-id='field-h1'] [data-add-to-basket]"
+                }
+              ]
+            },
+            "assertion": "disabled"
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "add_field_h1_to_basket",
+      "version": 2,
+      "lifecycle": "candidate",
+      "tool": {
+        "name": "add_field_h1_to_basket",
+        "title": "Add Field H1 headphones to basket",
+        "description": "Add the Field H1 closed-back headphones from the current search results to the owned demo basket.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "untrustedContentHint": true
+        }
+      },
+      "precondition": {
+        "allowedStateIds": [
+          "search_results"
+        ],
+        "urlPatterns": [
+          "^http://127\\.0\\.0\\.1:4317/demo/search(?:\\?.*)?$"
+        ],
+        "checks": {
+          "mode": "all",
+          "checks": [
+            {
+              "kind": "element",
+              "target": {
+                "cardinality": "one",
+                "visible": true,
+                "enabled": true,
+                "strategies": [
+                  {
+                    "kind": "css",
+                    "selector": "[data-product-id='field-h1'] [data-add-to-basket]"
+                  }
+                ]
+              },
+              "assertion": "enabled"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "id": "add_field_h1",
+          "op": "click",
+          "target": {
+            "cardinality": "one",
+            "visible": true,
+            "enabled": true,
+            "strategies": [
+              {
+                "kind": "css",
+                "selector": "[data-product-id='field-h1'] [data-add-to-basket]"
+              },
+              {
+                "kind": "role",
+                "role": "button",
+                "name": "Add to basket",
+                "exact": true
+              }
+            ]
+          },
+          "expect": {
+            "mode": "all",
+            "checks": [
+              {
+                "kind": "state",
+                "stateId": "field_h1_in_basket"
+              }
+            ]
+          },
+          "timeoutMs": 5000,
+          "evidence": [
+            {
+              "traceId": "trace_storefront_search",
+              "transitionId": "transition_3",
+              "fromPageId": "page_3",
+              "actionFrameSequence": 8,
+              "updateFrameSequence": 9,
+              "toPageId": "page_4"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "mode": "none"
+      },
+      "safety": {
+        "class": "write",
+        "writesExternalState": true,
+        "confirmation": "before_step",
+        "confirmationStepId": "add_field_h1",
+        "idempotency": "conditional",
+        "sensitiveArguments": []
+      },
+      "runtime": {
+        "executionSurface": "inactive_tab",
+        "allowedOrigins": [
+          "http://127.0.0.1:4317"
+        ],
+        "maxDurationMs": 15000,
+        "maxNavigations": 0,
+        "closeExecutionTab": true
+      },
+      "provenance": {
+        "source": "demonstration",
+        "observationCount": 1,
+        "traceIds": [
+          "trace_storefront_search"
+        ],
+        "compiler": "reviewed owned-demo basket fixture",
+        "compiledAt": "2026-09-03T00:00:00Z",
+        "reviewedAt": null,
+        "reviewedBy": null
+      }
+    }
+  ]
+}
