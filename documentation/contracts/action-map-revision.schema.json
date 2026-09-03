@@ -1,0 +1,302 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webmcp-automator.local/schemas/action-map-revision.schema.json",
+  "title": "Action-map patch application receipt",
+  "description": "Deterministic compare-and-append result for one action-map-patch/1 document.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "patchId",
+    "idempotencyKey",
+    "siteScopeId",
+    "sourceLayerSequence",
+    "application",
+    "parser",
+    "validation",
+    "storage",
+    "appliedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "action-map-revision/1"
+    },
+    "requestId": {
+      "$ref": "#/$defs/identifier"
+    },
+    "patchId": {
+      "$ref": "#/$defs/identifier"
+    },
+    "idempotencyKey": {
+      "$ref": "#/$defs/digest"
+    },
+    "siteScopeId": {
+      "$ref": "#/$defs/identifier"
+    },
+    "sourceLayerSequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "application": {
+      "$ref": "#/$defs/application"
+    },
+    "parser": {
+      "$ref": "#/$defs/parser"
+    },
+    "validation": {
+      "$ref": "#/$defs/validation"
+    },
+    "storage": {
+      "$ref": "#/$defs/storage"
+    },
+    "appliedAt": {
+      "$ref": "#/$defs/timestamp"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.:-]{0,127}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "revisionPointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "digest"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "digest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "revision": {
+                "const": 0
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "digest": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "digest": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "application": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "base",
+        "result",
+        "current",
+        "conflictCode"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "applied",
+            "duplicate",
+            "no_change",
+            "conflict",
+            "rejected"
+          ]
+        },
+        "base": {
+          "$ref": "#/$defs/revisionPointer"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/revisionPointer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "current": {
+          "$ref": "#/$defs/revisionPointer"
+        },
+        "conflictCode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            null,
+            "BASE_REVISION_STALE",
+            "BASE_DIGEST_MISMATCH",
+            "IDEMPOTENCY_KEY_REUSED",
+            "LAYER_SEQUENCE_STALE",
+            "VALIDATION_FAILED"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "applied",
+                  "duplicate",
+                  "no_change"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "result": {
+                "$ref": "#/$defs/revisionPointer"
+              },
+              "conflictCode": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "result": {
+                "type": "null"
+              },
+              "conflictCode": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "parser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parserId",
+        "parserVersion",
+        "promptVersion"
+      ],
+      "properties": {
+        "parserId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "parserVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "promptVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "validatorVersion",
+        "actionMapSchemaVersion",
+        "actionListSchemaVersion",
+        "checks"
+      ],
+      "properties": {
+        "validatorVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "actionMapSchemaVersion": {
+          "const": "action-map/1"
+        },
+        "actionListSchemaVersion": {
+          "const": "action-list/1"
+        },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "request_binding",
+              "site_scope",
+              "layer_sequence",
+              "evidence_resolution",
+              "executable_actions",
+              "provenance",
+              "privacy",
+              "action_map_schema",
+              "canonical_digest"
+            ]
+          }
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actionMapRevisionStored",
+        "safeEvidenceMetadataCount",
+        "semanticXmlStored",
+        "sanitizedObservationStored",
+        "rawObservationStored"
+      ],
+      "properties": {
+        "actionMapRevisionStored": {
+          "type": "boolean"
+        },
+        "safeEvidenceMetadataCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "semanticXmlStored": {
+          "const": false
+        },
+        "sanitizedObservationStored": {
+          "const": false
+        },
+        "rawObservationStored": {
+          "const": false
+        }
+      }
+    }
+  }
+}

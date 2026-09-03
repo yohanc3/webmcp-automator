@@ -1,0 +1,527 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webmcp-automator.local/schemas/action-map-patch.schema.json",
+  "title": "Incremental action-map patch",
+  "description": "Strict AI output for one ambient semantic layer. Applying the patch must produce a valid action-map/1 document.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "patchId",
+    "requestId",
+    "idempotencyKey",
+    "siteScopeId",
+    "layerSequence",
+    "mapBase",
+    "parser",
+    "decision",
+    "summary",
+    "operations",
+    "evidenceCitations"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "action-map-patch/1"
+    },
+    "patchId": {
+      "$ref": "#/$defs/identifier"
+    },
+    "requestId": {
+      "$ref": "#/$defs/identifier"
+    },
+    "idempotencyKey": {
+      "$ref": "#/$defs/digest"
+    },
+    "siteScopeId": {
+      "$ref": "#/$defs/identifier"
+    },
+    "layerSequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "mapBase": {
+      "$ref": "#/$defs/mapBase"
+    },
+    "parser": {
+      "$ref": "#/$defs/parser"
+    },
+    "decision": {
+      "enum": [
+        "patch",
+        "no_change"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "operations": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 64,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/upsertState"
+          },
+          {
+            "$ref": "#/$defs/upsertAction"
+          }
+        ]
+      }
+    },
+    "evidenceCitations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/evidenceCitation"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "no_change"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "operations": {
+            "maxItems": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "operations": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.:-]{0,127}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "mapBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "digest"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "digest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "revision": {
+                "const": 0
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "digest": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "digest": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "parser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parserId",
+        "parserVersion",
+        "promptVersion"
+      ],
+      "properties": {
+        "parserId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "parserVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "promptVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        }
+      }
+    },
+    "provenance": {
+      "enum": [
+        "inferred",
+        "observed",
+        "verified"
+      ]
+    },
+    "upsertState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "entityId",
+        "state",
+        "provenance",
+        "reason",
+        "citationIds"
+      ],
+      "properties": {
+        "op": {
+          "const": "upsert_state"
+        },
+        "entityId": {
+          "$ref": "#/$defs/actionMapIdentifier"
+        },
+        "state": {
+          "$ref": "#/$defs/stateValue"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "citationIds": {
+          "$ref": "#/$defs/citationIds"
+        }
+      }
+    },
+    "upsertAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "entityId",
+        "action",
+        "provenance",
+        "reason",
+        "componentActionIds",
+        "citationIds",
+        "stepEvidence"
+      ],
+      "properties": {
+        "op": {
+          "const": "upsert_action"
+        },
+        "entityId": {
+          "$ref": "#/$defs/actionMapIdentifier"
+        },
+        "action": {
+          "$ref": "#/$defs/actionValue"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "componentActionIds": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/actionMapIdentifier"
+          }
+        },
+        "citationIds": {
+          "$ref": "#/$defs/citationIds"
+        },
+        "stepEvidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/stepEvidence"
+          }
+        }
+      }
+    },
+    "stateValue": {
+      "type": "object",
+      "description": "A complete action-map/1 state. The post-patch validator applies the canonical action-map schema.",
+      "required": [
+        "id",
+        "label",
+        "urlPattern",
+        "fingerprint",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/actionMapIdentifier"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "urlPattern": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "actionValue": {
+      "type": "object",
+      "description": "A complete executable action-map/1 action. This envelope intentionally does not duplicate the canonical action schema.",
+      "required": [
+        "id",
+        "name",
+        "description",
+        "category",
+        "status",
+        "safety",
+        "confidence",
+        "fromState",
+        "toState",
+        "parameters",
+        "steps",
+        "output",
+        "evidence",
+        "missingEvidence"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/actionMapIdentifier"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "enum": [
+            "read",
+            "navigate",
+            "input",
+            "submit",
+            "change"
+          ]
+        },
+        "status": {
+          "enum": [
+            "observed",
+            "resolvable"
+          ]
+        },
+        "safety": {
+          "enum": [
+            "read",
+            "write",
+            "danger"
+          ]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "fromState": {
+          "$ref": "#/$defs/actionMapIdentifier"
+        },
+        "toState": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/actionMapIdentifier"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parameters": {
+          "type": "array"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "object"
+          }
+        },
+        "output": {
+          "type": "object"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "missingEvidence": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "stepEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stepIndex",
+        "role",
+        "evidenceId",
+        "layerId",
+        "fieldName"
+      ],
+      "properties": {
+        "stepIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 19
+        },
+        "role": {
+          "enum": [
+            "target",
+            "effect",
+            "output"
+          ]
+        },
+        "evidenceId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "layerId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "fieldName": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-z][a-z0-9_]{0,29}$"
+        }
+      }
+    },
+    "evidenceCitation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "citationId",
+        "evidenceId",
+        "layerId",
+        "source",
+        "kind",
+        "digest"
+      ],
+      "properties": {
+        "citationId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "evidenceId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "layerId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "source": {
+          "enum": [
+            "current_layer",
+            "observation",
+            "prior_context",
+            "verification"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "node",
+            "event",
+            "update",
+            "state",
+            "action"
+          ]
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "citationIds": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/identifier"
+      }
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "actionMapIdentifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,39}$"
+    }
+  }
+}
