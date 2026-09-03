@@ -1,0 +1,590 @@
+{
+  "schemaVersion": "action-map-patch/1",
+  "patchId": "patch_orders_002",
+  "requestId": "parse_orders_002",
+  "idempotencyKey": "sha256:ac6967e08a2c65a74951d5cd854227754c8b70d7cfd0cc7cf22b857921418d69",
+  "siteScopeId": "owned_account_orders",
+  "layerSequence": 2,
+  "mapBase": {
+    "revision": 1,
+    "digest": "sha256:20fd07cfcf35702ec55664cb488e5928e4684bbb959d52efeae495dd12117492"
+  },
+  "parser": {
+    "parserId": "ambient_action_parser",
+    "parserVersion": "1.0.0",
+    "promptVersion": "ambient-v1"
+  },
+  "decision": "patch",
+  "summary": "Upgrade Orders navigation to observed, infer page-local extraction, and compose the reachable Get recent orders action.",
+  "operations": [
+    {
+      "op": "upsert_state",
+      "entityId": "orders",
+      "state": {
+        "id": "orders",
+        "label": "Orders",
+        "urlPattern": "^https://shop\\.example/orders(?:\\?.*)?$",
+        "fingerprint": null,
+        "evidence": [
+          "layer_orders_002:node_orders_heading",
+          "layer_orders_002:node_order_list"
+        ]
+      },
+      "provenance": "observed",
+      "reason": "The click observation navigated to a page whose semantic layer contains the Orders heading and collection.",
+      "citationIds": [
+        "cite_orders_heading",
+        "cite_order_list",
+        "cite_orders_navigation"
+      ]
+    },
+    {
+      "op": "upsert_action",
+      "entityId": "open_orders",
+      "action": {
+        "id": "open_orders",
+        "name": "Open orders",
+        "description": "Open the account Orders page.",
+        "category": "navigate",
+        "status": "observed",
+        "safety": "read",
+        "confidence": 0.99,
+        "fromState": "account_home",
+        "toState": "orders",
+        "parameters": [],
+        "steps": [
+          {
+            "op": "click",
+            "target": {
+              "css": null,
+              "role": "link",
+              "name": "Orders",
+              "placeholder": null,
+              "text": "Orders",
+              "hrefContains": "/orders"
+            },
+            "valueFrom": null,
+            "literalValue": null,
+            "key": null,
+            "expect": {
+              "kind": "navigation",
+              "state": "orders",
+              "urlPattern": "^https://shop\\.example/orders(?:\\?.*)?$",
+              "target": {
+                "css": null,
+                "role": null,
+                "name": null,
+                "placeholder": null,
+                "text": null,
+                "hrefContains": null
+              }
+            },
+            "timeoutMs": 10000
+          }
+        ],
+        "output": {
+          "mode": "none",
+          "collectionRoot": {
+            "css": null,
+            "role": null,
+            "name": null,
+            "placeholder": null,
+            "text": null,
+            "hrefContains": null
+          },
+          "item": {
+            "css": null,
+            "role": null,
+            "name": null,
+            "placeholder": null,
+            "text": null,
+            "hrefContains": null
+          },
+          "limit": 1,
+          "fields": []
+        },
+        "evidence": [
+          "layer_orders_001:node_orders_link:step_0_target",
+          "layer_orders_002:update_orders_navigation:step_0_effect"
+        ],
+        "missingEvidence": []
+      },
+      "provenance": "observed",
+      "reason": "The prior inferred click is now connected causally to the resulting Orders layer.",
+      "componentActionIds": [],
+      "citationIds": [
+        "cite_orders_link_prior",
+        "cite_open_orders_event",
+        "cite_orders_navigation",
+        "cite_orders_heading"
+      ],
+      "stepEvidence": [
+        {
+          "stepIndex": 0,
+          "role": "target",
+          "evidenceId": "node_orders_link",
+          "layerId": "layer_orders_001",
+          "fieldName": null
+        },
+        {
+          "stepIndex": 0,
+          "role": "effect",
+          "evidenceId": "update_orders_navigation",
+          "layerId": "layer_orders_002",
+          "fieldName": null
+        }
+      ]
+    },
+    {
+      "op": "upsert_action",
+      "entityId": "get_recent_orders",
+      "action": {
+        "id": "get_recent_orders",
+        "name": "Get recent orders on Orders page",
+        "description": "Return the recent orders visible on the Orders page.",
+        "category": "read",
+        "status": "resolvable",
+        "safety": "read",
+        "confidence": 0.94,
+        "fromState": "orders",
+        "toState": "orders",
+        "parameters": [],
+        "steps": [
+          {
+            "op": "extract",
+            "target": {
+              "css": null,
+              "role": null,
+              "name": null,
+              "placeholder": null,
+              "text": null,
+              "hrefContains": null
+            },
+            "valueFrom": null,
+            "literalValue": null,
+            "key": null,
+            "expect": {
+              "kind": "collection",
+              "state": "orders",
+              "urlPattern": null,
+              "target": {
+                "css": null,
+                "role": "list",
+                "name": "Orders",
+                "placeholder": null,
+                "text": null,
+                "hrefContains": null
+              }
+            },
+            "timeoutMs": 5000
+          }
+        ],
+        "output": {
+          "mode": "collection",
+          "collectionRoot": {
+            "css": null,
+            "role": "list",
+            "name": "Orders",
+            "placeholder": null,
+            "text": null,
+            "hrefContains": null
+          },
+          "item": {
+            "css": null,
+            "role": "listitem",
+            "name": null,
+            "placeholder": null,
+            "text": null,
+            "hrefContains": null
+          },
+          "limit": 25,
+          "fields": [
+            {
+              "name": "order_id",
+              "locator": {
+                "css": "[data-field='order-id']",
+                "role": null,
+                "name": null,
+                "placeholder": null,
+                "text": null,
+                "hrefContains": null
+              },
+              "attribute": null,
+              "required": true
+            },
+            {
+              "name": "date",
+              "locator": {
+                "css": "[data-field='date']",
+                "role": null,
+                "name": null,
+                "placeholder": null,
+                "text": null,
+                "hrefContains": null
+              },
+              "attribute": null,
+              "required": true
+            },
+            {
+              "name": "total",
+              "locator": {
+                "css": "[data-field='total']",
+                "role": null,
+                "name": null,
+                "placeholder": null,
+                "text": null,
+                "hrefContains": null
+              },
+              "attribute": null,
+              "required": true
+            }
+          ]
+        },
+        "evidence": [
+          "layer_orders_002:node_order_list:step_0_output",
+          "layer_orders_002:node_order_id:field_order_id",
+          "layer_orders_002:node_order_date:field_date",
+          "layer_orders_002:node_order_total:field_total"
+        ],
+        "missingEvidence": []
+      },
+      "provenance": "inferred",
+      "reason": "The Orders page alone exposes a semantic list and evidence-backed fields suitable for deterministic extraction.",
+      "componentActionIds": [],
+      "citationIds": [
+        "cite_order_list",
+        "cite_order_id",
+        "cite_order_date",
+        "cite_order_total"
+      ],
+      "stepEvidence": [
+        {
+          "stepIndex": 0,
+          "role": "output",
+          "evidenceId": "node_order_list",
+          "layerId": "layer_orders_002",
+          "fieldName": null
+        },
+        {
+          "stepIndex": 0,
+          "role": "output",
+          "evidenceId": "node_order_id",
+          "layerId": "layer_orders_002",
+          "fieldName": "order_id"
+        },
+        {
+          "stepIndex": 0,
+          "role": "output",
+          "evidenceId": "node_order_date",
+          "layerId": "layer_orders_002",
+          "fieldName": "date"
+        },
+        {
+          "stepIndex": 0,
+          "role": "output",
+          "evidenceId": "node_order_total",
+          "layerId": "layer_orders_002",
+          "fieldName": "total"
+        }
+      ]
+    },
+    {
+      "op": "upsert_action",
+      "entityId": "get_orders_from_account",
+      "action": {
+        "id": "get_orders_from_account",
+        "name": "Get recent orders",
+        "description": "Open Orders from the account page and return the recent order collection.",
+        "category": "read",
+        "status": "observed",
+        "safety": "read",
+        "confidence": 0.97,
+        "fromState": "account_home",
+        "toState": "orders",
+        "parameters": [],
+        "steps": [
+          {
+            "op": "click",
+            "target": {
+              "css": null,
+              "role": "link",
+              "name": "Orders",
+              "placeholder": null,
+              "text": "Orders",
+              "hrefContains": "/orders"
+            },
+            "valueFrom": null,
+            "literalValue": null,
+            "key": null,
+            "expect": {
+              "kind": "navigation",
+              "state": "orders",
+              "urlPattern": "^https://shop\\.example/orders(?:\\?.*)?$",
+              "target": {
+                "css": null,
+                "role": null,
+                "name": null,
+                "placeholder": null,
+                "text": null,
+                "hrefContains": null
+              }
+            },
+            "timeoutMs": 10000
+          },
+          {
+            "op": "wait",
+            "target": {
+              "css": null,
+              "role": null,
+              "name": null,
+              "placeholder": null,
+              "text": null,
+              "hrefContains": null
+            },
+            "valueFrom": null,
+            "literalValue": null,
+            "key": null,
+            "expect": {
+              "kind": "collection",
+              "state": "orders",
+              "urlPattern": null,
+              "target": {
+                "css": null,
+                "role": "list",
+                "name": "Orders",
+                "placeholder": null,
+                "text": null,
+                "hrefContains": null
+              }
+            },
+            "timeoutMs": 10000
+          },
+          {
+            "op": "extract",
+            "target": {
+              "css": null,
+              "role": null,
+              "name": null,
+              "placeholder": null,
+              "text": null,
+              "hrefContains": null
+            },
+            "valueFrom": null,
+            "literalValue": null,
+            "key": null,
+            "expect": {
+              "kind": "collection",
+              "state": "orders",
+              "urlPattern": null,
+              "target": {
+                "css": null,
+                "role": "list",
+                "name": "Orders",
+                "placeholder": null,
+                "text": null,
+                "hrefContains": null
+              }
+            },
+            "timeoutMs": 5000
+          }
+        ],
+        "output": {
+          "mode": "collection",
+          "collectionRoot": {
+            "css": null,
+            "role": "list",
+            "name": "Orders",
+            "placeholder": null,
+            "text": null,
+            "hrefContains": null
+          },
+          "item": {
+            "css": null,
+            "role": "listitem",
+            "name": null,
+            "placeholder": null,
+            "text": null,
+            "hrefContains": null
+          },
+          "limit": 25,
+          "fields": [
+            {
+              "name": "order_id",
+              "locator": {
+                "css": "[data-field='order-id']",
+                "role": null,
+                "name": null,
+                "placeholder": null,
+                "text": null,
+                "hrefContains": null
+              },
+              "attribute": null,
+              "required": true
+            },
+            {
+              "name": "date",
+              "locator": {
+                "css": "[data-field='date']",
+                "role": null,
+                "name": null,
+                "placeholder": null,
+                "text": null,
+                "hrefContains": null
+              },
+              "attribute": null,
+              "required": true
+            },
+            {
+              "name": "total",
+              "locator": {
+                "css": "[data-field='total']",
+                "role": null,
+                "name": null,
+                "placeholder": null,
+                "text": null,
+                "hrefContains": null
+              },
+              "attribute": null,
+              "required": true
+            }
+          ]
+        },
+        "evidence": [
+          "component:open_orders",
+          "component:get_recent_orders",
+          "layer_orders_001:node_orders_link:step_0_target",
+          "layer_orders_002:update_orders_navigation:step_0_effect",
+          "layer_orders_002:node_order_list:step_1_effect",
+          "layer_orders_002:node_order_id:field_order_id",
+          "layer_orders_002:node_order_date:field_date",
+          "layer_orders_002:node_order_total:field_total"
+        ],
+        "missingEvidence": []
+      },
+      "provenance": "observed",
+      "reason": "The observed navigation connects the page-inferred Open orders and Get recent orders actions into one flattened higher-level action.",
+      "componentActionIds": [
+        "open_orders",
+        "get_recent_orders"
+      ],
+      "citationIds": [
+        "cite_orders_link_prior",
+        "cite_orders_navigation",
+        "cite_order_list",
+        "cite_order_id",
+        "cite_order_date",
+        "cite_order_total"
+      ],
+      "stepEvidence": [
+        {
+          "stepIndex": 0,
+          "role": "target",
+          "evidenceId": "node_orders_link",
+          "layerId": "layer_orders_001",
+          "fieldName": null
+        },
+        {
+          "stepIndex": 0,
+          "role": "effect",
+          "evidenceId": "update_orders_navigation",
+          "layerId": "layer_orders_002",
+          "fieldName": null
+        },
+        {
+          "stepIndex": 1,
+          "role": "effect",
+          "evidenceId": "node_order_list",
+          "layerId": "layer_orders_002",
+          "fieldName": null
+        },
+        {
+          "stepIndex": 2,
+          "role": "output",
+          "evidenceId": "node_order_id",
+          "layerId": "layer_orders_002",
+          "fieldName": "order_id"
+        },
+        {
+          "stepIndex": 2,
+          "role": "output",
+          "evidenceId": "node_order_date",
+          "layerId": "layer_orders_002",
+          "fieldName": "date"
+        },
+        {
+          "stepIndex": 2,
+          "role": "output",
+          "evidenceId": "node_order_total",
+          "layerId": "layer_orders_002",
+          "fieldName": "total"
+        }
+      ]
+    }
+  ],
+  "evidenceCitations": [
+    {
+      "citationId": "cite_orders_link_prior",
+      "evidenceId": "node_orders_link",
+      "layerId": "layer_orders_001",
+      "source": "prior_context",
+      "kind": "node",
+      "digest": "sha256:083328f70788701f3ce315f7c9c634ebbce5db3859a730ba8a304b1005d90e25"
+    },
+    {
+      "citationId": "cite_open_orders_event",
+      "evidenceId": "obs_open_orders",
+      "layerId": "layer_orders_002",
+      "source": "observation",
+      "kind": "event",
+      "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    },
+    {
+      "citationId": "cite_orders_navigation",
+      "evidenceId": "update_orders_navigation",
+      "layerId": "layer_orders_002",
+      "source": "observation",
+      "kind": "update",
+      "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    },
+    {
+      "citationId": "cite_orders_heading",
+      "evidenceId": "node_orders_heading",
+      "layerId": "layer_orders_002",
+      "source": "current_layer",
+      "kind": "node",
+      "digest": "sha256:bd950b64bfb8a80d3fb8268be6f672a6e6846bbf27917f9c3e015a948d640e6c"
+    },
+    {
+      "citationId": "cite_order_list",
+      "evidenceId": "node_order_list",
+      "layerId": "layer_orders_002",
+      "source": "current_layer",
+      "kind": "node",
+      "digest": "sha256:bd950b64bfb8a80d3fb8268be6f672a6e6846bbf27917f9c3e015a948d640e6c"
+    },
+    {
+      "citationId": "cite_order_id",
+      "evidenceId": "node_order_id",
+      "layerId": "layer_orders_002",
+      "source": "current_layer",
+      "kind": "node",
+      "digest": "sha256:bd950b64bfb8a80d3fb8268be6f672a6e6846bbf27917f9c3e015a948d640e6c"
+    },
+    {
+      "citationId": "cite_order_date",
+      "evidenceId": "node_order_date",
+      "layerId": "layer_orders_002",
+      "source": "current_layer",
+      "kind": "node",
+      "digest": "sha256:bd950b64bfb8a80d3fb8268be6f672a6e6846bbf27917f9c3e015a948d640e6c"
+    },
+    {
+      "citationId": "cite_order_total",
+      "evidenceId": "node_order_total",
+      "layerId": "layer_orders_002",
+      "source": "current_layer",
+      "kind": "node",
+      "digest": "sha256:bd950b64bfb8a80d3fb8268be6f672a6e6846bbf27917f9c3e015a948d640e6c"
+    }
+  ]
+}

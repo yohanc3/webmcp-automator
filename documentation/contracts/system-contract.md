@@ -12,8 +12,14 @@ The machine-readable source of truth is:
 - [`action-list.schema.json`](action-list.schema.json) for published runtime
   capabilities;
 - [`run-message.schema.json`](run-message.schema.json) for ready-path events;
-- the existing `learning-trace/3` validator for captured evidence;
-- the existing `action-map/1` validator for the learned graph.
+- [`ambient-parse-request.schema.json`](ambient-parse-request.schema.json) for
+  each automatic semantic-layer parse;
+- [`action-map-patch.schema.json`](action-map-patch.schema.json) and
+  [`action-map-revision.schema.json`](action-map-revision.schema.json) for
+  incremental, idempotent map updates;
+- the existing `learning-trace/3` validator for historical batched trace and
+  replay-fixture compatibility; and
+- the existing `action-map/1` validator for the canonical action artifact.
 
 ## 1. Product boundary
 
@@ -21,10 +27,11 @@ The system has two pipelines joined by one publication gate:
 
 ```text
 LEARN
-observed browser session
-  -> learning-trace/3
-  -> deterministic transition graph
-  -> action-map/1 candidate
+eligible ambient browser activity
+  -> sanitized semantic-ui/2 layer + causal observation when present
+  -> ambient-parse-request/1 for every completed meaningful layer
+  -> AI action-map-patch/1
+  -> deterministic compare-and-append action-map/1 revision
   -> compile + validate + replay + review
   -> published action-list/1
 
@@ -37,10 +44,12 @@ published action-list/1
   -> return a typed result or structured error
 ```
 
-The publication gate is the trust boundary. AI output may propose labels,
-arguments, locators, and action boundaries on the learn side. No AI output is
-directly executable. The ready path consumes only a validated, immutable,
-published action-list revision.
+The parser does not build a hidden learned model and does not receive a
+user-supplied goal. It incrementally proposes changes to the visible,
+versioned `action-map/1` artifact. Every proposed action already has at least one
+executable step and evidence-bound targets; deterministic validation and
+revision persistence still separate AI output from runtime authority. The ready
+path consumes only a validated, immutable, published action-list revision.
 
 ### Required MVP invariants
 
@@ -62,6 +71,13 @@ published action-list revision.
    client/server boundary by default.
 10. Failure is typed and observable. A timeout or uncertain side effect is
     never reported as success.
+11. Policy is allowed before ambient observers attach, and privacy filtering
+    occurs while semantic evidence is projected, before local persistence or
+    model transfer.
+12. Every completed meaningful semantic layer is parsed. Confidence, novelty,
+    event count, and user intent do not gate parsing.
+13. Universal DB stores action-map/list revisions and safe evidence metadata,
+    never semantic XML or raw/sanitized browsing observations.
 
 ### Deliberate non-goals for the first integrated slice
 
@@ -74,40 +90,57 @@ published action-list revision.
 
 ## 2. Canonical artifacts
 
-### 2.1 Learning trace: `learning-trace/3`
+### 2.1 Ambient semantic layer: `ambient-parse-request/1`
 
-Producer: recorder and client sanitizer.
+Producer: policy-gated ambient capture plus the client sanitizer and compact
+context projector.
 
-Consumers: trace intake, graph builder, semanticizer, replay diagnostics.
+Consumers: AI parser/compiler and deterministic patch validator.
 
 Contract:
 
-- ordered `page -> action -> update -> page` frames;
-- stable frame and evidence IDs;
-- URLs reduced to approved structure;
-- semantic element metadata rather than a raw DOM snapshot;
-- user-entered values replaced by typed placeholders before upload;
-- deterministic chronology independent of the later AI interpretation.
+- one completed `semantic-ui/2` XML layer per request;
+- the causal sanitized observation that led to it, absent only on the initial
+  layer;
+- a monotonically increasing site-scoped layer sequence;
+- exact action-map base revision and digest;
+- compact prior state/action semantics without expanded steps or locators;
+- parser, policy, sanitizer, retry, and idempotency identity; and
+- stable semantic node/evidence IDs with user values replaced by typed tokens.
 
-The trace is evidence. It is append-only after session finalization. A model may
-refer to evidence IDs but may not rewrite the evidence.
+Every completed meaningful layer is parsed immediately. There is no goal,
+manual recording session, novelty threshold, or minimum-evidence gate. Exact
+delivery duplicates are idempotent. A distinct user observation produces a new
+layer even if its XML digest equals the previous layer.
+
+The full normative contract is
+[`ambient-learning.md`](ambient-learning.md). `learning-trace/3` remains an
+accepted compatibility artifact for historical batched recordings and replay
+fixtures, not the ambient parser's primary request.
 
 ### 2.2 Action map: `action-map/1`
 
-Producer: graph builder plus optional semanticizer.
+Producer: deterministic application of accepted `action-map-patch/1` results.
 
-Consumers: observed-plan compiler, review UI, learning visualizer.
+Consumers: action-list compiler, review UI, provenance view, and compact-context
+projector.
 
 Contract:
 
-- nodes represent observed page states;
-- edges represent observed actions and subsequent updates;
-- each edge points to the exact evidence that supports it;
+- nodes represent inferred or observed page states;
+- actions are executable state transitions or extractions with at least one
+  step;
+- page XML alone may yield `resolvable` actions;
+- causal observations connect and upgrade actions to `observed` paths;
+- flattened composite actions may include internal navigation steps;
+- action evidence retains compact layer/node/step binding handles;
 - parameter candidates distinguish demonstrated literals from inferred inputs;
 - confidence is advisory metadata, never authority to execute.
 
-The action map is the editable learning model. It may contain unpublishable
-candidates. It is not the object registered as WebMCP tools.
+The action map is the visible editable artifact, not an internal learned model.
+The ambient parser profile does not emit unresolved zero-step actions. The map
+may still contain unpublishable executable candidates pending replay, review,
+or policy. It is not the object registered as WebMCP tools.
 
 ### 2.3 Action list: `action-list/1`
 
@@ -538,134 +571,136 @@ masked sensitive fields.
 
 ## 5. Learn-path component contracts
 
-### L1. Browser recorder
+### L1. Policy-gated ambient capture and privacy
 
-Responsibility: deterministically capture page/action/update/page chronology and
-stable semantic evidence IDs from direct user activity.
+Responsibility: automatically attach semantic capture on an eligible top-level
+document, construct sanitized semantic XML and causal observations, and complete
+layers in deterministic order.
 
-Inputs: user-generated browser events and DOM/navigation observations.
+Inputs: current origin/route policy, user-generated events, DOM mutations,
+same-document routes, and top-level navigation.
 
-Outputs: local trace frames awaiting sanitization.
-
-Invariants:
-
-- capture happens only in an explicit learning session;
-- recorder labels observed facts, never invents action intent;
-- event order is deterministic even when MutationObserver and navigation events
-  race;
-- synthetic events generated by replay are marked and excluded from learning.
-
-Acceptance tests: input, click, Enter submit, SPA mutation, full navigation,
-repeated actions, session stop, and required frame ordering.
-
-### L2. Client privacy filter
-
-Responsibility: remove or tokenize sensitive values before evidence can leave
-the browser.
-
-Inputs: local trace frames and explicit session consent.
-
-Outputs: sanitized `learning-trace/3` plus a local-only redaction ledger.
-
-Default removals:
-
-- input/textarea/content-editable values;
-- cookies, storage values, authorization headers, and hidden inputs;
-- email, phone, address, payment, account, and credential-like literals;
-- DOM attributes not on the semantic allowlist;
-- page text outside the bounded target/context allowlist.
-
-The filter replaces demonstrated inputs with typed placeholders such as
-`{{arg.query}}`; it does not send the original value to enable later naming.
-
-Acceptance tests: seeded secrets in text, attributes, URL parameters, forms,
-and mutation payloads are absent from serialized traces.
-
-### L3. Trace intake and server privacy filter
-
-Responsibility: authenticate the local client if enabled, enforce size and
-schema limits, repeat sanitization, and store immutable accepted evidence.
-
-Inputs: sanitized trace.
-
-Outputs: accepted session ID or field-addressed rejection.
-
-Invariants: server filtering is defense in depth; invalid chronology fails;
-unknown fields fail; raw rejected bodies are not logged; model requests receive
-only the accepted minimized trace.
-
-Acceptance tests: malformed order, oversized trace, unknown version, injected
-secret, invalid URL, duplicate evidence ID.
-
-### L4. Deterministic graph builder
-
-Responsibility: reconstruct observed page states and action transitions without
-an LLM.
-
-Inputs: accepted learning trace.
-
-Outputs: evidence-backed graph skeleton.
-
-Invariants: every node and edge references source evidence; action precedes its
-update; uncertain boundaries are preserved as uncertainty instead of guessed;
-identical normalized states may be merged only under documented rules.
-
-Acceptance tests: known owned-storefront trace produces expected nodes and
-edges; shuffled or missing frames fail; repeated visits preserve transition
-counts.
-
-### L5. Semanticizer
-
-Responsibility: propose human-readable state/action names, argument boundaries,
-descriptions, and locator rankings from minimized evidence.
-
-Inputs: graph skeleton and approved semantic evidence only.
-
-Outputs: candidate `action-map/1`, never executable runtime messages.
+Outputs: `CompletedLayer {siteScope, layer, observation, policy, privacy}` in a
+local queue. The initial layer has no observation; every later layer contains
+the one observation that caused it.
 
 Invariants:
 
-- structured model response is schema validated;
-- every proposal cites existing evidence IDs;
-- it cannot add an unobserved external-state effect;
-- guardrails forbid requesting or reconstructing redacted values;
-- model/provider, prompt version, and response digest are recorded.
+- policy is `allowed` for `ambient_learn` before observers attach;
+- privacy exclusions apply during semantic projection, before serialization;
+- every completed meaningful layer is enqueued, with no novelty, confidence,
+  event-count, evidence-volume, or user-goal gate;
+- internal `start`/`stop` primitives are lifecycle operations, not UI controls;
+- synthetic actor events and actor-owned background tabs are excluded;
+- raw DOM/event/value material is memory-only and expires within 30 seconds if
+  a sanitized layer cannot complete; and
+- the local encrypted retry spool deletes a delivered layer after an applied,
+  duplicate, or no-change receipt and always before its 24-hour hard TTL.
 
-Acceptance tests: invalid JSON, invented evidence, invented state, prompt
-injection in page text, provider timeout, and deterministic fixture response.
+Acceptance tests: initial page, same-URL update, same-document route, full
+navigation, equal XML digest after two distinct observations, event races,
+policy revocation, synthetic events, and seeded privacy canaries.
 
-### L6. Observed-plan compiler
+### L2. Parse request and compact context projector
 
-Responsibility: compile an action-map candidate into `action-list/1` without
-changing primitive meaning.
+Responsibility: combine one completed layer with the exact current action-map
+base and a bounded semantic projection of prior accepted revisions.
 
-Inputs: action map, policy template, supported runtime profile.
+Inputs: `CompletedLayer`, `GET .../head`, and `GET .../context`.
 
-Outputs: candidate action list or compilation diagnostics.
+Outputs: one immutable `ambient-parse-request/1` for every completed layer.
+
+Invariants:
+
+- request contains the current `semantic-ui/2` XML and its causal observation;
+- request contains no goal, task objective, raw history, or prior semantic XML;
+- prior actions contain identity/title, precondition/effect, input/output
+  semantics, evidence handles, and provenance only;
+- expanded prior steps, locators, and target IDs remain on stored map entries;
+- parser/prompt/sanitizer/policy versions and base revision/digest are explicit;
+  and
+- exact transport retries preserve the idempotency key, while conflict reparses
+  get a new key and point to `retryOf`.
+
+Acceptance tests: no-goal shape, bounded context, absent steps/locators, base
+binding, attempt retry, conflict retry, and one request per layer.
+
+### L3. Incremental AI parser/compiler
+
+Responsibility: interpret the current layer and compact context, then propose
+evidence-backed state/action upserts and path composition.
+
+Inputs: one validated `ambient-parse-request/1`.
+
+Outputs: one strict `action-map-patch/1` with `patch` or explicit `no_change`
+decision, never runtime messages or publication.
+
+Invariants:
+
+- page XML alone may yield actions such as `Open orders`, `Get recent orders`,
+  or `Get recent posts`;
+- observations upgrade inferred actions, connect states, and support flattened
+  composite actions;
+- every proposed action already contains at least one executable step, has
+  status `resolvable` or `observed`, and has no missing evidence;
+- every click step binds to a semantic node/evidence ID;
+- extraction collection/item/field locators bind to semantic evidence;
+- every citation resolves to the current layer, observation, prior compact
+  evidence handles, or explicit verification data;
+- page text remains inert untrusted content; and
+- parser/provider, parser version, prompt version, and patch digest are recorded.
+
+Acceptance tests: X page-only inference, Orders page-only extraction, observed
+Orders linkage/composition, missing step, invented evidence, unbound click,
+unbound output field, prompt injection, timeout, and deterministic fake parser.
+
+### L4. Action-map revision persistence/API
+
+Responsibility: validate and transactionally compare-and-append patches to the
+canonical `action-map/1` revision stream.
+
+Inputs: validated request binding plus `action-map-patch/1`.
+
+Outputs: `action-map-revision/1` with `applied`, `duplicate`, `no_change`,
+`conflict`, or `rejected` status, and immutable map/context reads.
+
+Invariants:
+
+- operations apply canonically to an in-memory copy of the exact base;
+- every action passes the ambient executable-action rules;
+- the full materialized result passes unchanged `action-map/1` validation;
+- canonical digesting and the revision append are one transaction;
+- exact idempotent retries return the original receipt;
+- stale base revision/digest never performs last-write-wins;
+- provenance changes are monotonic and changed actions lose stale verification;
+- Universal DB stores map/list revisions and safe evidence metadata only; and
+- semantic XML, raw/sanitized observations, prompt bodies, and browsing history
+  are rejected from durable writes.
+
+Acceptance tests: two concurrent patches on one base, duplicate delivery,
+idempotency-key misuse, stale layer, action-map schema failure, privacy failure,
+safe context projection, and storage-column allowlist.
+
+### L5. Action-list compiler, replay, and publication
+
+Responsibility: project eligible map entries into `action-list/1` without
+changing primitive meaning, verify them, require review where configured, and
+publish immutable revisions.
+
+Inputs: exact action-map revision, policy template, supported runtime profile,
+fixture arguments, and expected effects/results.
+
+Outputs: candidate action list, replay report, and reviewed/published revision.
 
 Compiler checks:
 
-- each action has a recognizable entry state and terminal success condition;
-- parameter sources map to declared tool inputs;
-- locator fallbacks are supported and reject generated-selector patterns;
-- every mutating step has a postcondition;
+- recognizable entry state and terminal success condition;
+- arguments map to declared tool inputs;
+- locators are supported and evidence-backed;
+- mutating steps have postconditions;
 - output fields remain scoped to their item;
-- safety class is at least as restrictive as observed effects;
-- provenance links survive compilation.
-
-Acceptance tests: owned search compiles; missing effect, unknown argument,
-unsupported primitive, ambiguous locator, and unsafe classification fail.
-
-### L7. Candidate replay and publication gate
-
-Responsibility: execute candidates on the owned demo, compare actual effects to
-the evidence contract, require review where configured, and publish immutable
-revisions.
-
-Inputs: candidate action list, typed fixture arguments, expected state/result
-assertions, policy decision.
-
-Outputs: replay report and reviewed/published revision.
+- safety is at least as restrictive as observed effects; and
+- map revision and evidence provenance survive projection.
 
 Minimum publication predicate:
 
@@ -678,29 +713,35 @@ AND replay_successful
 AND required_review_approved
 ```
 
-Replay failure never silently patches and publishes a locator. It creates a new
-candidate revision with the failure evidence attached.
+Replay failure never silently patches and publishes. Verification updates the
+exact action version's revision metadata; changing execution semantics clears
+that verification. Page-only inferred actions remain map candidates until
+verification produces factual step evidence in the existing transition
+reference shape, including a same-page no-visible-change transition for a pure
+read. Both `action-map/1` and `action-list/1` schemas remain unchanged.
 
-Acceptance tests: stable demo success; locator ambiguity; wrong output; stale
-candidate digest; policy revoked during review; confirmation boundary absent.
+Acceptance tests: owned read action compiles and verifies; missing effect,
+unknown argument, unsupported primitive, ambiguous locator, unsafe
+classification, stale digest, revoked policy, and missing review fail.
 
-### L8. Drift monitor and quarantine
+### L6. Drift monitor and quarantine
 
-Responsibility: aggregate privacy-safe run health and disable a revision whose
-observed behavior no longer satisfies its contract.
+Responsibility: aggregate privacy-safe run health and disable a published
+revision whose behavior no longer satisfies its contract.
 
 Inputs: run observations and explicit user reports.
 
-Outputs: health state `healthy | degraded | quarantined`, reason, and candidate
-relearning request.
+Outputs: health state `healthy | degraded | quarantined`, reason, and an
+ambient re-verification signal.
 
 Invariants: no extracted result content in telemetry; failures are grouped by
-list digest/action/error code; quarantine stops new registration; no autonomous
-republish after relearning.
+list digest/action/error code; quarantine stops new registration; ambient
+parsing may produce a new candidate revision but never autonomously republishes
+it.
 
-Acceptance tests: repeated target-not-found crosses configured threshold;
-isolated user cancellation does not; a new revision starts with independent
-health.
+Acceptance tests: repeated target-not-found crosses the configured runtime
+health threshold; isolated cancellation does not; a new revision has independent
+health. This runtime threshold never suppresses ambient layer parsing.
 
 ## 6. End-to-end ready sequence
 
@@ -730,25 +771,31 @@ health.
 
 ## 7. End-to-end learning sequence
 
-1. User starts an explicit learning session on an allowed owned/test site.
-2. Recorder emits deterministic local frames while the user demonstrates the
-   task.
-3. Client filter sanitizes each frame before serialization.
-4. Trace intake validates chronology and sanitizes again.
-5. Graph builder produces observed states and transitions.
-6. Semanticizer proposes names, parameter boundaries, and tool descriptions,
-   each tied to evidence.
-7. Compiler produces a candidate action list.
-8. Contract validator and privacy scanner reject unsupported or unsafe plans.
-9. Replay executes the candidate against the owned demo with fixture arguments.
-10. Review UI displays readable steps, safety boundary, evidence, and replay
-    result.
-11. Publication service writes an immutable published revision and digest.
-12. Ready-path discovery can now expose its tools.
+1. Policy approves `ambient_learn` for the normalized site scope before capture
+   attaches.
+2. The extension completes a privacy-sanitized initial semantic XML layer.
+3. Request assembly reads the current map base and compact prior context.
+4. The parser receives that layer immediately, with no observation on the
+   initial page and no goal.
+5. AI proposes a strict patch containing only executable evidence-backed
+   actions and state upserts.
+6. Persistence validates, materializes, digests, and appends one immutable
+   action-map revision or returns a duplicate/conflict/rejection receipt.
+7. An eligible user event is causally joined to its semantic update/navigation
+   and resulting layer.
+8. That completed layer is parsed immediately with the observation and compact
+   context from the accepted revision.
+9. The patch may upgrade inferred actions to observed, connect states, and add
+   flattened composite paths.
+10. Eligible map entries compile to candidate `action-list/1` revisions.
+11. Deterministic replay, privacy/safety checks, and configured review establish
+    verification and publication eligibility.
+12. Publication writes an immutable action-list revision and ready-path
+    discovery can expose its tools.
 
-This sequence is the presentation's live learning map: show the evidence graph
-being built first, then the candidate action becoming publishable only after
-validation and replay.
+Exact request retries do not add revisions. A stale base causes a reparse of
+the same source layer against the new head; no browsing history is replayed into
+the prompt.
 
 ## 8. Trust boundaries and data classes
 
@@ -758,7 +805,8 @@ validation and replay.
 | content ↔ service worker | extension-owned validated channel | stale/forged sender context | schema-valid run messages bound to tab/document |
 | service worker ↔ execution tab | coordinator | mutable site DOM | one validated step command; bounded effect/result |
 | browser ↔ registry | local extension | network/server compromise | published JSON plans and redacted observations; no secrets |
-| learning evidence ↔ model | sanitizer/validator | model provider and page text | minimized semantic evidence IDs/labels only |
+| ambient capture ↔ parser | sanitizer/validator | model provider and page text | current sanitized semantic XML, one causal observation, compact prior semantics |
+| parser ↔ Universal DB | revision validator | model output and network | validated action-map patch/revision plus safe evidence metadata only |
 
 Data classes:
 
@@ -768,8 +816,12 @@ Data classes:
 - **secret**: credentials, cookies, payment data, tokens; never collected or
   transported;
 - **diagnostic**: IDs, timings, error codes, match counts; may be aggregated;
-- **learning evidence**: sanitized semantic frames, retained only under the
-  session's explicit retention policy.
+- **ambient source material**: current sanitized semantic XML and one causal
+  observation, held only in the local retry spool for at most 24 hours and never
+  stored in Universal DB;
+- **safe learning metadata**: scope/layer IDs, digests, evidence handles,
+  binding roles, parser/validator versions, and provenance; may be retained with
+  immutable revisions.
 
 ## 9. Error contract
 
@@ -812,13 +864,15 @@ The overnight MVP is complete only when all of these pass from a clean checkout:
 6. ambiguous and missing locators fail with the correct code;
 7. cancellation settles the tool promise and stops future steps;
 8. a consequential demo action pauses at confirmation;
-9. seeded secrets never appear in traces, model payloads, messages, logs, or
-   run observations;
-10. one demonstration produces trace -> graph -> candidate -> replay ->
-    published action list -> registered tool;
-11. the event ledger is visible in the demo so the audience can see how a tool
+9. seeded secrets never appear in semantic XML, observations, model payloads,
+   messages, logs, Universal DB writes, or run observations;
+10. an initial semantic layer produces executable inferred actions without a
+    goal or user-operated recording flow;
+11. an observed event/result layer upgrades and composes actions through an
+    idempotent action-map revision;
+12. the event ledger is visible in the demo so the audience can see how a tool
     call becomes actor steps and verified effects;
-12. all existing repository tests continue to pass.
+13. all existing repository tests continue to pass.
 
 Amazon and Devpost are compatibility targets after the owned-demo vertical
 slice. They may expose missing primitives or locators, but they must not weaken

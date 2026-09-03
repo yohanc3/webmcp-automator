@@ -7,6 +7,9 @@
 - [`contracts/system-contract.md`](contracts/system-contract.md) assigns the
   versioned interfaces, invariants, errors, and acceptance tests for every
   ready-path and learn-path component.
+- [`contracts/ambient-learning.md`](contracts/ambient-learning.md) defines the
+  automatic per-semantic-layer parser, incremental action-map revisions,
+  privacy retention, and parallel-owner handoffs.
 - [`parallel-worktrees.md`](parallel-worktrees.md) defines which components must
   move together and the dependency-aware branches, ownership, handoffs, and
   integration waves for parallel implementation.

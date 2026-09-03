@@ -1,0 +1,63 @@
+{
+  "schemaVersion": "ambient-parse-request/1",
+  "requestId": "parse_x_posts_001",
+  "idempotencyKey": "sha256:fda4150e50e4a7c96074538a9e260d9b82fc678c4192ef4fb38c78e9017ef5d6",
+  "attempt": 1,
+  "retryOf": null,
+  "siteScope": {
+    "scopeId": "x_posts",
+    "origin": "https://x.com",
+    "routePatterns": [
+      "^/home(?:\\?.*)?$"
+    ]
+  },
+  "layer": {
+    "layerId": "layer_x_001",
+    "sequence": 1,
+    "completedAt": "2026-09-03T12:00:00Z",
+    "completionReason": "initial_document",
+    "url": "https://x.com/home",
+    "semanticXmlVersion": "semantic-ui/2",
+    "semanticXmlDigest": "sha256:227abc79d69673961fd9c32d1d0f6a82ea13b4d366c6166236c1e9d9ee9318da",
+    "semanticXml": "<semantic-ui version='2' origin='https://x.com' route='/home'><nav accessible-name='Primary'><a ref='node_x_posts_link' role='link' accessible-name='Posts' href='/home'>Posts</a></nav><main><section ref='node_x_feed' role='feed' accessible-name='Home timeline'><article ref='node_x_post_1' role='article'><a ref='node_x_author' data-testid='User-Name' href='/profile'>Creator</a><p ref='node_x_text' data-testid='tweetText'>A public post</p><a ref='node_x_url' role='link' accessible-name='Open post' href='/profile/status/100'>Open post</a></article></section></main></semantic-ui>",
+    "evidenceIds": [
+      "node_x_posts_link",
+      "node_x_feed",
+      "node_x_post_1",
+      "node_x_author",
+      "node_x_text",
+      "node_x_url"
+    ]
+  },
+  "observation": null,
+  "mapBase": {
+    "revision": 0,
+    "digest": null,
+    "previousLayerSequence": 0
+  },
+  "context": {
+    "states": [],
+    "actions": []
+  },
+  "parser": {
+    "parserId": "ambient_action_parser",
+    "parserVersion": "1.0.0",
+    "promptVersion": "ambient-v1",
+    "outputSchemaVersion": "action-map-patch/1"
+  },
+  "policy": {
+    "decisionId": "policy_x_posts",
+    "status": "allowed",
+    "scope": "ambient_learn",
+    "checkedAt": "2026-09-03T11:59:59Z"
+  },
+  "privacy": {
+    "sanitizerVersion": "semantic-sanitizer/1",
+    "redactionCount": 1,
+    "redactionDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "categories": [
+      "account_identifiers"
+    ],
+    "rawPersisted": false
+  }
+}
