@@ -303,6 +303,7 @@ type CompactAction struct {
 	Output          CompactOutput  `json:"output"`
 	EvidenceHandles []string       `json:"evidenceHandles"`
 	Provenance      string         `json:"provenance"`
+	Confidence      float64        `json:"confidence,omitempty"`
 }
 
 type ActionMapContext struct {

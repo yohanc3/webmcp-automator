@@ -11,6 +11,7 @@
 
   void source.initialize().catch(() => {});
   actor.start();
+  actor.startReplay();
 
   void WebMcpAmbientRuntime.start().catch(() => {
     document.documentElement.dataset.webMcpAmbient = 'unavailable';

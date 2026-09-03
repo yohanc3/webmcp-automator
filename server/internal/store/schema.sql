@@ -208,6 +208,41 @@ CREATE TABLE IF NOT EXISTS run_observations (
   FOREIGN KEY (list_id, list_digest) REFERENCES action_list_publications(list_id, published_digest)
 );
 
+CREATE TABLE IF NOT EXISTS action_runtime_health (
+  list_id TEXT NOT NULL,
+  list_digest TEXT NOT NULL,
+  action_id TEXT NOT NULL,
+  action_version INTEGER NOT NULL,
+  completed_runs INTEGER NOT NULL DEFAULT 0,
+  failed_runs INTEGER NOT NULL DEFAULT 0,
+  target_failures INTEGER NOT NULL DEFAULT 0,
+  postcondition_failures INTEGER NOT NULL DEFAULT 0,
+  confidence DOUBLE PRECISION NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('healthy', 'degraded', 'quarantined')),
+  last_error_code TEXT,
+  last_observed_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (list_digest, action_id, action_version),
+  FOREIGN KEY (list_id, list_digest) REFERENCES action_list_publications(list_id, published_digest)
+);
+
+CREATE TABLE IF NOT EXISTS runtime_feedback_runs (
+  run_id TEXT PRIMARY KEY REFERENCES run_observations(run_id),
+  scope_id TEXT,
+  action_map_revision INTEGER,
+  action_map_digest TEXT,
+  confidence DOUBLE PRECISION,
+  health TEXT CHECK (health IS NULL OR health IN ('healthy', 'degraded', 'quarantined')),
+  selector_repaired BOOLEAN,
+  applied_at TIMESTAMPTZ NOT NULL
+);
+
+ALTER TABLE runtime_feedback_runs ADD COLUMN IF NOT EXISTS scope_id TEXT;
+ALTER TABLE runtime_feedback_runs ADD COLUMN IF NOT EXISTS action_map_revision INTEGER;
+ALTER TABLE runtime_feedback_runs ADD COLUMN IF NOT EXISTS action_map_digest TEXT;
+ALTER TABLE runtime_feedback_runs ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION;
+ALTER TABLE runtime_feedback_runs ADD COLUMN IF NOT EXISTS health TEXT;
+ALTER TABLE runtime_feedback_runs ADD COLUMN IF NOT EXISTS selector_repaired BOOLEAN;
+
 CREATE INDEX IF NOT EXISTS learning_sessions_created_at_idx
   ON learning_sessions(created_at DESC);
 CREATE INDEX IF NOT EXISTS adapter_versions_adapter_idx

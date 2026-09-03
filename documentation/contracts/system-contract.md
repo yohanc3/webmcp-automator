@@ -380,6 +380,8 @@ Target API:
 ```text
 GET  /v1/action-lists?origin=<origin>&url=<absolute-url>
 GET  /v1/action-lists/{listId}/revisions/{revision}
+GET  /v1/action-lists/{listId}/revisions/{revision}/candidate-review/evidence/{evidenceId}
+POST /v1/action-lists/{listId}/revisions/{revision}/candidate-review/replay
 POST /v1/action-lists/{listId}/revisions/{revision}/publish
 POST /v1/run-observations
 ```
@@ -688,7 +690,7 @@ changing primitive meaning, verify them, require review where configured, and
 publish immutable revisions.
 
 Inputs: exact action-map revision, policy template, supported runtime profile,
-fixture arguments, and expected effects/results.
+deterministic arguments, and expected effects/results.
 
 Outputs: candidate action list, replay report, and reviewed/published revision.
 
@@ -713,7 +715,10 @@ AND replay_successful
 AND required_review_approved
 ```
 
-Replay failure never silently patches and publishes. Verification updates the
+Candidate replay uses the extension's isolated actor port and durable
+coordinator, then submits an allowlisted coverage report. The server verifies
+that report against the exact candidate document before it can become a replay
+gate. Replay failure never silently patches and publishes. Verification updates the
 exact action version's revision metadata; changing execution semantics clears
 that verification. Page-only inferred actions remain map candidates until
 verification produces factual step evidence in the existing transition
@@ -735,9 +740,11 @@ Outputs: health state `healthy | degraded | quarantined`, reason, and an
 ambient re-verification signal.
 
 Invariants: no extracted result content in telemetry; failures are grouped by
-list digest/action/error code; quarantine stops new registration; ambient
-parsing may produce a new candidate revision but never autonomously republishes
-it.
+list digest/action/error code; a successful fallback strategy repairs the map
+selector; confidence changes are bounded; repeated target or postcondition
+failures mark the action unresolved; every accepted observation appends an
+immutable map revision and regenerates a bound candidate when eligible; no
+candidate is autonomously published.
 
 Acceptance tests: repeated target-not-found crosses the configured runtime
 health threshold; isolated cancellation does not; a new revision has independent

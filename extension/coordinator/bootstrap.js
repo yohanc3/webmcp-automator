@@ -6,10 +6,11 @@
     root.WebMcpAmbientScope || (typeof module === 'object' && module.exports ? require('../shared/ambient-scope.js') : null),
     root.WebMcpRunCoordinator || (typeof module === 'object' && module.exports ? require('./run-coordinator.js') : null),
     root.WebMcpChromeCoordinatorAdapters || (typeof module === 'object' && module.exports ? require('./chrome-adapters.js') : null),
+    root.WebMcpCandidateReplay || (typeof module === 'object' && module.exports ? require('./candidate-replay.js') : null),
   );
   root.WebMcpCoordinatorBootstrap = api;
   if (typeof module === 'object' && module.exports) module.exports = api;
-}(typeof globalThis === 'undefined' ? this : globalThis, (retrySpool, publicErrors, protocol, ambientScope, runCoordinatorApi, chromeAdapters) => {
+}(typeof globalThis === 'undefined' ? this : globalThis, (retrySpool, publicErrors, protocol, ambientScope, runCoordinatorApi, chromeAdapters, candidateReplayApi) => {
   'use strict';
 
   const POLICY_PREFIX = 'ambientPolicy:';
@@ -37,6 +38,7 @@
 
   const createCoordinator = ({
     chromeApi = chrome,
+    candidateReplayRunner = null,
     durableCoordinator = null,
     fetchApi = fetch,
     isExecutionTab = async () => false,
@@ -325,8 +327,10 @@
     const handleMessage = async (message, sender = {}) => {
       const extensionUiMessage = [
         'GET_POLICY_REVIEW_STATE',
+        'OPEN_CANDIDATE_EVIDENCE',
         'REQUEST_RETRY_SPOOL_DELETION',
         'SET_OWNED_DEMO_OVERRIDE',
+        'START_CANDIDATE_REPLAY',
         'SUBMIT_CANDIDATE_REVIEW',
         'SUBMIT_POLICY_DECISION',
         'SUBMIT_RUN_CONFIRMATION',
@@ -435,8 +439,52 @@
             return { ok: false, error: `Candidate review was not accepted: ${error.message}` };
           }
         }
+        case 'START_CANDIDATE_REPLAY':
+        {
+          if (!candidateReplayRunner) return { ok: false, error: 'Candidate actor replay is unavailable' };
+          const tabs = await chromeApi.tabs?.query?.({ active: true, lastFocusedWindow: true }) || [];
+          const sourceTab = tabs[0];
+          const origin = originFromUrl(sourceTab?.url);
+          try {
+            const { candidate } = await currentReviewCandidate(origin);
+            const exact = await requestRegistry(`/v1/action-lists/${encodeURIComponent(candidate.listId)}/revisions/${candidate.listRevision}`);
+            if (!exact.response.ok || unquotedETag(responseHeader(exact.response, 'ETag')) !== candidate.listDigest) {
+              throw new Error('Candidate action list changed before replay');
+            }
+            const report = await candidateReplayRunner.runCandidate({
+              digest: candidate.listDigest,
+              list: exact.body,
+              sourceTabId: sourceTab.id,
+              sourceUrl: sourceTab.url,
+            });
+            const result = await requestBackend(`/v1/action-lists/${encodeURIComponent(candidate.listId)}/revisions/${candidate.listRevision}/candidate-review/replay`, {
+              body: JSON.stringify({ expectedDigest: candidate.listDigest, report }),
+              method: 'POST',
+            });
+            return { ok: true, result };
+          } catch (error) {
+            return { ok: false, error: `Candidate replay failed: ${error.message}` };
+          }
+        }
         case 'OPEN_CANDIDATE_EVIDENCE':
-          return { ok: false, error: 'Candidate evidence is explicitly unavailable without an exact server-bound evidence resolver' };
+        {
+          const reference = message.reference || {};
+          if (typeof reference.id !== 'string' || reference.id.length === 0) {
+            return { ok: false, error: 'Candidate evidence was not resolved: A bounded evidence reference is required' };
+          }
+          const tabs = await chromeApi.tabs?.query?.({ active: true, lastFocusedWindow: true }) || [];
+          const origin = originFromUrl(tabs[0]?.url);
+          try {
+            const { candidate } = await currentReviewCandidate(origin);
+            if (reference.actionMapDigest && reference.actionMapDigest !== candidate.actionMapDigest) {
+              throw new Error('Evidence reference does not match the current action-map binding');
+            }
+            const result = await requestBackend(`/v1/action-lists/${encodeURIComponent(candidate.listId)}/revisions/${candidate.listRevision}/candidate-review/evidence/${encodeURIComponent(reference.id)}`);
+            return { ok: true, result };
+          } catch (error) {
+            return { ok: false, error: `Candidate evidence was not resolved: ${error.message}` };
+          }
+        }
         case 'SUBMIT_RUN_CONFIRMATION':
         {
           if (!durableCoordinator) {
@@ -480,15 +528,40 @@
     return Object.freeze({ handleMessage, retryMetadata, retrySpoolReady: Boolean(retrySpoolApi) });
   };
 
-  const createDurableCoordinator = ({ chromeApi = chrome, fetchApi = fetch, now } = {}) => {
+  const createDurableCoordinator = ({ chromeApi = chrome, fetchApi = fetch, now, tabs = null } = {}) => {
     if (!runCoordinatorApi?.DurableRunCoordinator || !chromeAdapters) {
       throw new Error('Durable run coordinator dependencies are unavailable');
     }
     const area = chromeApi.storage.local;
+    const localObservations = chromeAdapters.createChromeObservationStore(area);
     return new runCoordinatorApi.DurableRunCoordinator({
       storage: chromeAdapters.createChromeRunStorage(area),
-      observations: chromeAdapters.createChromeObservationStore(area),
-      tabs: chromeAdapters.createChromeTabs(chromeApi, area),
+      observations: {
+        async save(observation) {
+          await localObservations.save(observation);
+          const response = await fetchApi('http://127.0.0.1:4317/v1/run-observations', {
+            body: JSON.stringify(observation),
+            headers: { 'Content-Type': 'application/json', 'X-WebMCP-Internal': 'ambient-v1' },
+            method: 'POST',
+          }).catch(() => null);
+          const body = await response?.json?.().catch(() => null);
+          if (!response?.ok) throw new Error('Run observation feedback delivery failed');
+          const candidate = body?.actionListCandidate;
+          const scopeId = body?.feedback?.scopeId;
+          if (response?.ok && scopeId && candidate?.status === 'candidate'
+            && validRevision(candidate.revision) && validDigest(candidate.digest)) {
+            await chromeApi.storage.session.set({
+              [`${CANDIDATE_PREFIX}${scopeId}`]: {
+                digest: candidate.digest,
+                listId: candidate.listId,
+                revision: candidate.revision,
+                status: candidate.status,
+              },
+            });
+          }
+        },
+      },
+      tabs: tabs || chromeAdapters.createChromeTabs(chromeApi, area),
       ...(now ? { now } : {}),
       registry: {
         async resolveExact({ actionId, actionVersion, listId }) {
@@ -514,9 +587,23 @@
   const start = () => {
     if (started) return;
     started = true;
-    const durable = createDurableCoordinator();
-    chromeAdapters.installChromeCoordinator({ chromeApi: chrome, coordinator: durable });
+    const tabs = chromeAdapters.createChromeTabs(chrome, chrome.storage.local);
+    const durable = createDurableCoordinator({ tabs });
+    const replayTabs = {
+      ...tabs,
+      // Candidate replay always gets a fresh isolated actor tab. Sharing a reusable
+      // execution tab could cross-bind a live run to the replay-only coordinator.
+      findReusable: async () => null,
+    };
+    const replay = candidateReplayApi?.createReplayRunner?.({ chromeApi: chrome, tabs: replayTabs });
+    chromeAdapters.installChromeCoordinator({
+      chromeApi: chrome,
+      coordinator: durable,
+      portHandlers: replay ? { [candidateReplayApi.PORT_NAME]: replay.bindPort } : {},
+      tabClosedHandlers: replay ? [replay.tabClosed] : [],
+    });
     const coordinator = createCoordinator({
+      candidateReplayRunner: replay,
       durableCoordinator: durable,
       isExecutionTab: async (tabId) => (await durable.storage.list()).some((run) => (
         run.execution?.tabId === tabId && !['completed', 'failed', 'cancelled'].includes(run.status)

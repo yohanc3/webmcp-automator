@@ -30,6 +30,10 @@ type reviewStore interface {
 	SaveReplayReport(context.Context, store.ReplayReport) error
 }
 
+type candidateEvidenceStore interface {
+	ResolveCandidateEvidence(context.Context, string, int, string) (store.EvidenceResolution, error)
+}
+
 type originPolicy struct {
 	Origin    string   `json:"origin"`
 	Status    string   `json:"status"`
@@ -39,7 +43,8 @@ type originPolicy struct {
 }
 
 type candidateDigestRequest struct {
-	ExpectedDigest string `json:"expectedDigest"`
+	ExpectedDigest string          `json:"expectedDigest"`
+	Report         json.RawMessage `json:"report,omitempty"`
 }
 type materializePolicyRequest struct {
 	ExpectedDigest string       `json:"expectedDigest"`
@@ -50,12 +55,6 @@ type candidateReviewRequest struct {
 	Decision         string `json:"decision"`
 	PolicyDecisionID string `json:"policyDecisionId"`
 	ReplayReportID   string `json:"replayReportId"`
-}
-
-type unavailableCandidateReplay struct{}
-
-func (unavailableCandidateReplay) Replay(_ context.Context, _ manifest.ActionList) (json.RawMessage, error) {
-	return nil, errors.New("production replay actor integration is unavailable")
 }
 
 type candidateReplayResult struct {
@@ -156,6 +155,27 @@ func (server *Server) candidateState(writer http.ResponseWriter, request *http.R
 		return
 	}
 	writeJSON(writer, http.StatusOK, state)
+}
+
+func (server *Server) candidateEvidence(writer http.ResponseWriter, request *http.Request) {
+	database, ok := server.store.(candidateEvidenceStore)
+	if !ok {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]string{"error": "candidate evidence resolution is unavailable"})
+		return
+	}
+	revision, err := positiveRevision(request.PathValue("revision"))
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	resolution, err := database.ResolveCandidateEvidence(
+		request.Context(), request.PathValue("listID"), revision, request.PathValue("evidenceID"),
+	)
+	if err != nil {
+		writeRegistryError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, resolution)
 }
 
 func (server *Server) materializeCandidatePolicy(writer http.ResponseWriter, request *http.Request) {
@@ -271,7 +291,13 @@ func (server *Server) replayCandidate(writer http.ResponseWriter, request *http.
 		writeJSON(writer, http.StatusUnprocessableEntity, map[string]string{"error": "candidate document is invalid"})
 		return
 	}
-	reportJSON, replayErr := server.replay.Replay(request.Context(), list)
+	reportJSON := input.Report
+	var replayErr error
+	if len(reportJSON) == 0 && server.replay != nil {
+		reportJSON, replayErr = server.replay.Replay(request.Context(), list)
+	} else if len(reportJSON) == 0 {
+		replayErr = errors.New("an extension actor replay result is required")
+	}
 	if replayErr == nil {
 		reportJSON, replayErr = sanitizePassedReplay(reportJSON, list)
 	}

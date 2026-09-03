@@ -419,7 +419,8 @@ func validateCompactContext(raw json.RawMessage) error {
 			len(action.EvidenceHandles) > 32 || !uniqueStrings(action.EvidenceHandles) ||
 			len(action.Output.Fields) > 32 || !uniqueStrings(action.Output.Fields) ||
 			!oneOfString(action.Output.Mode, "none", "page", "collection") ||
-			!oneOfString(action.Provenance, "inferred", "observed", "verified") {
+			!oneOfString(action.Provenance, "inferred", "observed", "verified") ||
+			action.Confidence < 0 || action.Confidence > 1 {
 			return errors.New("compact action is invalid")
 		}
 		for _, input := range action.Inputs {
@@ -908,6 +909,7 @@ func ProjectActionMapContext(snapshot ActionMapSnapshot, metadata safeRevisionMe
 			Output:          CompactOutput{Mode: action.Output.Mode, Fields: fields},
 			EvidenceHandles: append([]string(nil), entity.EvidenceHandles...),
 			Provenance:      entity.Provenance,
+			Confidence:      action.Confidence,
 		})
 	}
 	return context

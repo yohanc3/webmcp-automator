@@ -53,3 +53,10 @@ make test-extension BROWSER="/Applications/Google Chrome.app/Contents/MacOS/Goog
 
 The Node suites cover transport, durable state, recovery, and integration adapters. The
 browser suite covers DOM execution and extension composition.
+
+Candidate review uses a separate replay actor port backed by its own durable
+coordinator. It executes exact candidate actions in fresh inactive tabs and
+submits only complete step coverage to the server. Evidence links are resolved
+by the server against the candidate's exact current action-map binding. Normal
+durable-run observations are delivered to the server for confidence, selector
+repair, quarantine, and candidate regeneration.

@@ -65,10 +65,19 @@ const policyReview = WebMcpPolicyReview.createController({
       type: 'SUBMIT_CANDIDATE_REVIEW',
       decision,
     }),
+    startCandidateReplay: () => sendMessage({ type: 'START_CANDIDATE_REPLAY' }),
     submitRunConfirmation: (decision) => sendMessage({
       type: 'SUBMIT_RUN_CONFIRMATION',
       decision,
     }),
+  },
+  registry: {
+    openEvidence: async (reference) => {
+      const response = await sendMessage({ type: 'OPEN_CANDIDATE_EVIDENCE', reference });
+      const count = response.result?.matches?.length || 0;
+      showNotice(`Resolved ${count} safe evidence binding${count === 1 ? '' : 's'}.`, 'success');
+      return response.result;
+    },
   },
   retrySpool: {
     requestDeletion: (request) => sendMessage({

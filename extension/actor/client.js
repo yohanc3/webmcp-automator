@@ -11,10 +11,12 @@
   'use strict';
 
   const PORT_NAME = 'webmcp-run/1:execution';
+  const REPLAY_PORT_NAME = 'webmcp-run/1:replay';
   const MAX_COMPLETED_COMMANDS = 64;
 
   const createExecutionClient = (options = {}) => {
     const runtime = options.runtime || root.chrome?.runtime;
+    const portName = options.portName || PORT_NAME;
     const documentObject = options.documentObject || root.document;
     const windowObject = options.windowObject || root.window;
     const locationObject = options.locationObject || root.location;
@@ -109,7 +111,7 @@
     };
     const connect = () => {
       if (stopped || !runtime?.connect) return false;
-      const nextPort = runtime.connect({ name: PORT_NAME });
+      const nextPort = runtime.connect({ name: portName });
       port = nextPort;
       nextPort.onMessage.addListener(onMessage);
       disconnectListener = () => onDisconnect(nextPort);
@@ -157,15 +159,20 @@
     return Object.freeze({ start, stop, __test: { onMessage, outcomes } });
   };
 
-  let defaultClient = null;
-  const getDefaultClient = () => {
-    if (!defaultClient) defaultClient = createExecutionClient();
-    return defaultClient;
+  const defaultClients = new Map();
+  const getDefaultClient = (portName) => {
+    if (!defaultClients.has(portName)) {
+      defaultClients.set(portName, createExecutionClient({ portName }));
+    }
+    return defaultClients.get(portName);
   };
   return Object.freeze({
     PORT_NAME,
+    REPLAY_PORT_NAME,
     createExecutionClient,
-    start: () => getDefaultClient().start(),
-    stop: () => getDefaultClient().stop(),
+    start: () => getDefaultClient(PORT_NAME).start(),
+    startReplay: () => getDefaultClient(REPLAY_PORT_NAME).start(),
+    stop: () => getDefaultClient(PORT_NAME).stop(),
+    stopReplay: () => getDefaultClient(REPLAY_PORT_NAME).stop(),
   });
 }));

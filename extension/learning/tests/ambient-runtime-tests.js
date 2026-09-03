@@ -260,7 +260,7 @@ test('scope-specific retry metadata and deletion preserve unrelated stored value
 test('candidate review and confirmation protocol messages fail closed without side effects', async () => {
   const fixture = coordinatorFixture(); const before = { ...fixture.sideEffects };
   assert.deepEqual(await fixture.coordinator.handleMessage({ type: 'SUBMIT_CANDIDATE_REVIEW' }), { ok: false, error: 'A complete candidate-review decision is required' });
-  assert.match((await fixture.coordinator.handleMessage({ type: 'OPEN_CANDIDATE_EVIDENCE' })).error, /explicitly unavailable/);
+  assert.match((await fixture.coordinator.handleMessage({ type: 'OPEN_CANDIDATE_EVIDENCE' })).error, /not resolved/);
   assert.match((await fixture.coordinator.handleMessage({ type: 'SUBMIT_RUN_CONFIRMATION' })).error, /exact coordinator run/);
   for (const type of ['GET_POLICY_REVIEW_STATE', 'SUBMIT_CANDIDATE_REVIEW', 'SUBMIT_RUN_CONFIRMATION']) {
     assert.match(
@@ -464,6 +464,68 @@ test('loads only exact authoritative action-map context and candidate bindings f
   });
 });
 
+test('runs an exact actor replay and resolves evidence only through the current server binding', async () => {
+  const areas = { local: {}, session: {} };
+  const scopeId = 'site_https___shop_test';
+  const mapDigest = `sha256:${'1'.repeat(64)}`;
+  const listDigest = `sha256:${'2'.repeat(64)}`;
+  const listId = 'ambient_site_https_shop_test';
+  areas.session[`ambientActionListCandidate:${scopeId}`] = {
+    digest: listDigest, listId, revision: 4, status: 'candidate',
+  };
+  const chromeApi = {
+    storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
+      async get(key) { return { [key]: areas[area][key] }; },
+      async set(value) { Object.assign(areas[area], value); }, async remove() {},
+    }])),
+    tabs: { async query() { return [{ id: 17, url: 'https://shop.test/catalog?q=headphones' }]; } },
+  };
+  const actionList = {
+    actions: [{ id: 'search', version: 4, steps: [{ id: 'fill' }] }],
+    listId,
+    publication: { revision: 4, status: 'candidate' },
+  };
+  const calls = [];
+  const response = (body, { etag = null, status = 200 } = {}) => ({
+    headers: { get: (name) => (name === 'ETag' ? etag : null) },
+    json: async () => body, ok: status >= 200 && status < 300, status,
+  });
+  const replayReport = {
+    schemaVersion: 'candidate-replay/1', status: 'passed',
+    actions: [{ actionId: 'search', actionVersion: 4, stepsExecuted: 1, postconditionsVerified: 1 }],
+  };
+  const coordinator = coordinatorApi.createCoordinator({
+    candidateReplayRunner: {
+      async runCandidate(input) {
+        assert.equal(input.digest, listDigest);
+        assert.equal(input.sourceTabId, 17);
+        assert.deepEqual(input.list, actionList);
+        return replayReport;
+      },
+    },
+    chromeApi,
+    fetchApi: async (url, options = {}) => {
+      calls.push([url, options]);
+      if (url.endsWith('/head')) return response({ digest: mapDigest, revision: 4, siteScopeId: scopeId });
+      if (url.includes('/context?revision=4')) return response({ actions: [], digest: mapDigest, revision: 4, siteScopeId: scopeId });
+      if (url.endsWith('/candidate-review')) return response({ binding: { actionMapDigest: mapDigest, actionMapRevision: 4, candidateDigest: listDigest }, status: 'candidate' });
+      if (url.includes('/candidate-review/evidence/transition_7')) return response({ referenceId: 'transition_7', matches: [{ evidenceId: 'node_search' }] });
+      if (url.endsWith('/candidate-review/replay')) return response({ replayReport: { id: 'replay_7', status: 'passed' } }, { status: 201 });
+      return response(actionList, { etag: `"${listDigest}"` });
+    },
+    retrySpoolApi: { createChromeEncryptedStorage: async () => ({}), createRetrySpool: () => ({ list: async () => [] }) },
+  });
+  const replay = await coordinator.handleMessage({ type: 'START_CANDIDATE_REPLAY' });
+  assert.equal(replay.ok, true);
+  const replayCall = calls.find(([url]) => url.endsWith('/candidate-review/replay'));
+  assert.deepEqual(JSON.parse(replayCall[1].body), { expectedDigest: listDigest, report: replayReport });
+  const evidence = await coordinator.handleMessage({
+    type: 'OPEN_CANDIDATE_EVIDENCE', reference: { actionMapDigest: mapDigest, id: 'transition_7' },
+  });
+  assert.equal(evidence.ok, true);
+  assert.deepEqual(evidence.result.matches, [{ evidenceId: 'node_search' }]);
+});
+
 test('fails closed for absent, offline, malformed, and mismatched policy-review action maps', async () => {
   const scopeId = 'site_https___shop_test';
   const chromeApi = {
@@ -531,7 +593,7 @@ test('missing review bindings fail closed without fetch, tabs, jobs, or storage 
   const evidence = await coordinator.handleMessage({ type: 'OPEN_CANDIDATE_EVIDENCE' });
   const confirmation = await coordinator.handleMessage({ type: 'SUBMIT_RUN_CONFIRMATION' });
   assert.match(review.error, /complete candidate-review decision/);
-  assert.match(evidence.error, /explicitly unavailable/);
+  assert.match(evidence.error, /not resolved/);
   assert.match(confirmation.error, /exact coordinator run/);
   assert.deepEqual({ fetches, storageWrites, tabCalls }, { fetches: 0, storageWrites: 0, tabCalls: 0 });
 });

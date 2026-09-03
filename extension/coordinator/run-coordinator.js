@@ -938,8 +938,8 @@
         stepIndex: record.stepIndex + 1,
         stepObservations: [...record.stepObservations, {
           durationMs,
-          locatorStrategyIndex: null,
-          matchCount: null,
+          locatorStrategyIndex: payload.locatorStrategyIndex ?? null,
+          matchCount: payload.matchCount ?? null,
           postconditionSatisfied: payload.effect.postconditionSatisfied,
           status: 'completed',
           stepId: pending.stepId,

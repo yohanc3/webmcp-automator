@@ -110,16 +110,19 @@
     };
   };
 
-  const installChromeCoordinator = ({ chromeApi, coordinator }) => {
+  const installChromeCoordinator = ({ chromeApi, coordinator, portHandlers = {}, tabClosedHandlers = [] }) => {
     chromeApi.runtime.onConnect.addListener((port) => {
       try {
-        coordinator.bindPort(port);
+        const handler = portHandlers[port.name];
+        if (handler) handler(port);
+        else coordinator.bindPort(port);
       } catch (error) {
         port.disconnect();
       }
     });
     chromeApi.tabs.onRemoved.addListener((tabId) => {
       void coordinator.tabClosed(tabId);
+      tabClosedHandlers.forEach((handler) => { void handler(tabId); });
     });
     void coordinator.recover();
     return coordinator;

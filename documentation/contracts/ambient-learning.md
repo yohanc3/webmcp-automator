@@ -270,8 +270,12 @@ They become `observed` only when causal evidence connects the event to its
 effect. They become `verified` only after deterministic replay or a successful
 ready-path run validates their declared postconditions and output.
 
-Confidence is advisory and never blocks parsing. It is not a substitute for
-provenance or evidence.
+Confidence is advisory and never blocks parsing. Durable ready-path outcomes
+adjust it on the exact action version. A successful fallback locator can repair
+the next map revision, while repeated target or postcondition failures make the
+action unresolved. Each applied observation produces a newly bound candidate
+for review when at least one action remains runtime eligible. Confidence is not
+a substitute for provenance or evidence.
 
 ## 6. Observed paths and composition
 

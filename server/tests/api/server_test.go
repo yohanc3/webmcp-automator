@@ -578,7 +578,7 @@ func TestAmbientOrdersLifecycleThroughHTTP(t *testing.T) {
 	database := newAmbientMemoryStore()
 	parser := &orderedAmbientParser{patches: []json.RawMessage{ambientFixture(t, "orders.layer-001.patch.json"), ambientFixture(t, "orders.layer-002.patch.json")}}
 	server := api.New(database, parser, false, "fake", "fake", "")
-	server.SetCandidateReplayExecutor(passingCandidateReplay{})
+	server.SetCandidateReplayExecutor(nil)
 	first := ambientLayer(t, "orders.layer-001.parse-request.json")
 	firstBody := postAmbient(t, server, first, "chrome-extension://orders-test")
 	if firstBody["outcome"] != "applied" {
@@ -747,7 +747,23 @@ func TestAmbientOrdersLifecycleThroughHTTP(t *testing.T) {
 	if err := json.Unmarshal(policy.Body.Bytes(), &policyBody); err != nil || policyBody.PolicyDecision.ID == "" {
 		t.Fatalf("policy identifier: %v %s", err, policy.Body.String())
 	}
-	replay := postReviewJSON(base+"/replay", map[string]any{"expectedDigest": candidate.CandidateDigest})
+	server.SetCandidateReplayExecutor(nil)
+	candidateList, err := manifest.DecodeActionList(candidate.Document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submittedReplay, err := (passingCandidateReplay{}).Replay(context.Background(), candidateList)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var submittedReplayBody any
+	if err := json.Unmarshal(submittedReplay, &submittedReplayBody); err != nil {
+		t.Fatal(err)
+	}
+	replay := postReviewJSON(base+"/replay", map[string]any{
+		"expectedDigest": candidate.CandidateDigest,
+		"report":         submittedReplayBody,
+	})
 	if replay.Code != http.StatusCreated || !strings.Contains(replay.Body.String(), `"status":"passed"`) {
 		t.Fatalf("replay: %d %s", replay.Code, replay.Body.String())
 	}

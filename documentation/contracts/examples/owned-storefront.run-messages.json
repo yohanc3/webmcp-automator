@@ -135,6 +135,8 @@
       "commandId": "command_fill_query",
       "stepId": "fill_query",
       "stepIndex": 0,
+      "locatorStrategyIndex": 0,
+      "matchCount": 1,
       "effect": {
         "urlBefore": "http://127.0.0.1:4317/demo/",
         "urlAfter": "http://127.0.0.1:4317/demo/",

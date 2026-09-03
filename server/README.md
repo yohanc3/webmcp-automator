@@ -73,6 +73,14 @@ take precedence over the file.
 - `POST /api/learn` is a compatibility alias for `/api/discover`.
 - Adapter publication and run-history routes are retained for the paused replay
   experiment.
+- Candidate-review replay accepts an exact actor coverage report from the
+  extension and validates every action/version/step before storing a passed
+  gate.
+- Candidate evidence resolution returns only safe sidecar bindings after
+  verifying the candidate and current action-map revision/digest.
+- Durable run observations update action confidence and health, repair proven
+  fallback selectors, append an action-map revision, and generate a new bound
+  candidate for review.
 
 ## Test
 

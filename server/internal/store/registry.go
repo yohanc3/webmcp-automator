@@ -714,13 +714,20 @@ func (store *Store) RecordRunObservation(ctx context.Context, observation RunObs
 	}
 	startedAt, _ := time.Parse(time.RFC3339Nano, observation.StartedAt)
 	finishedAt, _ := time.Parse(time.RFC3339Nano, observation.FinishedAt)
-	_, err = store.db.ExecContext(ctx, `
+	var acceptedRunID string
+	err = store.db.QueryRowContext(ctx, `
 		INSERT INTO run_observations
 		  (run_id, list_id, list_digest, action_id, action_version, status,
 		   observation_json, started_at, finished_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, observation.RunID,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (run_id) DO UPDATE SET run_id = EXCLUDED.run_id
+		WHERE run_observations.observation_json = EXCLUDED.observation_json
+		RETURNING run_id`, observation.RunID,
 		observation.ListID, observation.ListDigest, observation.ActionID, observation.ActionVersion,
-		observation.Status, string(raw), startedAt, finishedAt, time.Now().UTC())
+		observation.Status, string(raw), startedAt, finishedAt, time.Now().UTC()).Scan(&acceptedRunID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrConflict
+	}
 	if err != nil {
 		return fmt.Errorf("record run observation: %w", err)
 	}

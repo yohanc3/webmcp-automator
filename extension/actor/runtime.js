@@ -514,7 +514,8 @@
   };
 
   const interactionTarget = (step, document) => {
-    const targets = resolveLocator(step.target, { document, stepId: step.id }).elements;
+    const located = resolveLocator(step.target, { document, stepId: step.id });
+    const targets = located.elements;
     if (targets.length !== 1) throw new ActorError(targets.length ? 'TARGET_AMBIGUOUS' : 'TARGET_NOT_FOUND',
       'The operation requires exactly one target', { stepId: step.id });
     const target = targets[0];
@@ -532,7 +533,7 @@
         throw new ActorError('TARGET_NOT_INTERACTABLE', 'The click target is obstructed', { stepId: step.id });
       }
     }
-    return target;
+    return { ...located, target };
   };
 
   const executeStep = async ({
@@ -613,19 +614,20 @@
       const beforeState = await bounded(detectState(runtimeContext, document, args, observation, signal));
       check();
       let result = null;
+      let locator = { matchCount: null, strategyIndex: null };
       operationStarted = true;
       if (step.op === 'fill') {
-        const target = interactionTarget(step, document);
+        locator = interactionTarget(step, document);
         check();
-        setNativeValue(target, resolveValue(step.value, args, step.id), document);
+        setNativeValue(locator.target, resolveValue(step.value, args, step.id), document);
       } else if (step.op === 'click') {
-        const target = interactionTarget(step, document);
+        locator = interactionTarget(step, document);
         check();
-        target.click();
+        locator.target.click();
       } else if (step.op === 'press') {
-        const target = interactionTarget(step, document);
+        locator = interactionTarget(step, document);
         check();
-        dispatchKey(target, step.key, document);
+        dispatchKey(locator.target, step.key, document);
       } else if (step.op === 'extract') {
         result = extractOutput(action.output, document, step.id);
       } else if (step.op !== 'wait') {
@@ -645,7 +647,8 @@
         action: runtimeContext, args, document, observation, signal, step, beforeURL, beforeState,
       }));
       return { type: COMPLETED, payload: {
-        commandId: command.commandId, stepId: step.id, stepIndex: command.stepIndex, effect, result,
+        commandId: command.commandId, stepId: step.id, stepIndex: command.stepIndex, effect,
+        locatorStrategyIndex: locator.strategyIndex, matchCount: locator.matchCount, result,
       } };
     } catch (error) {
       return { type: FAILED, payload: failurePayload(command || {}, error) };

@@ -13,6 +13,7 @@ binding, then uses these endpoints:
 
 ```text
 GET  /v1/action-lists/{listId}/revisions/{revision}/candidate-review
+GET  /v1/action-lists/{listId}/revisions/{revision}/candidate-review/evidence/{evidenceId}
 POST /v1/action-lists/{listId}/revisions/{revision}/candidate-review/policy
 POST /v1/action-lists/{listId}/revisions/{revision}/candidate-review/replay
 POST /v1/action-lists/{listId}/revisions/{revision}/candidate-review
@@ -26,15 +27,18 @@ bound to that candidate digest. Ambient collection consent produces only a
 authoritative execution policy must cover `inject` and every action safety
 class before publication.
 
-Replay is an intentionally narrow injected `action-list/1` executor seam. The
-production default is unavailable and therefore fails; it never reports a
-structural validation as replay. CI injects a deterministic owned-demo executor
-and the API accepts only an explicit `candidate-replay/1` passed result that
-enumerates every candidate action ID/version with exact step and postcondition
-coverage. It rejects partial, duplicate, or foreign action coverage and
-reconstructs the stored report from that allowlist. It never stores
-executor-supplied page content, arguments, semantic XML, evidence payloads, or
-arbitrary summary text.
+The extension runs candidate replay through a second isolated actor port and a
+private durable coordinator. It opens fresh inactive tabs on the candidate
+origin, executes the exact candidate action/version and every declared step,
+and derives its `candidate-replay/1` report only from terminal durable-run step
+coverage. Replay uses a temporary executable view; it does not publish or
+mutate the candidate. The server checks the submitted report against the
+server-owned candidate document and accepts only exact action ID/version, step,
+and postcondition coverage. It rejects partial, duplicate, or foreign coverage
+and reconstructs the stored report from that allowlist. Page content,
+arguments, semantic XML, evidence payloads, and arbitrary summary text are not
+part of the accepted report. The injected executor remains available only as a
+test seam.
 
 An explicit `approve` requires the current candidate digest, a nonblank
 reviewer, a server-issued allowed policy record, and a server-issued passed
@@ -50,9 +54,12 @@ The generic registry publication route rejects map-bound ambient candidates;
 they must pass through the authoritative candidate-review route, and the server
 assigns reviewer identity.
 
-`OPEN_CANDIDATE_EVIDENCE` remains explicitly unavailable. It must not resolve a
-compact evidence handle until a resolver can prove that handle against this
-same server-owned action-map revision and digest.
+`OPEN_CANDIDATE_EVIDENCE` resolves through the server. The resolver joins the
+candidate binding, immutable candidate revision, bound action-map revision, and
+current action-map head. Candidate digest, stored map digest, bound revision,
+and current head digest must all match. It returns only safe evidence sidecar
+fields for the referenced action, trace, transition, or compact handle; raw
+observations and page content never leave storage.
 
 Run confirmation is served from the durable coordinator record. The popup
 receives the exact run ID, list digest, step ID, origin, execution document ID,
@@ -72,3 +79,12 @@ lists whose exact origin and route match. Candidate revisions never escape the
 ready path. Candidate insertion, exact candidate reads, action-map reads,
 candidate review state, and run-observation writes require the extension
 boundary; exact published reads remain public.
+
+Every terminal durable run posts one privacy-safe `run-observation/1` record.
+For a map-bound published list, the store applies that record once: successful
+runs raise action confidence, failures lower it, and repeated target or
+postcondition failures quarantine the action. When a successful step used a
+fallback locator, that proven strategy replaces the stale map locator. The
+change appends a new action-map revision with a safe verification citation and
+the server projects and binds a new candidate revision for review. No feedback
+path republishes a candidate automatically.

@@ -16,6 +16,7 @@ test: test-server test-node test-extension test-documentation
 test-node:
 	node --test \
 		extension/actor/client.test.cjs \
+		extension/coordinator/candidate-replay.test.cjs \
 		extension/source/bootstrap.test.js \
 		extension/coordinator/tests/adapters.test.cjs \
 		extension/coordinator/tests/run-coordinator.test.cjs \

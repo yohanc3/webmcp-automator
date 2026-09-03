@@ -474,6 +474,36 @@
     rootElement.remove();
   });
 
+  test('starts actor replay only for the exact current review binding', async () => {
+    let starts = 0;
+    const rootElement = root();
+    const controller = policyReview.createController({
+      rootElement,
+      coordinator: {
+        getPolicyReviewState: async () => ({ context: context(), policy: policy(), candidate: candidate() }),
+        startCandidateReplay: async () => { starts += 1; },
+      },
+      registry: {},
+    });
+    controller.render({
+      context: context(), policy: policy(),
+      candidate: candidate({ replayReportId: null, replayStatus: 'failed' }),
+    });
+    const replay = buttonNamed(rootElement, 'Run actor replay');
+    equal(replay.disabled, false);
+    replay.click();
+    replay.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    equal(starts, 1);
+    controller.render({
+      context: context({ actionMapDigest: `sha256:${'9'.repeat(64)}` }), policy: policy(),
+      candidate: candidate({ replayReportId: null, replayStatus: 'failed' }),
+    });
+    equal(buttonNamed(rootElement, 'Run actor replay').disabled, true);
+    rootElement.remove();
+  });
+
   test('renders evidence handles and references as inert text without an authoritative port', () => {
     const rootElement = root();
     const controller = policyReview.createController({
@@ -843,7 +873,8 @@
   test('popup routes review and confirmation through fail-closed ports', () => {
     const source = loadText('../popup.js');
     match(source, /type: 'SUBMIT_CANDIDATE_REVIEW'/);
-    equal(/type: 'OPEN_CANDIDATE_EVIDENCE'/.test(source), false);
+    match(source, /type: 'OPEN_CANDIDATE_EVIDENCE'/);
+    match(source, /type: 'START_CANDIDATE_REPLAY'/);
     match(source, /type: 'SUBMIT_RUN_CONFIRMATION'/);
     match(source, /onError: \(error\) => showNotice\(error\.message, 'error'\)/);
   });

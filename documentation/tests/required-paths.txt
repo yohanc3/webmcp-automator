@@ -3,10 +3,16 @@ Makefile
 server/README.md
 server/.env.example
 server/tests
+server/internal/store/evidence.go
+server/internal/store/evidence_test.go
+server/internal/store/runtime_feedback.go
+server/internal/store/runtime_feedback_test.go
 extension/README.md
 extension/background.js
 extension/content.js
 extension/coordinator/bootstrap.js
+extension/coordinator/candidate-replay.js
+extension/coordinator/candidate-replay.test.cjs
 extension/learning/bootstrap.js
 extension/shared/errors.js
 extension/shared/protocol.js

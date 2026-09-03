@@ -14,6 +14,7 @@ importScripts(
   'coordinator/run-state.js',
   'coordinator/run-coordinator.js',
   'coordinator/chrome-adapters.js',
+  'coordinator/candidate-replay.js',
   'coordinator/bootstrap.js',
 );
 

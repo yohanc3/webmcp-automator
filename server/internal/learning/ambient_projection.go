@@ -38,6 +38,9 @@ func CompileAmbientCandidate(scopeID string, snapshot actionmap.Map, mapRevision
 	}
 	actions := make([]any, 0, len(snapshot.Actions))
 	for _, action := range snapshot.Actions {
+		if action.Status == "unresolved" {
+			continue
+		}
 		toState := action.FromState
 		if action.ToState != nil {
 			toState = *action.ToState
@@ -57,7 +60,7 @@ func CompileAmbientCandidate(scopeID string, snapshot actionmap.Map, mapRevision
 		}
 		readOnly := action.Safety == "read"
 		actions = append(actions, map[string]any{
-			"id": action.ID, "version": 1, "lifecycle": "candidate",
+			"id": action.ID, "version": mapRevision, "lifecycle": "candidate",
 			"tool": map[string]any{"name": action.ID, "title": action.Name, "description": action.Description,
 				"inputSchema": map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false},
 				"annotations": map[string]any{"readOnlyHint": readOnly, "untrustedContentHint": true}},
@@ -66,6 +69,9 @@ func CompileAmbientCandidate(scopeID string, snapshot actionmap.Map, mapRevision
 			"runtime":    map[string]any{"executionSurface": "inactive_tab", "allowedOrigins": []string{snapshot.Site.Origin}, "maxDurationMs": boundedDuration(action.Steps), "maxNavigations": ambientNavigations(action), "closeExecutionTab": true},
 			"provenance": map[string]any{"source": "imported", "observationCount": ambientObservationCount(action), "traceIds": ambientTraceIDs(action, traceID), "compiler": "ambient action-map projection; source revision " + fmt.Sprint(mapRevision) + "; source digest " + mapDigest + "; evidence bindings retained in action-map revision", "compiledAt": now.UTC().Format(time.RFC3339), "reviewedAt": nil, "reviewedBy": nil},
 		})
+	}
+	if len(actions) == 0 {
+		return nil, fmt.Errorf("action map has no runtime-eligible actions")
 	}
 	document := map[string]any{"schemaVersion": manifest.ActionListSchemaVersion, "listId": AmbientCandidateListID(scopeID), "site": map[string]any{"origin": snapshot.Site.Origin, "routePatterns": uniqueRoutes(routes), "topFrameOnly": true}, "publication": map[string]any{"status": "candidate", "revision": mapRevision, "createdAt": now.UTC().Format(time.RFC3339), "updatedAt": now.UTC().Format(time.RFC3339), "sourceMapId": sourceMapID, "contentDigest": nil}, "policy": map[string]any{"status": "unknown", "scopes": []string{}, "basis": "unreviewed", "evidenceUrl": nil, "checkedAt": now.UTC().Format(time.RFC3339), "expiresAt": nil, "reviewedBy": "local user", "note": "Candidate generated from ambient action-map revision; independent policy and replay review are required before publication."}, "states": states, "actions": actions}
 	raw, err := json.Marshal(document)

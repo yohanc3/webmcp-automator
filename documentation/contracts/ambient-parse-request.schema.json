@@ -441,6 +441,11 @@
         },
         "provenance": {
           "$ref": "#/$defs/provenance"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
         }
       }
     },

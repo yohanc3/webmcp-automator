@@ -18,6 +18,7 @@ import (
 	"webmcp-automator/server/internal/actionmap"
 	"webmcp-automator/server/internal/actionmapapi"
 	"webmcp-automator/server/internal/learning"
+	"webmcp-automator/server/internal/manifest"
 	"webmcp-automator/server/internal/privacy"
 	"webmcp-automator/server/internal/store"
 	learningtrace "webmcp-automator/server/internal/trace"
@@ -59,6 +60,10 @@ type Server struct {
 	replay           CandidateReplayExecutor
 }
 
+type runtimeFeedbackStore interface {
+	ApplyRunObservationFeedback(context.Context, store.RunObservation) (store.RuntimeFeedbackResult, error)
+}
+
 type learnRequest struct {
 	Trace json.RawMessage `json:"trace"`
 }
@@ -79,7 +84,7 @@ func New(
 	server := &Server{
 		store: database, discoverer: discoverer, apiKeyConfigured: apiKeyConfigured,
 		provider: provider, model: model, demoDirectory: demoDirectory,
-		replay: unavailableCandidateReplay{},
+		replay: nil,
 	}
 	if actionMaps, ok := database.(store.ActionMapService); ok {
 		server.actionMaps = actionMaps
@@ -97,6 +102,7 @@ func New(
 	mux.HandleFunc("GET /v1/action-lists/{listID}/revisions/{revision}", server.getActionListRevision)
 	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/publish", server.requireExtensionBoundary(server.publishActionList))
 	mux.HandleFunc("GET /v1/action-lists/{listID}/revisions/{revision}/candidate-review", server.requireExtensionBoundary(server.candidateState))
+	mux.HandleFunc("GET /v1/action-lists/{listID}/revisions/{revision}/candidate-review/evidence/{evidenceID}", server.requireExtensionBoundary(server.candidateEvidence))
 	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/candidate-review/policy", server.requireExtensionBoundary(server.materializeCandidatePolicy))
 	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/candidate-review/replay", server.requireExtensionBoundary(server.replayCandidate))
 	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/candidate-review", server.requireExtensionBoundary(server.submitCandidateReview))
@@ -119,12 +125,10 @@ func (server *Server) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	server.handler.ServeHTTP(writer, request)
 }
 
-// SetCandidateReplayExecutor is an intentionally narrow seam for the owned
-// deterministic demo actor. It exists for local integration and CI only.
+// SetCandidateReplayExecutor remains as a deterministic test seam. Production
+// replay reports are produced by the extension coordinator and page actor.
 func (server *Server) SetCandidateReplayExecutor(executor CandidateReplayExecutor) {
-	if executor != nil {
-		server.replay = executor
-	}
+	server.replay = executor
 }
 
 func (server *Server) health(writer http.ResponseWriter, _ *http.Request) {
@@ -391,7 +395,64 @@ func (server *Server) recordRunObservation(writer http.ResponseWriter, request *
 		writeRegistryError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusCreated, map[string]bool{"recorded": true})
+	response := map[string]any{"recorded": true}
+	feedbackStore, feedbackAvailable := server.store.(runtimeFeedbackStore)
+	if !feedbackAvailable {
+		writeJSON(writer, http.StatusCreated, response)
+		return
+	}
+	feedback, err := feedbackStore.ApplyRunObservationFeedback(request.Context(), observation)
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "run observation feedback failed"})
+		return
+	}
+	response["feedback"] = feedback
+	if feedback.Applied && feedback.ActionMap.Digest != nil {
+		generatedAt := time.Now().UTC()
+		if feedback.ActionMap.CreatedAt != nil {
+			generatedAt = *feedback.ActionMap.CreatedAt
+		}
+		candidate, compileErr := learning.CompileAmbientCandidate(
+			feedback.ScopeID,
+			feedback.ActionMap.ActionMap,
+			feedback.ActionMap.Revision,
+			*feedback.ActionMap.Digest,
+			generatedAt,
+		)
+		if compileErr == nil {
+			stored, storeErr := server.store.InsertActionListRevision(request.Context(), candidate)
+			if errors.Is(storeErr, store.ErrConflict) {
+				generatedDigest, digestErr := manifest.CandidateDigest(candidate)
+				existing, getErr := server.store.GetActionListRevision(
+					request.Context(), learning.AmbientCandidateListID(feedback.ScopeID), feedback.ActionMap.Revision,
+				)
+				if digestErr == nil && getErr == nil && existing.CandidateDigest == generatedDigest {
+					stored, storeErr = existing, nil
+				}
+			}
+			if storeErr != nil {
+				writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "feedback candidate regeneration failed"})
+				return
+			}
+			if reviewDatabase, ok := server.candidateReviewStore(); ok {
+				binding := store.CandidateBinding{
+					ListID: stored.ListID, Revision: stored.Revision,
+					CandidateDigest: stored.CandidateDigest, ScopeID: feedback.ScopeID,
+					ActionMapRevision: feedback.ActionMap.Revision,
+					ActionMapDigest:   *feedback.ActionMap.Digest,
+				}
+				if bindErr := reviewDatabase.BindCandidate(request.Context(), binding); bindErr != nil {
+					writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "feedback candidate binding failed"})
+					return
+				}
+				response["actionListCandidate"] = map[string]any{
+					"listId": stored.ListID, "revision": stored.Revision,
+					"digest": stored.Digest, "status": stored.Status,
+				}
+			}
+		}
+	}
+	writeJSON(writer, http.StatusCreated, response)
 }
 
 func (server *Server) recordRun(writer http.ResponseWriter, request *http.Request) {

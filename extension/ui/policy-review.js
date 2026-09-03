@@ -602,6 +602,9 @@
       const semantics = createElement('dl', 'compact-semantics');
       appendDefinition(semantics, 'When', action.precondition || 'Not described');
       appendDefinition(semantics, 'Effect', action.effect || 'Not described');
+      if (Number.isFinite(action.confidence)) {
+        appendDefinition(semantics, 'Runtime confidence', `${Math.round(action.confidence * 100)}%`);
+      }
       article.append(semantics);
       appendCompactEvidence({ container: article, action, actionMapDigest: digest, registry });
       actionList.append(article);
@@ -763,6 +766,17 @@
         'policy-blocked-note',
         'Approval is blocked until current action-map and action-list digests exactly match.',
       ));
+    }
+
+    if (reviewable && replay !== 'passed' && coordinator?.startCandidateReplay) {
+      const replayButton = createElement('button', 'button trust-action', 'Run actor replay');
+      replayButton.type = 'button';
+      replayButton.disabled = !reviewIsExact;
+      replayButton.addEventListener('click', () => {
+        replayButton.disabled = true;
+        void coordinator.startCandidateReplay().then(refresh).catch(failClosed);
+      });
+      section.append(replayButton);
     }
 
     if (coordinator?.submitCandidateReview) {

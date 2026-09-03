@@ -317,6 +317,8 @@
             "stepId",
             "stepIndex",
             "effect",
+            "locatorStrategyIndex",
+            "matchCount",
             "result"
           ],
           "properties": {
@@ -332,6 +334,20 @@
             },
             "effect": {
               "$ref": "#/$defs/effect"
+            },
+            "locatorStrategyIndex": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "matchCount": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
             },
             "result": {}
           }
