@@ -871,11 +871,12 @@ func ProjectActionMapContext(snapshot ActionMapSnapshot, metadata safeRevisionMe
 	}
 	statesByID := make(map[string]actionmap.State, len(snapshot.ActionMap.States))
 	context := ActionMapContext{
-		SiteScopeID: snapshot.SiteScopeID,
-		Revision:    snapshot.Revision,
-		Digest:      copyDigest(snapshot.Digest),
-		States:      make([]CompactState, 0, len(snapshot.ActionMap.States)),
-		Actions:     make([]CompactAction, 0, len(snapshot.ActionMap.Actions)),
+		SiteScopeID:         snapshot.SiteScopeID,
+		Revision:            snapshot.Revision,
+		Digest:              copyDigest(snapshot.Digest),
+		SourceLayerSequence: snapshot.SourceLayerSequence,
+		States:              make([]CompactState, 0, len(snapshot.ActionMap.States)),
+		Actions:             make([]CompactAction, 0, len(snapshot.ActionMap.Actions)),
 	}
 	for _, state := range snapshot.ActionMap.States {
 		statesByID[state.ID] = state

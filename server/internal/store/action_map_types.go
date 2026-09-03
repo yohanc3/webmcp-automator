@@ -306,11 +306,12 @@ type CompactAction struct {
 }
 
 type ActionMapContext struct {
-	SiteScopeID string          `json:"siteScopeId"`
-	Revision    int             `json:"revision"`
-	Digest      *string         `json:"digest"`
-	States      []CompactState  `json:"states"`
-	Actions     []CompactAction `json:"actions"`
+	SiteScopeID         string          `json:"siteScopeId"`
+	Revision            int             `json:"revision"`
+	Digest              *string         `json:"digest"`
+	SourceLayerSequence int             `json:"sourceLayerSequence"`
+	States              []CompactState  `json:"states"`
+	Actions             []CompactAction `json:"actions"`
 }
 
 type safeEntityMetadata struct {

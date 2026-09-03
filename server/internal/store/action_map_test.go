@@ -129,6 +129,70 @@ func TestMemoryActionMapStoreDuplicateNoChangeAndReusedKey(t *testing.T) {
 	if database.ActionMapRevisionCount("owned_account_orders") != 1 {
 		t.Fatal("no_change appended an action map revision")
 	}
+	head, err := database.GetActionMapHead(context.Background(), "owned_account_orders")
+	if err != nil || head.Revision != 1 || head.SourceLayerSequence != 2 {
+		t.Fatalf("no_change did not advance the memory head layer sequence: %#v, %v", head, err)
+	}
+	compact, err := database.GetActionMapContext(context.Background(), "owned_account_orders", 1)
+	if err != nil || compact.Revision != 1 || compact.SourceLayerSequence != 2 {
+		t.Fatalf("no_change did not preserve the memory context layer sequence: %#v, %v", compact, err)
+	}
+
+	noChangeRetry := noChange
+	noChangeRetry.Request.Attempt++
+	noChangeDuplicate, err := database.ApplyActionMapPatch(context.Background(), noChangeRetry)
+	if err != nil || noChangeDuplicate.Application.Status != "duplicate" {
+		t.Fatalf("no_change duplicate was not idempotent: %#v, %v", noChangeDuplicate, err)
+	}
+
+	staleLayer := first
+	staleLayer.Request.RequestID = "parse_orders_stale_after_no_change"
+	staleLayer.Patch.RequestID = staleLayer.Request.RequestID
+	staleLayer.Patch.PatchID = "patch_orders_stale_after_no_change"
+	digest := "sha256:20fd07cfcf35702ec55664cb488e5928e4684bbb959d52efeae495dd12117492"
+	staleLayer.Request.MapBase = MapBase{Revision: 1, Digest: &digest, PreviousLayerSequence: 2}
+	staleLayer.Patch.MapBase = PatchMapBase{Revision: 1, Digest: &digest}
+	setApplicationIdempotencyKey(t, &staleLayer)
+	staleReceipt, err := database.ApplyActionMapPatch(context.Background(), staleLayer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertReceipt(t, staleReceipt, "conflict", "LAYER_SEQUENCE_STALE", 0, "")
+
+	conflict := ordersApplication(t, "002")
+	conflict.Request.Layer.Sequence = 3
+	conflict.Request.Layer.URL = "https://shop.example/orders?conflict=stale"
+	conflict.Patch.LayerSequence = 3
+	setApplicationIdempotencyKey(t, &conflict)
+	conflictReceipt, err := database.ApplyActionMapPatch(context.Background(), conflict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertReceipt(t, conflictReceipt, "conflict", "LAYER_SEQUENCE_STALE", 0, "")
+	head, err = database.GetActionMapHead(context.Background(), "owned_account_orders")
+	if err != nil || head.SourceLayerSequence != 2 {
+		t.Fatalf("conflict advanced the memory head layer sequence: %#v, %v", head, err)
+	}
+
+	third := relayerApplication(t, ordersApplication(t, "002"), "layer_orders_002", "layer_orders_003")
+	third.Request.Layer.Sequence = 3
+	third.Patch.LayerSequence = 3
+	third.Request.MapBase.PreviousLayerSequence = 2
+	setApplicationIdempotencyKey(t, &third)
+	if err := validateApplicationInput(third, head, database.scopes["owned_account_orders"].metadata); err != nil {
+		t.Fatalf("layer 3 fixture is invalid: %v", err)
+	}
+	if _, _, err := applyPatch(third, head.ActionMap, database.scopes["owned_account_orders"].metadata); err != nil {
+		t.Fatalf("layer 3 patch cannot materialize: %v", err)
+	}
+	thirdReceipt, err := database.ApplyActionMapPatch(context.Background(), third)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thirdReceipt.Application.Status != "applied" || thirdReceipt.Application.Result == nil ||
+		thirdReceipt.Application.Result.Revision != 2 {
+		t.Fatalf("layer 3 did not append revision 2: %#v", thirdReceipt)
+	}
 }
 
 func TestMemoryActionMapStoreRejectsStaleBaseAndLayer(t *testing.T) {
@@ -441,12 +505,12 @@ func TestSQLActionMapStoreReadsExactHeadRevisionAndContext(t *testing.T) {
 		WithArgs("owned_account_orders").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"scope_id", "origin", "route_patterns_json", "head_revision", "head_digest", "last_layer_sequence",
-		}).AddRow("owned_account_orders", "https://shop.example", string(routesJSON), 1, digest, 1))
+		}).AddRow("owned_account_orders", "https://shop.example", string(routesJSON), 1, digest, 2))
 	mock.ExpectQuery("SELECT scope_id, revision, digest, source_layer_sequence").
 		WithArgs("owned_account_orders", 1).
 		WillReturnRows(revisionRows(true))
 	head, err := database.GetActionMapHead(context.Background(), "owned_account_orders")
-	if err != nil || head.Revision != 1 || head.Digest == nil || *head.Digest != digest {
+	if err != nil || head.Revision != 1 || head.SourceLayerSequence != 2 || head.Digest == nil || *head.Digest != digest {
 		t.Fatalf("unexpected SQL head: %#v, %v", head, err)
 	}
 
@@ -458,14 +522,80 @@ func TestSQLActionMapStoreReadsExactHeadRevisionAndContext(t *testing.T) {
 		t.Fatalf("unexpected SQL revision: %#v, %v", revision, err)
 	}
 
-	mock.ExpectQuery("SELECT scope_id, revision, digest, source_layer_sequence").
+	mock.ExpectQuery("SELECT action_map_revisions.scope_id, action_map_revisions.revision").
 		WithArgs("owned_account_orders", 1).
-		WillReturnRows(revisionRows(true))
+		WillReturnRows(sqlmock.NewRows([]string{
+			"scope_id", "revision", "digest", "source_layer_sequence", "document_json",
+			"evidence_metadata_json", "created_at", "head_revision", "last_layer_sequence",
+		}).AddRow("owned_account_orders", 1, digest, 1, string(mapJSON), string(metadataJSON), createdAt, 1, 2))
 	compact, err := database.GetActionMapContext(context.Background(), "owned_account_orders", 1)
-	if err != nil || compact.Revision != 1 || len(compact.Actions) != 1 ||
+	if err != nil || compact.Revision != 1 || compact.SourceLayerSequence != 2 || len(compact.Actions) != 1 ||
 		compact.Actions[0].ActionID != "open_orders" {
 		t.Fatalf("unexpected SQL compact context: %#v, %v", compact, err)
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSQLActionMapStoreAdvancesScopeSequenceForNoChange(t *testing.T) {
+	sqlDatabase, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database := New(sqlDatabase)
+	defer database.Close()
+
+	first := ordersApplication(t, "001")
+	firstPrepared := prepareActionMapApplication(
+		first,
+		seedActionMap(first.Request.SiteScope),
+		safeRevisionMetadata{
+			Entities: []safeEntityMetadata{}, Evidence: []EvidenceCitation{}, Bindings: []safeEvidenceBinding{},
+		},
+		time.Now().UTC(),
+	)
+	mapJSON, _ := canonicalJSON(firstPrepared.snapshot.ActionMap)
+	metadataJSON, _ := canonicalJSON(firstPrepared.metadata)
+	routesJSON, _ := canonicalJSON(first.Request.SiteScope.RoutePatterns)
+	digest := *firstPrepared.snapshot.Digest
+	noChange := ordersApplication(t, "002")
+	noChange.Patch.Decision = "no_change"
+	noChange.Patch.Summary = "The layer is already represented."
+	noChange.Patch.Operations = []PatchOperation{}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("INSERT INTO action_map_scopes").
+		WithArgs("owned_account_orders", "https://shop.example", string(routesJSON), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"scope_id"}))
+	mock.ExpectQuery("SELECT origin, route_patterns_json, head_revision").
+		WithArgs("owned_account_orders").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"origin", "route_patterns_json", "head_revision", "head_digest", "last_layer_sequence",
+		}).AddRow("https://shop.example", string(routesJSON), 1, digest, 1))
+	mock.ExpectQuery("SELECT scope_id, revision, digest, source_layer_sequence").
+		WithArgs("owned_account_orders", 1).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"scope_id", "revision", "digest", "source_layer_sequence", "document_json",
+			"evidence_metadata_json", "created_at",
+		}).AddRow("owned_account_orders", 1, digest, 1, string(mapJSON), string(metadataJSON), time.Now().UTC()))
+	mock.ExpectQuery("SELECT input_digest, receipt_json").
+		WithArgs("owned_account_orders", noChange.Request.IdempotencyKey).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectExec("UPDATE action_map_scopes").
+		WithArgs(1, digest, 2, sqlmock.AnyArg(), "owned_account_orders").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO action_map_receipts").
+		WithArgs("owned_account_orders", noChange.Request.IdempotencyKey, sqlmock.AnyArg(), 2,
+			sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	receipt, err := database.ApplyActionMapPatch(context.Background(), noChange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertReceipt(t, receipt, "no_change", "", 1, digest)
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}
@@ -527,6 +657,18 @@ func setApplicationIdempotencyKey(t *testing.T, input *ApplyActionMapRequest) {
 	}
 	input.Request.IdempotencyKey = digest
 	input.Patch.IdempotencyKey = digest
+}
+
+func relayerApplication(t *testing.T, input ApplyActionMapRequest, from, to string) ApplyActionMapRequest {
+	t.Helper()
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(strings.ReplaceAll(string(encoded), from, to)), &input); err != nil {
+		t.Fatal(err)
+	}
+	return input
 }
 
 func assertReceipt(
