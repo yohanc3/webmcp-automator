@@ -694,20 +694,190 @@ test('default observer records trusted event kinds, route hooks, and removes the
   windowApi.emit('popstate');
 });
 
-test('empty-spool policy revocation detaches synchronously before another event', () => {
-  const source = fs.readFileSync(path.join(__dirname, '../ambient-runtime.js'), 'utf8');
-  assert.match(source, /changed\.status !== 'allowed'[\s\S]*controller\.revoke/);
+test('empty-spool policy revocation detaches synchronously before another event', async () => {
+  const chromeApi = fakeChrome([policy()]);
+  const observer = fakeObserver();
+  const runtime = ambientRuntime.createRuntime({
+    chromeApi,
+    documentApi: fakeDocument(),
+    observer,
+    windowApi: fakeWindow(),
+  });
+  await runtime.start();
+  await runtime.controller.whenIdle();
+  const enqueueCount = () => chromeApi.calls.filter(({ operation, type }) => (
+    type === 'AMBIENT_SPOOL_OPERATION' && operation === 'enqueue'
+  )).length;
+  const enqueuedBeforeRevocation = enqueueCount();
+  const disconnectedBeforeRevocation = observer.disconnected;
+  const { onObservation } = observer.options;
+
+  chromeApi.storage.onChanged.callback({
+    'ambientPolicy:https://shop.test': { newValue: policy({ scopes: [], status: 'revoked' }) },
+  }, 'local');
+
+  assert.equal(runtime.controller.status().attached, false);
+  assert.equal(observer.disconnected, disconnectedBeforeRevocation + 1);
+  onObservation({
+    kind: 'click',
+    navigation: false,
+    targetEvidenceId: 'node_catalog',
+    trusted: true,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(enqueueCount(), enqueuedBeforeRevocation);
 });
 
-test('polling and startup timers cannot cross waiting-navigation before PAGE_READY', () => {
-  const source = fs.readFileSync(path.join(__dirname, '../../coordinator/bootstrap.js'), 'utf8');
-  assert.match(source, /job\.status === 'waiting-navigation'\) return/);
-  assert.match(source, /current\.status = 'running'/);
+test('polling and startup timers cannot cross waiting-navigation before PAGE_READY', async () => {
+  const areas = { local: {}, session: {} };
+  const commands = [];
+  const chromeApi = {
+    storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
+      async get(key) { return { [key]: areas[area][key] }; },
+      async set(values) { Object.assign(areas[area], values); },
+      async remove() {},
+    }])),
+    tabs: {
+      async create() { return { id: 20 }; },
+      async update() {},
+      async remove() {},
+      async sendMessage(tabId, message) {
+        commands.push({ op: message.step.op, tabId });
+        if (message.step.op === 'click') return { navigating: true, ok: true };
+        return { ok: true, result: { products: ['headphones'] } };
+      },
+    },
+  };
+  const manifest = {
+    manifestMatchesLocation: () => true,
+    validateManifest: (value) => ({ manifest: value, valid: true }),
+  };
+  const coordinator = coordinatorApi.createCoordinator({
+    chromeApi,
+    fetchApi: async () => ({ json: async () => ({}), ok: true }),
+    manifest,
+  });
+  const adapter = {
+    manifest: { tool: { steps: [{ op: 'click' }] } },
+    versionId: 'version_navigation_guard',
+  };
+  const started = await coordinator.handleMessage({
+    type: 'START_JOB',
+    adapter,
+    args: {},
+    sourceUrl: 'https://shop.test/catalog',
+  }, { tab: { id: 4 } });
+
+  await coordinator.handleMessage({ type: 'PAGE_READY' }, { tab: { id: 20 } });
+  await delay(5);
+  assert.deepEqual(commands.map(({ op }) => op), ['click']);
+  assert.equal(areas.session.jobs[started.jobId].status, 'waiting-navigation');
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await coordinator.handleMessage({ type: 'GET_JOB', jobId: started.jobId });
+    assert.equal(response.job.status, 'waiting-navigation');
+  }
+  await delay(320);
+  assert.deepEqual(commands.map(({ op }) => op), ['click']);
+  assert.equal(areas.session.jobs[started.jobId].status, 'waiting-navigation');
+
+  await coordinator.handleMessage({ type: 'PAGE_READY' }, { tab: { id: 20 } });
+  await delay(5);
+  assert.deepEqual(commands.map(({ op }) => op), ['click', 'extract']);
+  assert.equal(commands.filter(({ op }) => op === 'extract').length, 1);
+  assert.equal(areas.session.jobs[started.jobId].status, 'completed');
 });
 
-test('execution tab ownership precedes navigation and rejects ambient startup', () => {
-  const source = fs.readFileSync(path.join(__dirname, '../../coordinator/bootstrap.js'), 'utf8');
-  assert.match(source, /url: 'about:blank'/);
-  assert.match(source, /tabs\.update\(tab\.id, \{ url: sourceUrl \}\)/);
-  assert.match(source, /Ambient capture is disabled in execution tabs/);
+test('execution tab ownership precedes navigation and rejects ambient startup', async () => {
+  const lifecycleKey = 'ambientLifecycle:shop_scope';
+  const executionTabId = 21;
+  const sourceTabId = 4;
+  const sourceUrl = 'https://shop.test/catalog';
+  const areas = {
+    local: {},
+    session: {
+      [lifecycleKey]: {
+        nextLayerSequence: 7,
+        pending: { [executionTabId]: { observationId: 'obs_execution' } },
+      },
+    },
+  };
+  const createdUrls = [];
+  const navigatedUrls = [];
+  let coordinator;
+  let executionResponses;
+  let ownershipObserved = false;
+  let sourceSequence;
+  const chromeApi = {
+    storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
+      async get(key) { return { [key]: areas[area][key] }; },
+      async set(values) { Object.assign(areas[area], values); },
+      async remove() {},
+    }])),
+    tabs: {
+      async create(options) {
+        createdUrls.push(options.url);
+        return { id: executionTabId };
+      },
+      async update(tabId, options) {
+        const ownedJob = Object.values(areas.session.jobs).find((job) => job.tabId === tabId);
+        assert.equal(ownedJob?.status, 'starting');
+        ownershipObserved = true;
+        const lifecycleBeforeExecutionMessages = JSON.parse(JSON.stringify(areas.session[lifecycleKey]));
+        const executionSender = { tab: { id: executionTabId } };
+        executionResponses = await Promise.all([
+          coordinator.handleMessage({
+            type: 'AMBIENT_CONSUME_PENDING',
+            documentId: 'ignored',
+            scopeId: 'shop_scope',
+          }, executionSender),
+          coordinator.handleMessage({
+            type: 'AMBIENT_POLICY_CURRENT',
+            origin: 'https://shop.test',
+            scope: 'ambient_learn',
+          }, executionSender),
+        ]);
+        assert.deepEqual(areas.session[lifecycleKey], lifecycleBeforeExecutionMessages);
+        sourceSequence = await coordinator.handleMessage({
+          type: 'AMBIENT_NEXT_LAYER_SEQUENCE',
+          scopeId: 'shop_scope',
+        }, { tab: { id: sourceTabId } });
+        navigatedUrls.push(options.url);
+      },
+      async remove() {},
+      async sendMessage() { return { ok: true, result: {} }; },
+    },
+  };
+  const manifest = {
+    manifestMatchesLocation: () => true,
+    validateManifest: (value) => ({ manifest: value, valid: true }),
+  };
+  coordinator = coordinatorApi.createCoordinator({
+    chromeApi,
+    fetchApi: async () => ({ json: async () => ({}), ok: true }),
+    manifest,
+  });
+
+  const started = await coordinator.handleMessage({
+    type: 'START_JOB',
+    adapter: { manifest: { tool: { steps: [] } }, versionId: 'version_execution_ownership' },
+    args: {},
+    sourceUrl,
+  }, { tab: { id: sourceTabId } });
+
+  assert.deepEqual(createdUrls, ['about:blank']);
+  assert.equal(ownershipObserved, true);
+  assert.equal(areas.session.jobs[started.jobId].tabId, executionTabId);
+  assert.deepEqual(navigatedUrls, [sourceUrl]);
+  assert.deepEqual(executionResponses, [
+    { error: 'Ambient capture is disabled in execution tabs', ok: false },
+    { error: 'Ambient capture is disabled in execution tabs', ok: false },
+  ]);
+  assert.deepEqual(sourceSequence, { ok: true, sequence: 8 });
+  assert.deepEqual(areas.session[lifecycleKey], {
+    nextLayerSequence: 8,
+    pending: { [executionTabId]: { observationId: 'obs_execution' } },
+  });
+  coordinator.onTabRemoved(executionTabId);
+  await delay(5);
 });
