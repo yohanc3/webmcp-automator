@@ -87,9 +87,6 @@ func New(
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", server.health)
-	mux.HandleFunc("POST /api/discover", server.discover)
-	mux.HandleFunc("GET /api/discover/{sessionID}", server.discoveryStatus)
-	mux.HandleFunc("POST /api/learn", server.discover)
 	mux.HandleFunc("GET /api/adapters", server.listAdapters)
 	mux.HandleFunc("POST /api/adapters/publish", server.publish)
 	mux.HandleFunc("POST /api/runs", server.recordRun)
