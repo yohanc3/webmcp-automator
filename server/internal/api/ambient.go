@@ -74,7 +74,11 @@ func (sink ambientPatchSink) Apply(ctx context.Context, request learning.ParseRe
 	if err != nil {
 		return learning.PatchApplication{}, err
 	}
-	return learning.PatchApplication{Status: receipt.Application.Status, ConflictCode: valueOrEmpty(receipt.Application.ConflictCode)}, nil
+	revision := receipt.Application.Current.Revision
+	if receipt.Application.Result != nil {
+		revision = receipt.Application.Result.Revision
+	}
+	return learning.PatchApplication{Status: receipt.Application.Status, ConflictCode: valueOrEmpty(receipt.Application.ConflictCode), Revision: revision}, nil
 }
 
 func valueOrEmpty(value *string) string {
@@ -108,8 +112,8 @@ func (server *Server) processAmbientLayer(writer http.ResponseWriter, request *h
 		return
 	}
 	var candidateRevision any
-	if result.Application.Status == "applied" {
-		head, headErr := server.actionMaps.GetActionMapHead(request.Context(), layer.SiteScope.ScopeID)
+	if result.Application.Status == "applied" || result.Application.Status == "duplicate" {
+		head, headErr := server.actionMaps.GetActionMapRevision(request.Context(), layer.SiteScope.ScopeID, result.Application.Revision)
 		if headErr != nil {
 			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"outcome": "retryable", "retryable": true, "error": "accepted action map could not be loaded for review projection"})
 			return
@@ -123,7 +127,10 @@ func (server *Server) processAmbientLayer(writer http.ResponseWriter, request *h
 			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"outcome": "retryable", "retryable": true, "error": "accepted action map could not be projected for review"})
 			return
 		}
-		stored, storeErr := server.store.InsertActionListRevision(request.Context(), candidate)
+		stored, storeErr := server.store.GetActionListRevision(request.Context(), learning.AmbientCandidateListID(layer.SiteScope.ScopeID), head.Revision)
+		if errors.Is(storeErr, store.ErrNotFound) {
+			stored, storeErr = server.store.InsertActionListRevision(request.Context(), candidate)
+		}
 		if storeErr != nil {
 			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"outcome": "retryable", "retryable": true, "error": "accepted action map review projection is temporarily unavailable"})
 			return

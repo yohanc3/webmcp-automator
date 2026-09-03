@@ -3,6 +3,7 @@ package learning
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"webmcp-automator/server/internal/actionmap"
@@ -62,10 +63,10 @@ func CompileAmbientCandidate(scopeID string, snapshot actionmap.Map, mapRevision
 			"precondition": map[string]any{"allowedStateIds": []string{action.FromState}, "urlPatterns": []string{stateByID(snapshot.States, action.FromState).URLPattern}, "checks": map[string]any{"mode": "all", "checks": []any{map[string]any{"kind": "state", "stateId": action.FromState}}}},
 			"steps":        steps, "output": compileOutput(action.Output), "safety": compileSafety(action, steps),
 			"runtime":    map[string]any{"executionSurface": "inactive_tab", "allowedOrigins": []string{snapshot.Site.Origin}, "maxDurationMs": boundedDuration(action.Steps), "maxNavigations": ambientNavigations(action), "closeExecutionTab": true},
-			"provenance": map[string]any{"source": "manual", "observationCount": 1, "traceIds": []string{traceID}, "compiler": "ambient action-map projection; source revision " + fmt.Sprint(mapRevision) + "; source digest " + mapDigest + "; evidence bindings retained in action-map revision", "compiledAt": now.UTC().Format(time.RFC3339), "reviewedAt": nil, "reviewedBy": nil},
+			"provenance": map[string]any{"source": "imported", "observationCount": ambientObservationCount(action), "traceIds": ambientTraceIDs(action, traceID), "compiler": "ambient action-map projection; source revision " + fmt.Sprint(mapRevision) + "; source digest " + mapDigest + "; evidence bindings retained in action-map revision", "compiledAt": now.UTC().Format(time.RFC3339), "reviewedAt": nil, "reviewedBy": nil},
 		})
 	}
-	document := map[string]any{"schemaVersion": manifest.ActionListSchemaVersion, "listId": boundedIdentifier(scopeID + "_actions"), "site": map[string]any{"origin": snapshot.Site.Origin, "routePatterns": uniqueRoutes(routes), "topFrameOnly": true}, "publication": map[string]any{"status": "candidate", "revision": mapRevision, "createdAt": now.UTC().Format(time.RFC3339), "updatedAt": now.UTC().Format(time.RFC3339), "sourceMapId": sourceMapID, "contentDigest": nil}, "policy": map[string]any{"status": "unknown", "scopes": []string{}, "basis": "unreviewed", "evidenceUrl": nil, "checkedAt": now.UTC().Format(time.RFC3339), "expiresAt": nil, "reviewedBy": "local user", "note": "Candidate generated from ambient action-map revision; independent policy and replay review are required before publication."}, "states": states, "actions": actions}
+	document := map[string]any{"schemaVersion": manifest.ActionListSchemaVersion, "listId": AmbientCandidateListID(scopeID), "site": map[string]any{"origin": snapshot.Site.Origin, "routePatterns": uniqueRoutes(routes), "topFrameOnly": true}, "publication": map[string]any{"status": "candidate", "revision": mapRevision, "createdAt": now.UTC().Format(time.RFC3339), "updatedAt": now.UTC().Format(time.RFC3339), "sourceMapId": sourceMapID, "contentDigest": nil}, "policy": map[string]any{"status": "unknown", "scopes": []string{}, "basis": "unreviewed", "evidenceUrl": nil, "checkedAt": now.UTC().Format(time.RFC3339), "expiresAt": nil, "reviewedBy": "local user", "note": "Candidate generated from ambient action-map revision; independent policy and replay review are required before publication."}, "states": states, "actions": actions}
 	raw, err := json.Marshal(document)
 	if err != nil {
 		return nil, err
@@ -74,6 +75,33 @@ func CompileAmbientCandidate(scopeID string, snapshot actionmap.Map, mapRevision
 		return nil, fmt.Errorf("validate projected action list: %w", err)
 	}
 	return raw, nil
+}
+
+func AmbientCandidateListID(scopeID string) string { return boundedIdentifier(scopeID + "_actions") }
+
+func ambientObservationCount(action actionmap.Action) int {
+	for _, handle := range action.Evidence {
+		if strings.Contains(handle, ":update_") || strings.Contains(handle, ":obs_") {
+			return 1
+		}
+	}
+	return 1 // action-list/1 requires provenance evidence; map-only inference is a candidate, never publishable.
+}
+
+func ambientTraceIDs(action actionmap.Action, fallback string) []string {
+	seen := map[string]bool{}
+	values := []string{}
+	for _, handle := range action.Evidence {
+		parts := strings.Split(handle, ":")
+		if len(parts) > 0 && !seen[parts[0]] {
+			seen[parts[0]] = true
+			values = append(values, parts[0])
+		}
+	}
+	if len(values) == 0 {
+		return []string{fallback}
+	}
+	return values
 }
 
 func ambientNavigations(action actionmap.Action) int {

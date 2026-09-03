@@ -5,6 +5,8 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -151,7 +153,7 @@ func MaterializePatch(request ParseRequest, patch ActionMapPatch, base actionmap
 			if operation.EntityID != operation.Action.ID {
 				return reject("ENTITY_ID_MISMATCH", path+".entityId", "entityId must equal action.id")
 			}
-			if rejection := validateAmbientAction(request, operation, citations, currentNodes, path); rejection != nil {
+			if rejection := validateAmbientAction(request, operation, citations, currentNodes, base, path); rejection != nil {
 				return MaterializedPatch{}, *rejection
 			}
 			sidecars[operation.EntityID] = append([]StepEvidence(nil), operation.StepEvidence...)
@@ -267,7 +269,7 @@ func validateStateEvidence(state actionmap.State, citationIDs []string, citation
 	return nil
 }
 
-func validateAmbientAction(request ParseRequest, operation PatchOperation, citations map[string]EvidenceCitation, currentNodes map[string]*semanticNode, path string) *Rejection {
+func validateAmbientAction(request ParseRequest, operation PatchOperation, citations map[string]EvidenceCitation, currentNodes map[string]*semanticNode, base actionmap.Map, path string) *Rejection {
 	action := *operation.Action
 	reject := func(code, suffix, message string) *Rejection {
 		return &Rejection{Code: code, Path: path + suffix, Message: message}
@@ -316,6 +318,7 @@ func validateAmbientAction(request ParseRequest, operation PatchOperation, citat
 	}
 	bindings := map[string]bool{}
 	expectedTokens := map[string]bool{}
+	hasCurrentExecutableEvidence := false
 	for index, binding := range operation.StepEvidence {
 		bindingPath := fmt.Sprintf(".stepEvidence[%d]", index)
 		if binding.StepIndex < 0 || binding.StepIndex >= len(action.Steps) {
@@ -350,6 +353,7 @@ func validateAmbientAction(request ParseRequest, operation PatchOperation, citat
 			return reject("INVENTED_EVIDENCE", bindingPath+".evidenceId", "step binding is not backed by an operation citation")
 		}
 		if binding.LayerID == request.Layer.LayerID && (binding.Role == "target" || binding.Role == "output") {
+			hasCurrentExecutableEvidence = true
 			node := currentNodes[binding.EvidenceID]
 			if node == nil {
 				return reject("EVIDENCE_LOCATOR_MISMATCH", bindingPath+".evidenceId", "binding node is absent from current semantic XML")
@@ -362,6 +366,9 @@ func validateAmbientAction(request ParseRequest, operation PatchOperation, citat
 				return reject("EVIDENCE_LOCATOR_MISMATCH", bindingPath, "locator does not describe the cited semantic node")
 			}
 		}
+		if binding.LayerID == request.Layer.LayerID && binding.Role == "effect" {
+			hasCurrentExecutableEvidence = true
+		}
 		key := bindingKey(binding.StepIndex, binding.Role, binding.FieldName)
 		if bindings[key] {
 			return reject("DUPLICATE_STEP_BINDING", bindingPath, "step evidence bindings must be unique")
@@ -372,6 +379,9 @@ func validateAmbientAction(request ParseRequest, operation PatchOperation, citat
 		if !containsString(action.Evidence, expectedToken) {
 			return reject("EVIDENCE_TOKEN_MISSING", ".action.evidence", "action does not retain binding token "+expectedToken)
 		}
+	}
+	if previous := actionByID(base, action.ID); previous != nil && !hasCurrentExecutableEvidence && (!reflect.DeepEqual(previous.Steps, action.Steps) || !reflect.DeepEqual(previous.Output, action.Output)) {
+		return reject("PRIOR_EVIDENCE_DRIFT", ".action", "steps or output changed without current-layer locator evidence")
 	}
 	for index, step := range action.Steps {
 		switch step.Operation {
@@ -435,6 +445,9 @@ type semanticNode struct {
 }
 
 func (node semanticNode) matches(locator actionmap.Locator) bool {
+	if locator.CSS != nil && !node.matchesCSS(*locator.CSS) {
+		return false
+	}
 	if locator.Role != nil && node.attrs["role"] != *locator.Role {
 		return false
 	}
@@ -451,6 +464,37 @@ func (node semanticNode) matches(locator actionmap.Locator) bool {
 		return false
 	}
 	return true
+}
+
+var cssAttribute = regexp.MustCompile(`^\[([A-Za-z][A-Za-z0-9_-]*)(?:=(?:'([^']*)'|"([^"]*)"))?\]$`)
+
+func (node semanticNode) matchesCSS(selector string) bool {
+	selector = strings.TrimSpace(selector)
+	if strings.HasPrefix(selector, "#") && len(selector) > 1 {
+		return node.attrs["id"] == selector[1:]
+	}
+	match := cssAttribute.FindStringSubmatch(selector)
+	if match == nil {
+		return false
+	} // CSS beyond this safe XML subset is unverifiable.
+	value, exists := node.attrs[match[1]]
+	if !exists {
+		return false
+	}
+	expected := match[2]
+	if expected == "" {
+		expected = match[3]
+	}
+	return match[2] == "" && match[3] == "" || value == expected
+}
+
+func actionByID(actionMap actionmap.Map, id string) *actionmap.Action {
+	for index := range actionMap.Actions {
+		if actionMap.Actions[index].ID == id {
+			return &actionMap.Actions[index]
+		}
+	}
+	return nil
 }
 
 func outputLocator(output actionmap.Output, fieldName *string) actionmap.Locator {
