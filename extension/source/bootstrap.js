@@ -21,7 +21,7 @@
     sendRuntimeMessage,
   } = protocol;
 
-  const PORT_NAME = 'webmcp-source-v1';
+  const PORT_NAME = 'webmcp-run/1:source';
   const ACTION_LIST_VERSION = 'action-list/1';
   const MAX_MESSAGE_BYTES = 64 * 1024;
   const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
@@ -238,7 +238,9 @@
     const cancelSchedule = options.cancelSchedule || ((timer) => root.clearTimeout(timer));
     const reconnectDelayMs = options.reconnectDelayMs ?? 25;
     const maxReconnectAttempts = options.maxReconnectAttempts ?? 4;
-    const modelContext = options.modelContext || documentObject?.modelContext;
+    const modelContext = Object.prototype.hasOwnProperty.call(options, 'modelContext')
+      ? options.modelContext
+      : documentObject?.modelContext;
     const registrationControllers = new Map();
     const registrationKeysByName = new Map();
     const requests = new Map();

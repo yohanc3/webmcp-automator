@@ -11,7 +11,12 @@ run:
 test: test-server test-node test-extension test-documentation
 
 test-node:
-	node --test extension/learning/tests/ambient-contract-tests.js extension/learning/tests/ambient-runtime-tests.js
+	node --test \
+		extension/source/bootstrap.test.js \
+		extension/coordinator/tests/adapters.test.cjs \
+		extension/coordinator/tests/run-coordinator.test.cjs \
+		extension/learning/tests/ambient-contract-tests.js \
+		extension/learning/tests/ambient-runtime-tests.js
 
 test-server:
 	cd server && GOCACHE="$(GO_CACHE)" go test ./...

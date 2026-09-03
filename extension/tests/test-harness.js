@@ -141,6 +141,7 @@
 
   const createChrome = () => {
     const runtimeListeners = [];
+    const portListeners = [];
     const tabRemovedListeners = [];
     const sentMessages = [];
     const tabMessages = [];
@@ -151,6 +152,11 @@
       onMessage: {
         addListener(listener) {
           runtimeListeners.push(listener);
+        },
+      },
+      onConnect: {
+        addListener(listener) {
+          portListeners.push(listener);
         },
       },
       sendMessage(message, callback) {
@@ -183,6 +189,7 @@
         },
       },
       __test: {
+        portListeners,
         runtimeListeners,
         sentMessages,
         setRuntimeResponder(responder) {

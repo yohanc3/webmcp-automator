@@ -35,13 +35,11 @@
     executeStep: 'EXECUTE_STEP',
     getAdapters: 'GET_ADAPTERS',
     getBackendHealth: 'GET_BACKEND_HEALTH',
-    getJob: 'GET_JOB',
     getPageState: 'GET_PAGE_STATE',
     getPopupState: 'GET_POPUP_STATE',
     pageReady: 'PAGE_READY',
     publishCandidate: 'PUBLISH_CANDIDATE',
     refreshAdapters: 'REFRESH_ADAPTERS',
-    startJob: 'START_JOB',
     webMcpStatus: 'WEBMCP_STATUS',
   });
 

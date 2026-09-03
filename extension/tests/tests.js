@@ -107,9 +107,9 @@
   test('exposes frozen compatibility messages and canonical run envelopes', () => {
     const protocol = globalThis.WebMcpProtocol;
     equal(Object.isFrozen(protocol.MESSAGE_TYPES), true);
-    deepEqual(protocol.createMessage(protocol.MESSAGE_TYPES.startJob, { jobId: 'job_1' }), {
-      type: 'START_JOB',
-      jobId: 'job_1',
+    deepEqual(protocol.createMessage(protocol.MESSAGE_TYPES.pageReady, { stateId: 'catalog' }), {
+      type: 'PAGE_READY',
+      stateId: 'catalog',
     });
     deepEqual(protocol.createEnvelope({
       type: protocol.RUN_MESSAGE_TYPES.runAccepted,
@@ -173,24 +173,18 @@
   });
 
   test('keeps registration paused until an explicit refresh', async () => {
-    const descriptor = Object.getOwnPropertyDescriptor(document, 'modelContext');
-    Object.defineProperty(document, 'modelContext', { configurable: true, value: undefined });
-    try {
-      const before = chrome.__test.sentMessages.length;
-      equal(WebMcpSourceBootstrap.handleMessage({
-        type: WebMcpProtocol.MESSAGE_TYPES.refreshAdapters,
-      }, {}, () => {}), true);
-      await Promise.resolve();
-      await Promise.resolve();
-      deepEqual(chrome.__test.sentMessages.slice(before), [{
-        type: 'WEBMCP_STATUS',
-        available: false,
-      }]);
-      equal(WebMcpSourceBootstrap.handleMessage({ type: 'UNKNOWN' }, {}, () => {}), undefined);
-    } finally {
-      if (descriptor) Object.defineProperty(document, 'modelContext', descriptor);
-      else delete document.modelContext;
-    }
+    const before = chrome.__test.sentMessages.length;
+    const bridge = WebMcpSourceBootstrap.createSourceBridge({
+      modelContext: undefined,
+      runtime: chrome.runtime,
+    });
+    deepEqual(await bridge.registerActionLists([]), { available: false, registered: 0 });
+    deepEqual(chrome.__test.sentMessages.slice(before), [{
+      type: 'WEBMCP_STATUS',
+      available: false,
+    }]);
+    equal(WebMcpSourceBootstrap.handleMessage({ type: 'UNKNOWN' }, {}, () => {}), undefined);
+    bridge.stop();
   });
 
   test('legacy job polling is absent from the source bridge', () => {

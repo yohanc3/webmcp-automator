@@ -11,6 +11,9 @@ importScripts(
   'learning/semantic.js',
   'learning/retry-spool.js',
   'learning/ambient-capture.js',
+  'coordinator/run-state.js',
+  'coordinator/run-coordinator.js',
+  'coordinator/chrome-adapters.js',
   'coordinator/bootstrap.js',
 );
 

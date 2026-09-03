@@ -282,7 +282,7 @@ test('action-map heads and candidate bindings require the exact current digests'
   assert.deepEqual(policyReview.staleConfirmationReasons({ documentId: 'doc_1', listDigest, origin: 'https://shop.test', policyRevision: 5, stepId: 'step_1' }, { documentId: 'doc_1', listDigest, origin: 'https://shop.test', policyRevision: 5, stepId: 'step_1' }), []);
 });
 
-test('coordinator preserves backend, adapter, job, page-ready, and status dispatch', async () => {
+test('coordinator discovers published action lists and preserves readiness and status dispatch', async () => {
   const areas = { local: {}, session: {} };
   const chromeApi = {
     storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
@@ -290,139 +290,28 @@ test('coordinator preserves backend, adapter, job, page-ready, and status dispat
       async set(values) { Object.assign(areas[area], values); },
       async remove() {},
     }])),
-    tabs: {
-      async create() { return { id: 9 }; },
-      async update() {},
-      async query() { return [{ url: 'https://shop.test/catalog' }]; },
-      async sendMessage() { return { ok: true }; },
-    },
+    tabs: { async query() { return [{ url: 'https://shop.test/catalog' }]; } },
   };
-  const manifest = { manifestMatchesLocation: () => true, validateManifest: (value) => ({ manifest: value, valid: true }) };
   const coordinator = coordinatorApi.createCoordinator({
     chromeApi,
-    fetchApi: async (url) => ({ json: async () => (url.endsWith('/health') ? { ready: true } : { adapters: ['a'] }), ok: true }),
-    manifest,
+    fetchApi: async (url) => ({
+      headers: { get: () => null },
+      json: async () => (url.endsWith('/health')
+        ? { ready: true }
+        : { actionLists: [{ listId: 'published_shop' }] }),
+      ok: true,
+    }),
   });
-  const sender = { tab: { id: 4 } };
+  const sender = { tab: { id: 4, url: 'https://shop.test/catalog' } };
   assert.deepEqual(await coordinator.handleMessage({ type: 'GET_BACKEND_HEALTH' }, sender), { ok: true, health: { ready: true } });
-  assert.deepEqual(await coordinator.handleMessage({ type: 'GET_ADAPTERS', origin: 'https://shop.test' }, sender), { ok: true, adapters: ['a'], stale: false });
-  const jobId = (await coordinator.handleMessage({ type: 'START_JOB', adapter: { manifest: { tool: { steps: [] } } }, args: {}, sourceUrl: 'https://shop.test/catalog' }, sender)).jobId;
-  assert.equal((await coordinator.handleMessage({ type: 'GET_JOB', jobId }, sender)).ok, true);
+  assert.deepEqual(await coordinator.handleMessage({ type: 'GET_ADAPTERS', origin: 'https://shop.test' }, sender), {
+    ok: true,
+    actionLists: [{ listId: 'published_shop' }],
+    stale: false,
+  });
   assert.equal((await coordinator.handleMessage({ type: 'PAGE_READY' }, sender)).recordingActive, false);
   assert.deepEqual(await coordinator.handleMessage({ type: 'WEBMCP_STATUS', available: true, registered: 2 }, sender), { ok: true });
   assert.equal(areas.session.webMcpStatus.registered, 2);
-});
-
-test('coordinator executes fill then navigation click, resumes on PAGE_READY, extracts, reports, and closes the execution tab', async () => {
-  const areas = { local: {}, session: {} };
-  const commands = [];
-  const reports = [];
-  const removed = [];
-  const chromeApi = {
-    storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
-      async get(key) { return { [key]: areas[area][key] }; },
-      async set(values) { Object.assign(areas[area], values); },
-      async remove() {},
-    }])),
-    tabs: {
-      async create() { return { id: 17 }; },
-      async update() {},
-      async remove(tabId) { removed.push(tabId); },
-      async sendMessage(tabId, message) {
-        commands.push({ tabId, op: message.step.op });
-        if (message.step.op === 'click') return { navigating: true, ok: true };
-        if (message.step.op === 'extract') return { ok: true, result: { products: ['headphones'] } };
-        return { ok: true };
-      },
-    },
-  };
-  const manifest = { manifestMatchesLocation: () => true, validateManifest: (value) => ({ manifest: value, valid: true }) };
-  const coordinator = coordinatorApi.createCoordinator({
-    chromeApi,
-    fetchApi: async (url, options) => {
-      if (url.endsWith('/api/runs')) reports.push(JSON.parse(options.body));
-      return { json: async () => ({}), ok: true };
-    },
-    manifest,
-  });
-  const adapter = {
-    manifest: {
-      tool: { steps: [{ op: 'fill' }, { op: 'click' }] },
-    },
-    versionId: 'version_1',
-  };
-  const started = await coordinator.handleMessage({ type: 'START_JOB', adapter, args: { query: 'headphones' }, sourceUrl: 'https://shop.test/catalog' }, { tab: { id: 4 } });
-  await coordinator.handleMessage({ type: 'PAGE_READY' }, { tab: { id: 17 } });
-  await delay(5);
-  assert.deepEqual(commands.map(({ op }) => op), ['fill', 'click']);
-  assert.equal(areas.session.jobs[started.jobId].status, 'waiting-navigation');
-  await coordinator.handleMessage({ type: 'PAGE_READY' }, { tab: { id: 17 } });
-  await delay(5);
-  assert.equal(areas.session.jobs[started.jobId].status, 'completed');
-  assert.deepEqual(areas.session.jobs[started.jobId].result, { products: ['headphones'] });
-  assert.deepEqual(commands.map(({ op }) => op), ['fill', 'click', 'extract']);
-  assert.deepEqual(reports, [{ error: null, failedStep: null, observed: null, outcome: 'success', url: 'https://shop.test/catalog', versionId: 'version_1' }]);
-  assert.deepEqual(removed, [17]);
-});
-
-test('coordinator retries startup transport failures and GET_JOB nudges a nonterminal job', async () => {
-  const areas = { local: {}, session: {} };
-  let attempts = 0;
-  const chromeApi = {
-    storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
-      async get(key) { return { [key]: areas[area][key] }; }, async set(values) { Object.assign(areas[area], values); }, async remove() {},
-    }])),
-    tabs: {
-      async create() { return { id: 18 }; },
-      async update() {},
-      async remove() {},
-      async sendMessage() {
-        attempts += 1;
-        if (attempts === 1) throw new Error('content script is not ready');
-        if (attempts === 2) return { ok: true };
-        return { ok: true, result: { ready: true } };
-      },
-    },
-  };
-  const manifest = { manifestMatchesLocation: () => true, validateManifest: (value) => ({ manifest: value, valid: true }) };
-  const coordinator = coordinatorApi.createCoordinator({ chromeApi, fetchApi: async () => ({ json: async () => ({}), ok: true }), manifest });
-  const started = await coordinator.handleMessage({ type: 'START_JOB', adapter: { manifest: { tool: { steps: [{ op: 'wait' }] } }, versionId: 'version_2' }, args: {}, sourceUrl: 'https://shop.test/catalog' }, { tab: { id: 4 } });
-  await coordinator.handleMessage({ type: 'GET_JOB', jobId: started.jobId });
-  await delay(270);
-  assert.equal(attempts >= 2, true);
-  await coordinator.handleMessage({ type: 'GET_JOB', jobId: started.jobId });
-  await delay(5);
-  assert.equal(areas.session.jobs[started.jobId].status, 'completed');
-});
-
-test('coordinator serializes concurrent advances and fails a nonterminal job when its execution tab closes', async () => {
-  const areas = { local: {}, session: {} };
-  let sends = 0;
-  const chromeApi = {
-    storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
-      async get(key) { return { [key]: areas[area][key] }; }, async set(values) { Object.assign(areas[area], values); }, async remove() {},
-    }])),
-    tabs: {
-      async create() { return { id: 19 }; },
-      async update() {},
-      async remove() {},
-      async sendMessage() { sends += 1; await delay(5); return { navigating: true, ok: true }; },
-    },
-  };
-  const manifest = { manifestMatchesLocation: () => true, validateManifest: (value) => ({ manifest: value, valid: true }) };
-  const coordinator = coordinatorApi.createCoordinator({ chromeApi, fetchApi: async () => ({ json: async () => ({}), ok: true }), manifest });
-  const started = await coordinator.handleMessage({ type: 'START_JOB', adapter: { manifest: { tool: { steps: [{ op: 'click' }] } }, versionId: 'version_3' }, args: {}, sourceUrl: 'https://shop.test/catalog' }, { tab: { id: 4 } });
-  await Promise.all([
-    coordinator.handleMessage({ type: 'PAGE_READY' }, { tab: { id: 19 } }),
-    coordinator.handleMessage({ type: 'PAGE_READY' }, { tab: { id: 19 } }),
-  ]);
-  await delay(15);
-  assert.equal(sends, 1);
-  coordinator.onTabRemoved(19);
-  await delay(5);
-  assert.equal(areas.session.jobs[started.jobId].status, 'failed');
-  assert.equal(areas.session.jobs[started.jobId].failedStep, 1);
-  assert.match(areas.session.jobs[started.jobId].error, /closed/);
 });
 
 test('content forwards ambient delivery while the service worker adds the internal header and classifies receipts', async () => {
@@ -737,158 +626,4 @@ test('empty-spool policy revocation detaches synchronously before another event'
   });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(enqueueCount(), enqueuedBeforeRevocation);
-});
-
-test('polling and startup timers cannot cross waiting-navigation before PAGE_READY', async () => {
-  const areas = { local: {}, session: {} };
-  const commands = [];
-  const chromeApi = {
-    storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
-      async get(key) { return { [key]: areas[area][key] }; },
-      async set(values) { Object.assign(areas[area], values); },
-      async remove() {},
-    }])),
-    tabs: {
-      async create() { return { id: 20 }; },
-      async update() {},
-      async remove() {},
-      async sendMessage(tabId, message) {
-        commands.push({ op: message.step.op, tabId });
-        if (message.step.op === 'click') return { navigating: true, ok: true };
-        return { ok: true, result: { products: ['headphones'] } };
-      },
-    },
-  };
-  const manifest = {
-    manifestMatchesLocation: () => true,
-    validateManifest: (value) => ({ manifest: value, valid: true }),
-  };
-  const coordinator = coordinatorApi.createCoordinator({
-    chromeApi,
-    fetchApi: async () => ({ json: async () => ({}), ok: true }),
-    manifest,
-  });
-  const adapter = {
-    manifest: { tool: { steps: [{ op: 'click' }] } },
-    versionId: 'version_navigation_guard',
-  };
-  const started = await coordinator.handleMessage({
-    type: 'START_JOB',
-    adapter,
-    args: {},
-    sourceUrl: 'https://shop.test/catalog',
-  }, { tab: { id: 4 } });
-
-  await coordinator.handleMessage({ type: 'PAGE_READY' }, { tab: { id: 20 } });
-  await delay(5);
-  assert.deepEqual(commands.map(({ op }) => op), ['click']);
-  assert.equal(areas.session.jobs[started.jobId].status, 'waiting-navigation');
-
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const response = await coordinator.handleMessage({ type: 'GET_JOB', jobId: started.jobId });
-    assert.equal(response.job.status, 'waiting-navigation');
-  }
-  await delay(320);
-  assert.deepEqual(commands.map(({ op }) => op), ['click']);
-  assert.equal(areas.session.jobs[started.jobId].status, 'waiting-navigation');
-
-  await coordinator.handleMessage({ type: 'PAGE_READY' }, { tab: { id: 20 } });
-  await delay(5);
-  assert.deepEqual(commands.map(({ op }) => op), ['click', 'extract']);
-  assert.equal(commands.filter(({ op }) => op === 'extract').length, 1);
-  assert.equal(areas.session.jobs[started.jobId].status, 'completed');
-});
-
-test('execution tab ownership precedes navigation and rejects ambient startup', async () => {
-  const lifecycleKey = 'ambientLifecycle:shop_scope';
-  const executionTabId = 21;
-  const sourceTabId = 4;
-  const sourceUrl = 'https://shop.test/catalog';
-  const areas = {
-    local: {},
-    session: {
-      [lifecycleKey]: {
-        nextLayerSequence: 7,
-        pending: { [executionTabId]: { observationId: 'obs_execution' } },
-      },
-    },
-  };
-  const createdUrls = [];
-  const navigatedUrls = [];
-  let coordinator;
-  let executionResponses;
-  let ownershipObserved = false;
-  let sourceSequence;
-  const chromeApi = {
-    storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
-      async get(key) { return { [key]: areas[area][key] }; },
-      async set(values) { Object.assign(areas[area], values); },
-      async remove() {},
-    }])),
-    tabs: {
-      async create(options) {
-        createdUrls.push(options.url);
-        return { id: executionTabId };
-      },
-      async update(tabId, options) {
-        const ownedJob = Object.values(areas.session.jobs).find((job) => job.tabId === tabId);
-        assert.equal(ownedJob?.status, 'starting');
-        ownershipObserved = true;
-        const lifecycleBeforeExecutionMessages = JSON.parse(JSON.stringify(areas.session[lifecycleKey]));
-        const executionSender = { tab: { id: executionTabId } };
-        executionResponses = await Promise.all([
-          coordinator.handleMessage({
-            type: 'AMBIENT_CONSUME_PENDING',
-            documentId: 'ignored',
-            scopeId: 'shop_scope',
-          }, executionSender),
-          coordinator.handleMessage({
-            type: 'AMBIENT_POLICY_CURRENT',
-            origin: 'https://shop.test',
-            scope: 'ambient_learn',
-          }, executionSender),
-        ]);
-        assert.deepEqual(areas.session[lifecycleKey], lifecycleBeforeExecutionMessages);
-        sourceSequence = await coordinator.handleMessage({
-          type: 'AMBIENT_NEXT_LAYER_SEQUENCE',
-          scopeId: 'shop_scope',
-        }, { tab: { id: sourceTabId } });
-        navigatedUrls.push(options.url);
-      },
-      async remove() {},
-      async sendMessage() { return { ok: true, result: {} }; },
-    },
-  };
-  const manifest = {
-    manifestMatchesLocation: () => true,
-    validateManifest: (value) => ({ manifest: value, valid: true }),
-  };
-  coordinator = coordinatorApi.createCoordinator({
-    chromeApi,
-    fetchApi: async () => ({ json: async () => ({}), ok: true }),
-    manifest,
-  });
-
-  const started = await coordinator.handleMessage({
-    type: 'START_JOB',
-    adapter: { manifest: { tool: { steps: [] } }, versionId: 'version_execution_ownership' },
-    args: {},
-    sourceUrl,
-  }, { tab: { id: sourceTabId } });
-
-  assert.deepEqual(createdUrls, ['about:blank']);
-  assert.equal(ownershipObserved, true);
-  assert.equal(areas.session.jobs[started.jobId].tabId, executionTabId);
-  assert.deepEqual(navigatedUrls, [sourceUrl]);
-  assert.deepEqual(executionResponses, [
-    { error: 'Ambient capture is disabled in execution tabs', ok: false },
-    { error: 'Ambient capture is disabled in execution tabs', ok: false },
-  ]);
-  assert.deepEqual(sourceSequence, { ok: true, sequence: 8 });
-  assert.deepEqual(areas.session[lifecycleKey], {
-    nextLayerSequence: 8,
-    pending: { [executionTabId]: { observationId: 'obs_execution' } },
-  });
-  coordinator.onTabRemoved(executionTabId);
-  await delay(5);
 });
