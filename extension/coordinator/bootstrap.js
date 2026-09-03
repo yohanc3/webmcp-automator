@@ -124,7 +124,16 @@
       if (response.status === 409) return { outcome: 'conflict', receiptId: body?.requestId || null };
       if (!response.ok || !body || typeof body.outcome !== 'string') throw new Error(`Ambient delivery retryable: ${response.status}`);
       if (!['applied', 'duplicate', 'no_change', 'rejected'].includes(body.outcome)) throw new Error('Ambient delivery returned an invalid receipt');
-      return { outcome: body.outcome, receiptId: body.requestId || null };
+      const candidate = body.actionListCandidate;
+      const validCandidate = ['applied', 'duplicate'].includes(body.outcome)
+        && candidate?.status === 'candidate'
+        && typeof candidate.listId === 'string'
+        && Number.isInteger(candidate.revision) && candidate.revision > 0
+        && validDigest(candidate.digest);
+      if (validCandidate && completedLayer?.siteScope?.scopeId) {
+        await set('session', `ambientActionListCandidate:${completedLayer.siteScope.scopeId}`, candidate);
+      }
+      return validCandidate ? { outcome: body.outcome, receiptId: body.requestId || null, actionListCandidate: candidate } : { outcome: body.outcome, receiptId: body.requestId || null };
     };
     const tabMessage = (tabId, value) => chromeApi.tabs.sendMessage(tabId, value);
     const getJobs = () => get('session', 'jobs', {});
