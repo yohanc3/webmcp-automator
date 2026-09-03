@@ -114,6 +114,19 @@
         return { status: 'available', actionMap: { actions: compact.actions || [], states: compact.states || [] }, revision, digest };
       } catch (error) { return { status: 'unavailable' }; }
     };
+    const loadCandidate = async (scopeId, map) => {
+      if (map.status !== 'available') return null;
+      const pointer = await get('session', `ambientActionListCandidate:${scopeId}`);
+      if (!pointer || pointer.revision !== map.revision || !validDigest(pointer.digest)) return null;
+      try {
+        const response = await fetchApi(`http://127.0.0.1:4317/v1/action-lists/${encodeURIComponent(pointer.listId)}/revisions/${pointer.revision}`);
+        const etag = response.headers?.get?.('ETag')?.replace(/^"|"$/g, '');
+        if (!response.ok || etag !== pointer.digest) return null;
+        const document = await response.json();
+        if (document.listId !== pointer.listId || document.publication?.revision !== pointer.revision || document.publication?.status !== 'candidate') return null;
+        return { actions: document.actions || [], actionMapDigest: map.digest, actionMapRevision: map.revision, listDigest: pointer.digest, listId: pointer.listId, listRevision: pointer.revision };
+      } catch (error) { return null; }
+    };
     const deliverAmbientLayer = async (completedLayer) => {
       const response = await fetchApi('http://127.0.0.1:4317/v1/ambient/layers', {
         body: JSON.stringify(completedLayer),
@@ -234,7 +247,8 @@
           const policy = await currentPolicy({ origin, scope: 'ambient_learn', revision: stored?.revision ?? null });
           const scopeId = ambientScope.scopeFor(origin);
           const map = await loadActionMapStatus(origin, scopeId);
-          return { ok: true, state: { context: { origin, siteScopeId: scopeId, policyRevision: policy?.revision ?? null, requestedScope: 'ambient_learn', actionMapRevision: map.revision || null, actionMapDigest: map.digest || null }, policy, actionMap: map.status === 'available' ? map.actionMap : null, actionMapStatus: map.status, retrySpool: await retryMetadata(origin, scopeId) } };
+          const candidate = await loadCandidate(scopeId, map);
+          return { ok: true, state: { context: { origin, siteScopeId: scopeId, policyRevision: policy?.revision ?? null, requestedScope: 'ambient_learn', actionMapRevision: map.revision || null, actionMapDigest: map.digest || null }, policy, actionMap: map.status === 'available' ? map.actionMap : null, actionMapStatus: map.status, actionListCandidate: candidate, retrySpool: await retryMetadata(origin, scopeId) } };
         }
         case 'SET_OWNED_DEMO_OVERRIDE':
         {
