@@ -86,10 +86,19 @@
       throw new Error('Chrome local/session storage and Web Crypto are required for the ambient retry spool');
     }
     const session = await chromeApi.storage.session.get(keyName);
-    let key = session[keyName];
-    if (!key) {
-      key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
-      await chromeApi.storage.session.set({ [keyName]: key });
+    let jwk = session[keyName];
+    if (!jwk) {
+      const generated = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+      jwk = await crypto.subtle.exportKey('jwk', generated);
+      await chromeApi.storage.session.set({ [keyName]: jwk });
+    }
+    let key;
+    try {
+      key = await crypto.subtle.importKey('jwk', jwk, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+    } catch (error) {
+      await chromeApi.storage.session.remove([keyName]);
+      await chromeApi.storage.local.remove([recordKey]);
+      throw new Error('Ambient retry session key was invalid; encrypted retry ciphertext was purged');
     }
     const encode = (value) => btoa(String.fromCharCode(...new Uint8Array(value)));
     const decode = (value) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
@@ -102,8 +111,15 @@
     return Object.freeze({
       encrypted: true,
       async delete(id) { const records = await read(); delete records[id]; await write(records); },
-      async get(id) { const value = (await read())[id]; return value ? decrypt(value) : null; },
-      async list() { return Promise.all(Object.values(await read()).map(decrypt)); },
+      async get(id) {
+        const value = (await read())[id];
+        if (!value) return null;
+        try { return await decrypt(value); } catch (error) { await chromeApi.storage.local.remove([recordKey]); return null; }
+      },
+      async list() {
+        try { return await Promise.all(Object.values(await read()).map(decrypt)); }
+        catch (error) { await chromeApi.storage.local.remove([recordKey]); return []; }
+      },
       async put(record) {
         const iv = crypto.getRandomValues(new Uint8Array(12));
         const plain = new TextEncoder().encode(JSON.stringify(record));

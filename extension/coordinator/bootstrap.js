@@ -16,6 +16,7 @@ const DISCOVERY_SESSION_KEY = 'discoverySessionId';
 const JOBS_KEY = 'jobs';
 const WEBMCP_STATUS_KEY = 'webMcpStatus';
 const ADAPTER_CACHE_KEY = 'adapterCache';
+const AMBIENT_POLICY_PREFIX = 'ambientPolicy:';
 const advancingJobs = new Set();
 let mutationQueue = Promise.resolve();
 let started = false;
@@ -26,6 +27,22 @@ const storageGet = async (area, key, fallback) => {
 };
 
 const storageSet = (area, key, value) => chrome.storage[area].set({ [key]: value });
+
+const ambientPolicyKey = (origin) => `${AMBIENT_POLICY_PREFIX}${origin}`;
+
+const policyFromDecision = (decision) => {
+  const origin = new URL(decision.origin).origin;
+  const revision = Number.isInteger(decision.policyRevision) ? decision.policyRevision + 1 : 1;
+  return {
+    decisionId: `policy_${Date.now()}`,
+    status: decision.decision || 'allowed',
+    origin,
+    revision,
+    scopes: [decision.scope || decision.requestedScope || 'ambient_learn'],
+    checkedAt: new Date().toISOString(),
+    source: 'local_policy_review',
+  };
+};
 
 const mutateSessionValue = (key, fallback, mutate) => {
   const run = mutationQueue.then(async () => {
@@ -434,6 +451,17 @@ const popupState = async () => {
 
 const handleMessage = async (message, sender) => {
   switch (message.type) {
+    case 'GET_POLICY_REVIEW_STATE': {
+      const origin = sender.tab?.url ? new URL(sender.tab.url).origin : 'http://127.0.0.1:4317';
+      const policy = await storageGet('local', ambientPolicyKey(origin), null);
+      return { ok: true, state: { policy, context: { origin, policyRevision: policy?.revision || null }, retrySpool: [] } };
+    }
+    case 'SET_OWNED_DEMO_OVERRIDE':
+    case 'SUBMIT_POLICY_DECISION': {
+      const policy = policyFromDecision(message.override || message.decision);
+      await storageSet('local', ambientPolicyKey(policy.origin), policy);
+      return { ok: true, policy };
+    }
     case MESSAGE_TYPES.pageReady:
       return pageReady(sender, message.state);
     case MESSAGE_TYPES.getPopupState:
