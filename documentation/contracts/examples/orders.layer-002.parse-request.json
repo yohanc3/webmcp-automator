@@ -1,0 +1,105 @@
+{
+  "schemaVersion": "ambient-parse-request/1",
+  "requestId": "parse_orders_002",
+  "idempotencyKey": "sha256:ac6967e08a2c65a74951d5cd854227754c8b70d7cfd0cc7cf22b857921418d69",
+  "attempt": 1,
+  "retryOf": null,
+  "siteScope": {
+    "scopeId": "owned_account_orders",
+    "origin": "https://shop.example",
+    "routePatterns": [
+      "^/account(?:\\?.*)?$",
+      "^/orders(?:\\?.*)?$"
+    ]
+  },
+  "layer": {
+    "layerId": "layer_orders_002",
+    "sequence": 2,
+    "completedAt": "2026-09-03T12:10:05Z",
+    "completionReason": "navigation",
+    "url": "https://shop.example/orders",
+    "semanticXmlVersion": "semantic-ui/2",
+    "semanticXmlDigest": "sha256:bd950b64bfb8a80d3fb8268be6f672a6e6846bbf27917f9c3e015a948d640e6c",
+    "semanticXml": "<semantic-ui version='2' origin='https://shop.example' route='/orders'><main><h1 ref='node_orders_heading'>Orders</h1><section ref='node_order_list' role='list' accessible-name='Orders'><article ref='node_order_item' role='listitem'><span ref='node_order_id' data-field='order-id'>{{redacted.order_id}}</span><time ref='node_order_date' data-field='date'>2026-08-31</time><span ref='node_order_total' data-field='total'>{{redacted.amount}}</span></article></section></main></semantic-ui>",
+    "evidenceIds": [
+      "node_orders_heading",
+      "node_order_list",
+      "node_order_item",
+      "node_order_id",
+      "node_order_date",
+      "node_order_total"
+    ]
+  },
+  "observation": {
+    "observationId": "obs_open_orders",
+    "eventSequence": 1,
+    "fromLayerId": "layer_orders_001",
+    "kind": "click",
+    "targetEvidenceId": "node_orders_link",
+    "argumentTokens": [],
+    "outcome": {
+      "kind": "navigation",
+      "evidenceIds": [
+        "update_orders_navigation"
+      ]
+    }
+  },
+  "mapBase": {
+    "revision": 1,
+    "digest": "sha256:20fd07cfcf35702ec55664cb488e5928e4684bbb959d52efeae495dd12117492",
+    "previousLayerSequence": 1
+  },
+  "context": {
+    "states": [
+      {
+        "stateId": "account_home",
+        "label": "Account home",
+        "routePattern": "^https://shop\\.example/account(?:\\?.*)?$",
+        "evidenceHandles": [
+          "node_account_heading"
+        ]
+      }
+    ],
+    "actions": [
+      {
+        "actionId": "open_orders",
+        "title": "Open orders",
+        "precondition": "Account home is visible.",
+        "effect": "Navigate to the same-origin Orders route.",
+        "inputs": [],
+        "output": {
+          "mode": "none",
+          "fields": []
+        },
+        "evidenceHandles": [
+          "node_orders_link"
+        ],
+        "provenance": "inferred"
+      }
+    ]
+  },
+  "parser": {
+    "parserId": "ambient_action_parser",
+    "parserVersion": "1.0.0",
+    "promptVersion": "ambient-v1",
+    "outputSchemaVersion": "action-map-patch/1"
+  },
+  "policy": {
+    "decisionId": "policy_owned_orders",
+    "status": "allowed",
+    "scope": "ambient_learn",
+    "checkedAt": "2026-09-03T12:10:04Z"
+  },
+  "privacy": {
+    "sanitizerVersion": "semantic-sanitizer/1",
+    "redactionCount": 3,
+    "redactionDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+    "categories": [
+      "account_identifiers",
+      "order_identifiers",
+      "amounts",
+      "query_parameters"
+    ],
+    "rawPersisted": false
+  }
+}
