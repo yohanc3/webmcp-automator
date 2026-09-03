@@ -20,11 +20,16 @@ The extension expects the local service at `http://127.0.0.1:4317`.
 
 - `semantic.js` captures bounded semantic page evidence.
 - `recorder-core.js` builds ordered recording state without Chrome dependencies.
-- `content.js` observes page interactions.
-- `background.js` owns recording and discovery coordination.
+- `content.js` is the thin content-context composition root.
+- `background.js` is the thin service-worker composition root.
+- `shared/` owns legacy message compatibility and future run-envelope helpers.
+- `source/bootstrap.js` adapts the paused registration and execution path.
+- `learning/bootstrap.js` captures page interactions and semantic evidence.
+- `coordinator/bootstrap.js` preserves recording, discovery, and job coordination.
 - `runner.js` contains the paused deterministic replay path.
 - `manifest-contract.js` validates the paused adapter contract.
 - `popup.*` renders recording and discovery state.
+- `tests/test-harness.js` provides reusable browser assertions, fixtures, and fakes.
 
 ## Test
 

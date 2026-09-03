@@ -28,6 +28,10 @@
         "manifest-contract.js",
         "semantic.js",
         "runner.js",
+        "shared/protocol.js",
+        "shared/errors.js",
+        "source/bootstrap.js",
+        "learning/bootstrap.js",
         "content.js"
       ],
       "run_at": "document_idle"

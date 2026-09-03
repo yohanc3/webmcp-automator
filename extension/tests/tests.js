@@ -1,32 +1,11 @@
 (() => {
   'use strict';
 
-  const results = [];
-  const equal = (actual, expected) => {
-    if (actual !== expected) {
-      throw new Error(`expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
-    }
-  };
-  const deepEqual = (actual, expected) => {
-    const actualJSON = JSON.stringify(actual);
-    const expectedJSON = JSON.stringify(expected);
-    if (actualJSON !== expectedJSON) {
-      throw new Error(`expected ${expectedJSON}, got ${actualJSON}`);
-    }
-  };
-  const match = (actual, pattern) => {
-    if (!pattern.test(actual)) {
-      throw new Error(`expected ${JSON.stringify(actual)} to match ${pattern}`);
-    }
-  };
-  const test = (name, body) => {
-    try {
-      body();
-      results.push({ name, passed: true });
-    } catch (error) {
-      results.push({ name, passed: false, error: error.message });
-    }
-  };
+  const {
+    assert: { deepEqual, equal, match },
+    run,
+    test,
+  } = ExtensionTest;
 
   const locator = (css = null) => ({
     css,
@@ -124,6 +103,258 @@
 
   const manifest = globalThis.WebMcpManifest;
   const recorder = globalThis.ActionMapperRecorder;
+
+  test('exposes frozen compatibility messages and canonical run envelopes', () => {
+    const protocol = globalThis.WebMcpProtocol;
+    equal(Object.isFrozen(protocol.MESSAGE_TYPES), true);
+    deepEqual(protocol.createMessage(protocol.MESSAGE_TYPES.startJob, { jobId: 'job_1' }), {
+      type: 'START_JOB',
+      jobId: 'job_1',
+    });
+    deepEqual(protocol.createEnvelope({
+      type: protocol.RUN_MESSAGE_TYPES.runAccepted,
+      requestId: 'request_1',
+      runId: 'run_1',
+      sequence: 2,
+      sentAt: '2026-09-02T12:00:00.000Z',
+      sender: { context: 'service_worker', tabId: null, documentId: null },
+      payload: { planDigest: 'sha256:test', executionTabId: 7 },
+    }), {
+      protocol: 'webmcp-run/1',
+      type: 'run.accepted',
+      requestId: 'request_1',
+      runId: 'run_1',
+      sequence: 2,
+      sentAt: '2026-09-02T12:00:00.000Z',
+      sender: { context: 'service_worker', tabId: null, documentId: null },
+      payload: { planDigest: 'sha256:test', executionTabId: 7 },
+    });
+  });
+
+  test('keeps legacy public errors string-only', () => {
+    deepEqual(WebMcpErrors.legacyResponseFor(new Error('legacy failure')), {
+      ok: false,
+      error: 'legacy failure',
+    });
+    equal(WebMcpErrors.cancellationError().name, 'AbortError');
+  });
+
+  test('loads thin roots without starting adapter registration', () => {
+    equal(typeof WebMcpLearningBootstrap.handleMessage, 'function');
+    equal(typeof WebMcpSourceBootstrap.handleMessage, 'function');
+    equal(typeof WebMcpCoordinatorBootstrap.start, 'function');
+    deepEqual(chrome.__test.sentMessages.map(({ type }) => type), ['PAGE_READY']);
+    equal(chrome.__test.runtimeListeners.length, 2);
+    equal(chrome.__test.tabRemovedListeners.length, 1);
+  });
+
+  test('preserves learning message routing return values', () => {
+    let response;
+    equal(WebMcpLearningBootstrap.handleMessage({
+      type: WebMcpProtocol.MESSAGE_TYPES.recordingStart,
+      recordingId: 'recording_1',
+    }, {}, (value) => { response = value; }), false);
+    deepEqual(response, { ok: true });
+
+    equal(WebMcpLearningBootstrap.handleMessage({
+      type: WebMcpProtocol.MESSAGE_TYPES.getPageState,
+    }, {}, (value) => { response = value; }), false);
+    equal(response.ok, true);
+    equal(typeof response.state.fingerprint, 'string');
+    equal(WebMcpLearningBootstrap.handleMessage({ type: 'UNKNOWN' }, {}, () => {}), undefined);
+  });
+
+  test('captures fill, click, and Enter while preserving recorder exclusions', async () => {
+    const contentListener = chrome.__test.runtimeListeners[0];
+    let response;
+    contentListener({
+      type: WebMcpProtocol.MESSAGE_TYPES.recordingStart,
+      recordingId: 'recording_interactions',
+    }, {}, (value) => { response = value; });
+    deepEqual(response, { ok: true });
+
+    const fixture = document.createElement('section');
+    const input = document.createElement('input');
+    input.setAttribute('aria-label', 'Search catalog');
+    const button = document.createElement('button');
+    button.textContent = 'Search';
+    fixture.append(input, button);
+    document.body.append(fixture);
+
+    const before = chrome.__test.sentMessages.length;
+    input.value = 'headphones';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }));
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+    input.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      key: 'Enter',
+    }));
+    globalThis.__webMcpRunnerActive = true;
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+    globalThis.__webMcpRunnerActive = false;
+
+    await new Promise((resolve) => { setTimeout(resolve, 450); });
+    const observed = chrome.__test.sentMessages.slice(before);
+    deepEqual(observed
+      .filter(({ type }) => type === 'TRACE_EVENT_STARTED')
+      .map(({ event: traceEvent }) => traceEvent.kind), ['fill', 'click', 'press']);
+    equal(observed.filter(({ type }) => type === 'TRACE_EVENT_COMPLETED').length, 3);
+
+    const stopResponse = await new Promise((resolve) => {
+      equal(contentListener({
+        type: WebMcpProtocol.MESSAGE_TYPES.recordingStop,
+      }, {}, resolve), true);
+    });
+    equal(stopResponse.ok, true);
+    equal(typeof stopResponse.finalState.fingerprint, 'string');
+    const afterStop = chrome.__test.sentMessages.length;
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+    equal(chrome.__test.sentMessages.length, afterStop);
+    fixture.remove();
+  });
+
+  test('keeps registration paused until an explicit refresh', async () => {
+    const before = chrome.__test.sentMessages.length;
+    equal(WebMcpSourceBootstrap.handleMessage({
+      type: WebMcpProtocol.MESSAGE_TYPES.refreshAdapters,
+    }, {}, () => {}), true);
+    await Promise.resolve();
+    await Promise.resolve();
+    deepEqual(chrome.__test.sentMessages.slice(before), [{
+      type: 'WEBMCP_STATUS',
+      available: false,
+    }]);
+    equal(WebMcpSourceBootstrap.handleMessage({ type: 'UNKNOWN' }, {}, () => {}), undefined);
+  });
+
+  test('preserves positive registration and completed job polling', async () => {
+    const registered = [];
+    let jobReads = 0;
+    document.modelContext = {
+      async registerTool(tool, options) {
+        registered.push({ tool, options });
+      },
+    };
+    chrome.__test.setRuntimeResponder((message) => {
+      if (message.type === 'GET_ADAPTERS') {
+        const matching = adapter();
+        matching.site.origin = window.location.origin;
+        matching.site.routePatterns = ['/tests/index.html'];
+        return {
+          ok: true,
+          adapters: [{ versionId: 'version_1', manifest: matching }],
+        };
+      }
+      if (message.type === 'START_JOB') return { ok: true, jobId: 'job_1' };
+      if (message.type === 'GET_JOB') {
+        jobReads += 1;
+        if (jobReads === 1) return { ok: true, job: { status: 'running' } };
+        return { ok: true, job: { status: 'completed', result: { count: 1 } } };
+      }
+      return { ok: true };
+    });
+
+    await WebMcpSourceBootstrap.registerAdapters();
+    equal(registered.length, 1);
+    equal(registered[0].tool.name, 'search_products');
+    deepEqual(await registered[0].tool.execute({ query: 'headphones' }), { count: 1 });
+    const recentTypes = chrome.__test.sentMessages.map(({ type }) => type);
+    equal(recentTypes.includes('GET_ADAPTERS'), true);
+    equal(recentTypes.includes('START_JOB'), true);
+    equal(recentTypes.filter((type) => type === 'GET_JOB').length, 2);
+    delete document.modelContext;
+    chrome.__test.setRuntimeResponder(() => ({ ok: true }));
+  });
+
+  test('preserves execution-step delegation', async () => {
+    const response = await new Promise((resolve) => {
+      equal(WebMcpSourceBootstrap.handleMessage({
+        type: WebMcpProtocol.MESSAGE_TYPES.executeStep,
+        step: { op: 'extract' },
+        args: {},
+        tool: adapter().tool,
+      }, {}, resolve), true);
+    });
+    equal(response.ok, true);
+    equal(typeof response.result.fields, 'object');
+    equal(response.result.url, window.location.href);
+  });
+
+  test('installs coordinator listeners only once', () => {
+    WebMcpCoordinatorBootstrap.start();
+    WebMcpCoordinatorBootstrap.start();
+    equal(chrome.__test.runtimeListeners.length, 2);
+    equal(chrome.__test.tabRemovedListeners.length, 1);
+  });
+
+  test('preserves the unknown background message response', async () => {
+    let response;
+    equal(chrome.__test.runtimeListeners[1](
+      { type: 'UNKNOWN' },
+      {},
+      (value) => { response = value; },
+    ), true);
+    await Promise.resolve();
+    await Promise.resolve();
+    deepEqual(response, {
+      ok: false,
+      error: 'Unknown extension message',
+    });
+  });
+
+  test('preserves background recording event guards and stop behavior', async () => {
+    const initial = pageState('background_initial', 'https://example.com/search');
+    const changed = pageState('background_changed', 'https://example.com/search');
+    chrome.__test.setTabResponder((_tabId, message) => {
+      if (message.type === 'GET_PAGE_STATE') return { ok: true, state: initial };
+      if (message.type === 'RECORDING_STOP') return { ok: true, finalState: changed };
+      return { ok: true };
+    });
+
+    const started = await WebMcpCoordinatorBootstrap.handleMessage({
+      type: 'START_RECORDING',
+      tabId: 7,
+    }, {});
+    equal(started.ok, true);
+    equal(started.recording.status, 'recording');
+
+    const rejectedEvent = event('rejected_background_click', 'click', 'Search');
+    await WebMcpCoordinatorBootstrap.handleMessage({
+      type: 'TRACE_EVENT_STARTED',
+      recordingId: started.recording.id,
+      event: rejectedEvent,
+      beforeState: initial,
+    }, { tab: { id: 99 } });
+    equal(Object.keys(
+      chrome.storage.session.values.activeRecording.pendingEvents,
+    ).length, 0);
+
+    const observedEvent = event('background_click', 'click', 'Search');
+    await WebMcpCoordinatorBootstrap.handleMessage({
+      type: 'TRACE_EVENT_STARTED',
+      recordingId: started.recording.id,
+      event: observedEvent,
+      beforeState: initial,
+    }, { tab: { id: 7 } });
+    await WebMcpCoordinatorBootstrap.handleMessage({
+      type: 'TRACE_EVENT_COMPLETED',
+      recordingId: started.recording.id,
+      eventId: observedEvent.id,
+      afterState: changed,
+      delta: delta(initial, changed),
+    }, { tab: { id: 7 } });
+
+    const stopped = await WebMcpCoordinatorBootstrap.handleMessage({
+      type: 'STOP_RECORDING',
+      learn: false,
+    }, {});
+    equal(stopped.ok, true);
+    equal(stopped.recording.status, 'ready');
+    equal(stopped.recording.eventCount, 1);
+    equal(stopped.discovery, null);
+    chrome.__test.setTabResponder(() => ({ ok: true }));
+  });
 
   test('validates a deterministic learned adapter', () => {
     equal(manifest.validateManifest(adapter()).valid, true);
@@ -303,17 +534,5 @@
     equal(trace.actionTree.transitions[0].toPageId, 'page_1');
   });
 
-  const failures = results.filter(({ passed }) => !passed);
-  document.body.dataset.status = failures.length === 0 ? 'passed' : 'failed';
-  document.querySelector('#summary').textContent = failures.length === 0
-    ? `${results.length} tests passed.`
-    : `${failures.length} of ${results.length} tests failed.`;
-  const list = document.querySelector('#results');
-  results.forEach((result) => {
-    const item = document.createElement('li');
-    item.textContent = result.passed
-      ? `PASS — ${result.name}`
-      : `FAIL — ${result.name}: ${result.error}`;
-    list.append(item);
-  });
+  void run();
 })();

@@ -4,7 +4,15 @@ server/README.md
 server/.env.example
 server/tests
 extension/README.md
+extension/background.js
+extension/content.js
+extension/coordinator/bootstrap.js
+extension/learning/bootstrap.js
+extension/shared/errors.js
+extension/shared/protocol.js
+extension/source/bootstrap.js
 extension/tests/index.html
+extension/tests/test-harness.js
 documentation/README.md
 documentation/architecture.md
 documentation/mvp-system-contract.md

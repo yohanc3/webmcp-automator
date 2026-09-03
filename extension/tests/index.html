@@ -16,15 +16,37 @@
         document.body.dataset.status = 'failed';
         document.querySelector('#summary').textContent = event.message || 'A test file did not load.';
       });
-    </script>
-    <script src="../manifest-contract.js"></script>
-    <script src="../recorder-core.js"></script>
-    <script src="./tests.js"></script>
-    <script>
-      if (document.body.dataset.status === 'running') {
+      window.addEventListener('unhandledrejection', (event) => {
         document.body.dataset.status = 'failed';
-        document.querySelector('#summary').textContent = 'The test runner did not complete.';
-      }
+        document.querySelector('#summary').textContent = event.reason?.message || 'A test rejected.';
+      });
     </script>
+    <script src="./test-harness.js"></script>
+    <script>
+      globalThis.chrome = ExtensionTest.fakes.createChrome();
+    </script>
+    <script src="../shared/protocol.js"></script>
+    <script src="../shared/errors.js"></script>
+    <script src="../manifest-contract.js"></script>
+    <script src="../semantic.js"></script>
+    <script src="../runner.js"></script>
+    <script src="../source/bootstrap.js"></script>
+    <script src="../learning/bootstrap.js"></script>
+    <script src="../content.js"></script>
+    <script>
+      globalThis.importScripts = (...paths) => {
+        paths.forEach((path) => {
+          const request = new XMLHttpRequest();
+          request.open('GET', new URL(`../${path}`, window.location.href), false);
+          request.send();
+          if (request.status !== 0 && request.status !== 200) {
+            throw new Error(`Could not load background dependency: ${path}`);
+          }
+          (0, eval)(request.responseText);
+        });
+      };
+    </script>
+    <script src="../background.js"></script>
+    <script src="./tests.js"></script>
   </body>
 </html>
