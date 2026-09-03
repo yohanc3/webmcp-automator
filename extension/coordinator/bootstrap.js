@@ -2,11 +2,11 @@
   const api = factory(
     root.WebMcpAmbientRetrySpool,
     root.WebMcpErrors,
-    root.WebMcpProtocol || (typeof module === 'object' && module.exports ? require('../shared/protocol.js') : null),
+    root.WebMcpProtocol || (typeof module === 'object' && module.exports ? require('../shared/protocol.js') : null), root.WebMcpAmbientScope || (typeof module === 'object' && module.exports ? require('../shared/ambient-scope.js') : null),
   );
   root.WebMcpCoordinatorBootstrap = api;
   if (typeof module === 'object' && module.exports) module.exports = api;
-}(typeof globalThis === 'undefined' ? this : globalThis, (retrySpool, publicErrors, protocol) => {
+}(typeof globalThis === 'undefined' ? this : globalThis, (retrySpool, publicErrors, protocol, ambientScope) => {
   'use strict';
 
   const POLICY_PREFIX = 'ambientPolicy:';
@@ -22,9 +22,7 @@
       return null;
     }
   };
-  const originFromUrl = (value) => {
-    try { return new URL(value).origin; } catch (error) { return null; }
-  };
+  const originFromUrl = (value) => ambientScope.originFor(value);
 
   const createCoordinator = ({
     chromeApi = chrome,
@@ -207,7 +205,9 @@
           const tabs = sender.tab ? [sender.tab] : await chromeApi.tabs.query({ active: true, lastFocusedWindow: true });
           const override = message.override;
           const origin = originFromUrl(tabs[0]?.url);
-          if (!override?.enabled || origin !== 'http://127.0.0.1:4317' || override.origin !== origin || override.requestedScope !== 'ambient_learn' || override.reasonCode !== 'OWNED_DEMO_EXPLICIT_OVERRIDE' || Number.isNaN(Date.parse(override.acknowledgedAt || ''))) return { ok: false, error: 'Owned demo override is not valid for this active origin' };
+          if (origin !== 'http://127.0.0.1:4317' || override.origin !== origin || override.requestedScope !== 'ambient_learn' || Number.isNaN(Date.parse(override.acknowledgedAt || ''))) return { ok: false, error: 'Owned demo override is not valid for this active origin' };
+          if (override.enabled === false && override.reasonCode === 'OWNED_DEMO_OVERRIDE_DISABLED') return { ok: true, policy: await savePolicy({ ...override, decision: 'revoked', scope: 'ambient_learn', source: 'owned_demo_override' }, tabs[0]?.url) };
+          if (override.enabled !== true || override.reasonCode !== 'OWNED_DEMO_EXPLICIT_OVERRIDE') return { ok: false, error: 'Owned demo override is not valid for this active origin' };
           return { ok: true, policy: await savePolicy({ ...override, decision: 'allowed', scope: 'ambient_learn', source: 'owned_demo_override' }, tabs[0]?.url) };
         }
         case 'SUBMIT_POLICY_DECISION': {
