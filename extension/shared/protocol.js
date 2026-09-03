@@ -25,8 +25,6 @@
   });
 
   const MESSAGE_TYPES = Object.freeze({
-    clearRecording: 'CLEAR_RECORDING',
-    discover: 'DISCOVER',
     executeStep: 'EXECUTE_STEP',
     getAdapters: 'GET_ADAPTERS',
     getBackendHealth: 'GET_BACKEND_HEALTH',
@@ -35,15 +33,8 @@
     getPopupState: 'GET_POPUP_STATE',
     pageReady: 'PAGE_READY',
     publishCandidate: 'PUBLISH_CANDIDATE',
-    recordingStart: 'RECORDING_START',
-    recordingStop: 'RECORDING_STOP',
     refreshAdapters: 'REFRESH_ADAPTERS',
     startJob: 'START_JOB',
-    startRecording: 'START_RECORDING',
-    stopRecording: 'STOP_RECORDING',
-    synthesize: 'SYNTHESIZE',
-    traceEventCompleted: 'TRACE_EVENT_COMPLETED',
-    traceEventStarted: 'TRACE_EVENT_STARTED',
     webMcpStatus: 'WEBMCP_STATUS',
   });
 

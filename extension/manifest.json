@@ -35,7 +35,7 @@
         "learning/semantic.js",
         "learning/retry-spool.js",
         "learning/ambient-capture.js",
-        "learning/bootstrap.js",
+        "learning/ambient-runtime.js",
         "content.js"
       ],
       "run_at": "document_idle"

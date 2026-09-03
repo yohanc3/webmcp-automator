@@ -434,35 +434,10 @@ const popupState = async () => {
 
 const handleMessage = async (message, sender) => {
   switch (message.type) {
-    case MESSAGE_TYPES.startRecording:
-      return { ok: true, recording: await startRecording(message.tabId) };
-    case MESSAGE_TYPES.stopRecording: {
-      const recording = await stopRecording();
-      const discovery = message.learn === false ? null : await discover();
-      return { ok: true, recording, discovery };
-    }
-    case MESSAGE_TYPES.traceEventStarted:
-      await traceEventStarted(message, sender);
-      return { ok: true };
-    case MESSAGE_TYPES.traceEventCompleted:
-      await traceEventCompleted(message, sender);
-      return { ok: true };
     case MESSAGE_TYPES.pageReady:
       return pageReady(sender, message.state);
     case MESSAGE_TYPES.getPopupState:
       return { ok: true, ...(await popupState()) };
-    case MESSAGE_TYPES.clearRecording:
-      await chrome.storage.session.remove([
-        RECORDING_KEY,
-        CANDIDATE_KEY,
-        DISCOVERY_KEY,
-        DISCOVERY_SESSION_KEY,
-      ]);
-      return { ok: true };
-    case MESSAGE_TYPES.discover:
-      return { ok: true, discovery: await discover() };
-    case MESSAGE_TYPES.synthesize:
-      return { ok: true, discovery: await discover() };
     case MESSAGE_TYPES.publishCandidate:
       await publishCandidate(message.adapterId, message.versionId, message.origin);
       return { ok: true };

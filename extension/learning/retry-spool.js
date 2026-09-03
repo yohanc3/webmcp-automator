@@ -79,6 +79,40 @@
     });
   };
 
+  // The key is a non-extractable CryptoKey held only in extension session storage;
+  // local storage contains ciphertext, IV, and record identifier, never layer text.
+  const createChromeEncryptedStorage = async ({ chromeApi = globalThis.chrome, keyName = 'ambientRetryKey', recordKey = 'ambientRetryRecords' } = {}) => {
+    if (!chromeApi?.storage?.local || !chromeApi?.storage?.session || !globalThis.crypto?.subtle) {
+      throw new Error('Chrome local/session storage and Web Crypto are required for the ambient retry spool');
+    }
+    const session = await chromeApi.storage.session.get(keyName);
+    let key = session[keyName];
+    if (!key) {
+      key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+      await chromeApi.storage.session.set({ [keyName]: key });
+    }
+    const encode = (value) => btoa(String.fromCharCode(...new Uint8Array(value)));
+    const decode = (value) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+    const read = async () => (await chromeApi.storage.local.get(recordKey))[recordKey] || {};
+    const write = (records) => chromeApi.storage.local.set({ [recordKey]: records });
+    const decrypt = async (ciphertext) => {
+      const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: decode(ciphertext.iv) }, key, decode(ciphertext.data));
+      return JSON.parse(new TextDecoder().decode(plain));
+    };
+    return Object.freeze({
+      encrypted: true,
+      async delete(id) { const records = await read(); delete records[id]; await write(records); },
+      async get(id) { const value = (await read())[id]; return value ? decrypt(value) : null; },
+      async list() { return Promise.all(Object.values(await read()).map(decrypt)); },
+      async put(record) {
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const plain = new TextEncoder().encode(JSON.stringify(record));
+        const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plain);
+        const records = await read(); records[record.id] = { iv: encode(iv), data: encode(data) }; await write(records);
+      },
+    });
+  };
+
   const createRetrySpool = ({
     storage,
     now = () => Date.now(),
@@ -214,6 +248,7 @@
 
   return Object.freeze({
     HARD_TTL_MS,
+    createChromeEncryptedStorage,
     createMemoryStorage,
     createRetrySpool,
   });
