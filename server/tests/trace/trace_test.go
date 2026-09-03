@@ -69,3 +69,35 @@ func TestNormalizeAllowsAReusedResultingPage(t *testing.T) {
 		t.Fatalf("expected reused page URL, got %#v", metadata)
 	}
 }
+
+func TestNormalizeRejectsNonChronologicalActionTimes(t *testing.T) {
+	input := json.RawMessage(`{
+		"schemaVersion":"learning-trace/3","startedAt":"2026-09-03T12:00:00Z","stoppedAt":"2026-09-03T12:01:00Z",
+		"frames":[
+			{"sequence":1,"type":"page","page":{"id":"page_1","fingerprint":"one","url":"https://shop.example/"}},
+			{"sequence":2,"type":"action","fromPageId":"page_1","action":{"id":"action_1","kind":"click","occurredAt":"2026-09-03T12:00:30Z"}},
+			{"sequence":3,"type":"update","actionId":"action_1","fromPageId":"page_1","toPageId":"page_2","update":{}},
+			{"sequence":4,"type":"page","page":{"id":"page_2","fingerprint":"two","url":"https://shop.example/two"}},
+			{"sequence":5,"type":"action","fromPageId":"page_2","action":{"id":"action_2","kind":"click","occurredAt":"2026-09-03T12:00:20Z"}},
+			{"sequence":6,"type":"update","actionId":"action_2","fromPageId":"page_2","toPageId":"page_3","update":{}},
+			{"sequence":7,"type":"page","page":{"id":"page_3","fingerprint":"three","url":"https://shop.example/three"}}
+		]
+	}`)
+	if _, _, err := learningtrace.Normalize(input); err == nil || !strings.Contains(err.Error(), "not chronological") {
+		t.Fatalf("expected timestamp chronology rejection, got %v", err)
+	}
+}
+
+func TestNormalizeRejectsUnknownFieldsWithAPath(t *testing.T) {
+	input := json.RawMessage(`{
+		"schemaVersion":"learning-trace/3","frames":[
+			{"sequence":1,"type":"page","page":{"id":"page_1","fingerprint":"one","url":"https://shop.example/","rawDom":"secret"}},
+			{"sequence":2,"type":"action","fromPageId":"page_1","action":{"id":"action_1","kind":"click"}},
+			{"sequence":3,"type":"update","actionId":"action_1","fromPageId":"page_1","toPageId":"page_2","update":{}},
+			{"sequence":4,"type":"page","page":{"id":"page_2","fingerprint":"two","url":"https://shop.example/two"}}
+		]
+	}`)
+	if _, _, err := learningtrace.Normalize(input); err == nil || !strings.Contains(err.Error(), "$.frames[0].page.rawDom") {
+		t.Fatalf("expected field-addressed unknown field rejection, got %v", err)
+	}
+}

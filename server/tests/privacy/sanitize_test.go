@@ -70,3 +70,21 @@ func TestSanitizeTraceRejectsInvalidJSON(t *testing.T) {
 		t.Fatal("expected invalid JSON to be rejected")
 	}
 }
+
+func TestSanitizeTracePreservesChronologyAndRemovesCredentialCanary(t *testing.T) {
+	input := json.RawMessage(`{"startedAt":"2026-09-03T01:02:03.000Z","note":"sk-abcdefghijklmnop1234"}`)
+	output, _, err := privacy.SanitizeTrace(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), "2026-09-03T01:02:03.000Z") {
+		t.Fatalf("timestamp was corrupted: %s", output)
+	}
+	if strings.Contains(string(output), "sk-abcdefghijklmnop1234") {
+		t.Fatalf("credential canary survived: %s", output)
+	}
+	findings, err := privacy.Scan(json.RawMessage(`{"description":"email privacy-canary@example.com"}`))
+	if err != nil || len(findings) != 1 || findings[0].Path != "$.description" {
+		t.Fatalf("unexpected scan findings: %#v %v", findings, err)
+	}
+}
