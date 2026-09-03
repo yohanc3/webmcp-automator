@@ -467,10 +467,10 @@
     const evidence = createElement('div', 'evidence-links compact-evidence');
     evidence.append(createElement('span', 'evidence-label', 'Evidence handles'));
     compactEvidenceHandles(action).forEach((handle) => {
-      const link = createElement('button', 'evidence-link mono', handle);
+      const link = createElement(registry?.openEvidence ? 'button' : 'span', 'evidence-link mono', handle);
       link.type = 'button';
       link.dataset.evidenceId = handle;
-      link.addEventListener('click', () => {
+      link.addEventListener?.('click', () => {
         if (registry?.openEvidence) {
           void registry.openEvidence({
             actionMapDigest,
@@ -590,10 +590,10 @@
       const evidence = createElement('div', 'evidence-links');
       evidence.append(createElement('span', 'evidence-label', 'Evidence'));
       evidenceReferences(action).forEach((reference) => {
-        const link = createElement('button', 'evidence-link mono', reference.label);
+        const link = createElement(registry?.openEvidence ? 'button' : 'span', 'evidence-link mono', reference.label);
         link.type = 'button';
         link.dataset.evidenceId = reference.id;
-        link.addEventListener('click', () => {
+        link.addEventListener?.('click', () => {
           if (registry?.openEvidence) void registry.openEvidence(reference);
         });
         evidence.append(link);

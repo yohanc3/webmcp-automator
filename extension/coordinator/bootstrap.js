@@ -248,7 +248,8 @@
           const scopeId = ambientScope.scopeFor(origin);
           const map = await loadActionMapStatus(origin, scopeId);
           const candidate = await loadCandidate(scopeId, map);
-          return { ok: true, state: { context: { origin, siteScopeId: scopeId, policyRevision: policy?.revision ?? null, requestedScope: 'ambient_learn', actionMapRevision: map.revision || null, actionMapDigest: map.digest || null }, policy, actionMap: map.status === 'available' ? map.actionMap : null, actionMapStatus: map.status, actionListCandidate: candidate, retrySpool: await retryMetadata(origin, scopeId) } };
+          const actionMap = map.status === 'available' ? { scopeId, revision: map.revision, digest: map.digest, ...map.actionMap } : null;
+          return { ok: true, state: { context: { origin, siteScopeId: scopeId, policyRevision: policy?.revision ?? null, requestedScope: 'ambient_learn', actionMapRevision: map.revision || null, actionMapDigest: map.digest || null }, policy, overrideAudit: stored?.overrideAudit || null, actionMap, actionMapStatus: map.status, candidate, retrySpool: await retryMetadata(origin, scopeId) } };
         }
         case 'SET_OWNED_DEMO_OVERRIDE':
         {
