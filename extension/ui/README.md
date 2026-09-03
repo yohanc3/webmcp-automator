@@ -49,7 +49,8 @@ and registry must independently re-check all bindings and policy before acting.
 - `context`: current origin, requested scope, list digest, step ID, document ID,
   and policy revision;
 - `policy`: the current policy-service result (`decision` or canonical `status`,
-  scopes, source/basis, checked/expiry times, and reason);
+  explicit origin, optional revision, scopes, source/basis, checked/expiry
+  times, and reason);
 - `overrideAudit`: the current owned-demo override audit entry;
 - `candidate`: exact candidate identity, replay status/report, and canonical
   `actions[]` from `action-list/1`;
@@ -79,6 +80,12 @@ fail-closed view:
 
 This is not a new recorder or learning protocol. Ambient-learning integration
 can adapt its frozen contract to this function without changing the UI.
+
+An allowed decision without its own valid origin fails closed; the active page
+origin is never substituted for missing policy data. When both the policy and
+current context supply a revision, those revisions must match. Revision remains
+optional so the UI can consume the current canonical policy block, which does
+not yet require one.
 
 ## Owned-demo override
 

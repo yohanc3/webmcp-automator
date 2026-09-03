@@ -14,6 +14,8 @@
     scopes: ['learn', 'read', 'write'],
     source: 'reviewed_terms',
     reasonCode: 'TERMS_REVIEWED',
+    origin: 'https://shop.example',
+    revision: 'policy_7',
     checkedAt: '2026-09-03T10:00:00Z',
     expiresAt: '2026-09-04T10:00:00Z',
     ...overrides,
@@ -110,6 +112,62 @@
     equal(evaluate(policy({ expiresAt: 'not-a-time' })).state, 'unknown');
     equal(evaluate(policy({ scopes: ['read'] })).state, 'blocked');
     equal(evaluate(policy({ origin: 'https://other.example' })).state, 'blocked');
+    equal(evaluate(policy({ origin: null })).state, 'blocked');
+    equal(evaluate(policy({ origin: 'not-an-origin' })).state, 'blocked');
+    equal(evaluate(policy({ origin: 'https://shop.example/account' })).state, 'blocked');
+    equal(evaluate(policy({ revision: 'policy_6' })).state, 'blocked');
+    equal(evaluate(policy({ revision: null })).state, 'allowed');
+  });
+
+  test('requires an allowed policy to carry its own valid matching origin', () => {
+    const missing = policyReview.evaluatePolicy({
+      policy: policy({ origin: null }),
+      context: context(),
+      now: NOW,
+    });
+    const invalid = policyReview.evaluatePolicy({
+      policy: policy({ origin: 'not-an-origin' }),
+      context: context(),
+      now: NOW,
+    });
+    const mismatched = policyReview.evaluatePolicy({
+      policy: policy({ origin: 'https://other.example' }),
+      context: context(),
+      now: NOW,
+    });
+    const pageUrl = policyReview.evaluatePolicy({
+      policy: policy({ origin: 'https://shop.example/account' }),
+      context: context(),
+      now: NOW,
+    });
+
+    equal(missing.eligible, false);
+    equal(missing.state, 'blocked');
+    match(missing.reason, /valid explicit origin/);
+    equal(invalid.eligible, false);
+    match(invalid.reason, /valid explicit origin/);
+    equal(pageUrl.eligible, false);
+    match(pageUrl.reason, /valid explicit origin/);
+    equal(mismatched.eligible, false);
+    match(mismatched.reason, /does not match the active origin/);
+  });
+
+  test('fails closed when explicit policy revisions disagree', () => {
+    const mismatched = policyReview.evaluatePolicy({
+      policy: policy({ revision: 'policy_6' }),
+      context: context({ policyRevision: 'policy_7' }),
+      now: NOW,
+    });
+    const matched = policyReview.evaluatePolicy({
+      policy: policy({ revision: 'policy_7' }),
+      context: context({ policyRevision: 'policy_7' }),
+      now: NOW,
+    });
+
+    equal(mismatched.eligible, false);
+    equal(mismatched.state, 'blocked');
+    match(mismatched.reason, /revision does not match/);
+    equal(matched.eligible, true);
   });
 
   test('renders every policy state with source, scope, times, and reason', () => {

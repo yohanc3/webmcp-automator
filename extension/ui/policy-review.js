@@ -35,6 +35,11 @@
     }
   };
 
+  const explicitOrigin = (value) => {
+    const origin = normalizedOrigin(value);
+    return origin && origin === value ? origin : null;
+  };
+
   const isOwnedDemoOrigin = (value) => normalizedOrigin(value) === OWNED_DEMO_ORIGIN;
 
   const timestamp = (value) => {
@@ -57,7 +62,9 @@
     const expiresAt = policy?.expiresAt || null;
     const expiresTime = expiresAt ? new Date(expiresAt).getTime() : null;
     const nowTime = new Date(now).getTime();
-    const policyOrigin = normalizedOrigin(policy?.origin || context.origin);
+    const policyOrigin = explicitOrigin(policy?.origin);
+    const policyRevision = policy?.revision || policy?.policyRevision || null;
+    const contextPolicyRevision = context.policyRevision || null;
 
     const base = {
       checkedAt: policy?.checkedAt || null,
@@ -91,12 +98,40 @@
         reason: 'The policy expiry time is invalid and must be reviewed again.',
       };
     }
-    if (!origin || (policyOrigin && policyOrigin !== origin)) {
+    if (!origin) {
+      return {
+        ...base,
+        state: 'blocked',
+        eligible: false,
+        reason: 'The active origin is missing or invalid.',
+      };
+    }
+    if (!policyOrigin) {
+      return {
+        ...base,
+        state: 'blocked',
+        eligible: false,
+        reason: 'The policy decision does not name a valid explicit origin.',
+      };
+    }
+    if (policyOrigin !== origin) {
       return {
         ...base,
         state: 'blocked',
         eligible: false,
         reason: 'The policy decision does not match the active origin.',
+      };
+    }
+    if (
+      policyRevision
+      && contextPolicyRevision
+      && policyRevision !== contextPolicyRevision
+    ) {
+      return {
+        ...base,
+        state: 'blocked',
+        eligible: false,
+        reason: 'The policy revision does not match the active policy revision.',
       };
     }
     if (!Number.isNaN(expiresTime) && expiresTime !== null && expiresTime <= nowTime) {
