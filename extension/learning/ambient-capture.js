@@ -267,6 +267,7 @@
 
     const policyContext = (current) => ({
       origin: current.siteScope.origin,
+      ...(current.policy?.revision === undefined ? {} : { revision: current.policy.revision }),
       route: current.route,
       scope: AMBIENT_SCOPE,
     });
@@ -298,6 +299,7 @@
           const record = await spool.next();
           if (!record) return;
           const context = {
+            policy: record.completedLayer.policy,
             siteScope: record.completedLayer.siteScope,
             route: new URL(record.completedLayer.layer.url).pathname,
           };

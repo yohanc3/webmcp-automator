@@ -1,7 +1,7 @@
 (function initializeAmbientRuntime(root, factory) {
   const runtime = factory(
     root.WebMcpAmbientCapture || (typeof module === 'object' && module.exports ? require('./ambient-capture.js') : null),
-    root.WebMcpLearningSemantic || (typeof module === 'object' && module.exports ? { capturePageState: () => ({ nodes: [], semanticXml: '' }) } : null),
+    root.WebMcpLearningSemantic || (typeof module === 'object' && module.exports ? { capturePageState: () => ({ nodes: [], semanticXml: '' }), describeElement: () => ({ id: 'node_test' }) } : null),
   );
   root.WebMcpAmbientRuntime = runtime;
   if (typeof module === 'object' && module.exports) module.exports = runtime;
@@ -40,6 +40,7 @@
     attach({ onObservation, onSettled }) {
       let timer = null;
       const pending = new Map();
+      let navigation = null;
       const project = () => {
         const page = semantic.capturePageState({ document: documentApi });
         return { ...page, evidenceIds: page.nodes.map(({ id }) => id), rawPersisted: false };
@@ -48,15 +49,26 @@
         clearTimeout(timer);
         timer = setTimeout(() => pending.forEach((value, id) => {
           pending.delete(id);
+          if (navigation?.observationId === id) navigation = null;
           const projection = project();
           onSettled(id, { outcome: { kind, evidenceIds: projection.evidenceIds }, projection });
         }), 180);
+      };
+      const navigationCausing = (event, kind) => {
+        const target = event.target;
+        if (kind === 'submit') return true;
+        if (kind === 'press') return Boolean(target?.form);
+        return Boolean(target?.closest?.('a[href], button[type="submit"], input[type="submit"], input[type="image"]'));
       };
       const observe = (event, kind) => {
         if (!event.isTrusted || windowApi.__webMcpRunnerActive || windowApi.__webMcpActorActive) return;
         const target = event.target instanceof windowApi.Element ? semantic.describeElement(event.target, { argumentsByValue: new Map() }) : null;
         const id = onObservation({ kind, targetEvidenceId: target?.id, trusted: true });
-        if (id) { pending.set(id, true); settle(); }
+        if (id) {
+          pending.set(id, true);
+          if (navigationCausing(event, kind)) navigation = { kind, observationId: id, targetEvidenceId: target?.id || null };
+          settle();
+        }
       };
       const click = (event) => observe(event, 'click');
       const focus = (event) => observe(event, 'other');
@@ -72,9 +84,13 @@
       };
       const undoPush = wrap('pushState'); const undoReplace = wrap('replaceState');
       documentApi.addEventListener('click', click, true); documentApi.addEventListener('focusin', focus, true); documentApi.addEventListener('input', input, true); documentApi.addEventListener('submit', submit, true); documentApi.addEventListener('keydown', keydown, true);
-      windowApi.addEventListener('popstate', () => settle('same_document_route'));
+      const popstate = () => settle('same_document_route');
+      windowApi.addEventListener('popstate', popstate);
       mutations.observe(documentApi.documentElement, { childList: true, subtree: true, characterData: true });
-      return { disconnect() { clearTimeout(timer); pending.clear(); mutations.disconnect(); undoPush(); undoReplace(); documentApi.removeEventListener('click', click, true); documentApi.removeEventListener('focusin', focus, true); documentApi.removeEventListener('input', input, true); documentApi.removeEventListener('submit', submit, true); documentApi.removeEventListener('keydown', keydown, true); } };
+      return {
+        consumeNavigation() { const value = navigation; navigation = null; return value; },
+        disconnect() { clearTimeout(timer); pending.clear(); mutations.disconnect(); undoPush(); undoReplace(); documentApi.removeEventListener('click', click, true); documentApi.removeEventListener('focusin', focus, true); documentApi.removeEventListener('input', input, true); documentApi.removeEventListener('submit', submit, true); documentApi.removeEventListener('keydown', keydown, true); windowApi.removeEventListener('popstate', popstate); },
+      };
     },
     async captureInitial() {
       const page = semantic.capturePageState({ document: documentApi });
@@ -85,11 +101,16 @@
     const origin = windowApi.location.origin;
     const siteScope = { origin, routePatterns: ['^/.*$'], scopeId: scopeFor(origin) };
     const runtime = chromeApi.runtime;
+    const observerPort = observer || defaultObserver({ documentApi, windowApi });
+    let observerConnection = null;
     const controller = capture.createAmbientCapture({
       delivery: { deliver: async (layer) => classify(await fetchApi(`${BACKEND}/v1/ambient/layers`, { body: JSON.stringify(layer), headers: { 'Content-Type': 'application/json' }, method: 'POST' })) },
       eligibility: policyPort(runtime),
       layerSequence: { next: async (scopeId) => (await message(runtime, { type: 'AMBIENT_NEXT_LAYER_SEQUENCE', scopeId })).sequence },
-      observer: observer || defaultObserver({ documentApi, windowApi }),
+      observer: {
+        attach(options) { observerConnection = observerPort.attach(options); return observerConnection; },
+        captureInitial: (...args) => observerPort.captureInitial(...args),
+      },
       spool: spoolPort(runtime),
     });
     const start = async () => {
@@ -100,15 +121,18 @@
     };
     windowApi.addEventListener('pagehide', () => {
       const status = controller.status();
-      if (!status.lastLayerId) return;
-      const pending = { fromLayerId: status.lastLayerId, kind: 'navigate', observationId: `nav_${status.eventSequence + 1}`, eventSequence: status.eventSequence + 1, targetEvidenceId: null, argumentTokens: [] };
+      const navigation = observerConnection?.consumeNavigation?.();
+      if (!status.lastLayerId || !navigation) return;
+      const pending = { fromLayerId: status.lastLayerId, kind: navigation.kind, observationId: navigation.observationId, eventSequence: status.eventSequence, targetEvidenceId: navigation.targetEvidenceId, argumentTokens: [] };
       void message(runtime, { type: 'AMBIENT_PUT_PENDING', scopeId: siteScope.scopeId, documentId: 'top', pending });
     }, { once: true });
     chromeApi.storage.onChanged?.addListener((changes, area) => {
-      if (area === 'local' && changes[`ambientPolicy:${origin}`]) void controller.requestDelivery();
+      if (area !== 'local' || !changes[`ambientPolicy:${origin}`]) return;
+      void controller.requestDelivery();
+      if (!controller.status().attached) void start();
     });
     return Object.freeze({ controller, start });
   };
   const start = () => createRuntime().start();
-  return Object.freeze({ classify, createRuntime, start });
+  return Object.freeze({ classify, createRuntime, defaultObserver, start });
 }));

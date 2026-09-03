@@ -1,8 +1,12 @@
 (function initializeCoordinatorBootstrap(root, factory) {
-  const api = factory(root.WebMcpAmbientRetrySpool, root.WebMcpErrors);
+  const api = factory(
+    root.WebMcpAmbientRetrySpool,
+    root.WebMcpErrors,
+    root.WebMcpProtocol || (typeof module === 'object' && module.exports ? require('../shared/protocol.js') : null),
+  );
   root.WebMcpCoordinatorBootstrap = api;
   if (typeof module === 'object' && module.exports) module.exports = api;
-}(typeof globalThis === 'undefined' ? this : globalThis, (retrySpool, publicErrors) => {
+}(typeof globalThis === 'undefined' ? this : globalThis, (retrySpool, publicErrors, protocol) => {
   'use strict';
 
   const POLICY_PREFIX = 'ambientPolicy:';
@@ -22,7 +26,12 @@
     try { return new URL(value).origin; } catch (error) { return null; }
   };
 
-  const createCoordinator = ({ chromeApi = chrome, now = () => new Date().toISOString() } = {}) => {
+  const createCoordinator = ({
+    chromeApi = chrome,
+    fetchApi = fetch,
+    manifest = globalThis.WebMcpManifest,
+    now = () => new Date().toISOString(),
+  } = {}) => {
     let queue = Promise.resolve();
     let storage = null;
     const serial = (work) => {
@@ -79,6 +88,67 @@
       return result;
     });
 
+    const requestBackend = async (path, options = {}) => {
+      const response = await fetchApi(`http://127.0.0.1:4317${path}`, {
+        ...options,
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `Backend request failed with status ${response.status}`);
+      return body;
+    };
+    const tabMessage = (tabId, value) => chromeApi.tabs.sendMessage(tabId, value);
+    const getJobs = () => get('session', 'jobs', {});
+    const changeJob = (id, mutate) => serial(async () => {
+      const jobs = await getJobs();
+      if (!jobs[id]) return null;
+      mutate(jobs[id]);
+      jobs[id].updatedAt = now();
+      await set('session', 'jobs', jobs);
+      return jobs[id];
+    });
+    const advanceJob = async (id) => {
+      const job = (await getJobs())[id];
+      if (!job || ['completed', 'failed'].includes(job.status)) return;
+      const step = job.adapter.manifest.tool.steps[job.stepIndex];
+      if (!step) {
+        await changeJob(id, (current) => { current.status = 'completed'; });
+        return;
+      }
+      const response = await tabMessage(job.tabId, { type: 'EXECUTE_STEP', step, args: job.args, tool: job.adapter.manifest.tool });
+      if (!response?.ok) {
+        await changeJob(id, (current) => { current.error = response?.error || 'Adapter step failed'; current.status = 'failed'; });
+        return;
+      }
+      await changeJob(id, (current) => { current.stepIndex += 1; current.status = response.navigating ? 'waiting-navigation' : 'running'; });
+    };
+    const getAdapters = async (origin) => {
+      const cache = await get('local', 'adapterCache', {});
+      try {
+        const body = await requestBackend(`/api/adapters?origin=${encodeURIComponent(origin)}`);
+        cache[origin] = { adapters: body.adapters, fetchedAt: now() };
+        await set('local', 'adapterCache', cache);
+        return { adapters: body.adapters, stale: false };
+      } catch (error) {
+        if (cache[origin]) return { adapters: cache[origin].adapters, error: error.message, stale: true };
+        throw error;
+      }
+    };
+    const startJob = async (adapter, args, sourceUrl, sourceTabId) => {
+      const validation = manifest.validateManifest(adapter.manifest);
+      if (!validation.valid || !manifest.manifestMatchesLocation(validation.manifest, sourceUrl)) throw new Error('This adapter is not valid for the current page');
+      const tab = await chromeApi.tabs.create({ active: false, url: sourceUrl });
+      const job = { adapter: { ...adapter, manifest: validation.manifest }, args, createdAt: now(), error: null, id: crypto.randomUUID(), result: null, sourceTabId, sourceUrl, status: 'starting', stepIndex: 0, tabId: tab.id, updatedAt: now() };
+      await serial(async () => { const jobs = await getJobs(); jobs[job.id] = job; await set('session', 'jobs', jobs); });
+      return job.id;
+    };
+    const pageReady = async (sender) => {
+      const tabId = sender.tab?.id;
+      const job = Object.values(await getJobs()).find((candidate) => candidate.tabId === tabId && !['completed', 'failed'].includes(candidate.status));
+      if (job) await advanceJob(job.id);
+      return { recordingActive: false, recordingId: null };
+    };
+
     const ownedSpool = async () => {
       if (!storage) storage = await retrySpool.createChromeEncryptedStorage({ chromeApi, keyName: KEY_NAME, recordKey: RECORD_KEY });
       return retrySpool.createRetrySpool({ storage });
@@ -120,6 +190,22 @@
           return { ok: true, policy: await savePolicy(message.override || message.decision, tabs[0]?.url) };
         }
         case 'REQUEST_RETRY_SPOOL_DELETION': await serial(() => chromeApi.storage.local.remove([RECORD_KEY])); return { ok: true };
+        case protocol.MESSAGE_TYPES.pageReady:
+          return pageReady(sender);
+        case protocol.MESSAGE_TYPES.getBackendHealth:
+          return { ok: true, health: await requestBackend('/health') };
+        case protocol.MESSAGE_TYPES.getAdapters:
+          return { ok: true, ...(await getAdapters(message.origin)) };
+        case protocol.MESSAGE_TYPES.startJob:
+          return { ok: true, jobId: await startJob(message.adapter, message.args, message.sourceUrl, sender.tab?.id) };
+        case protocol.MESSAGE_TYPES.getJob: {
+          const job = (await getJobs())[message.jobId];
+          if (!job) return { ok: false, error: 'Job not found' };
+          return { ok: true, job };
+        }
+        case protocol.MESSAGE_TYPES.webMcpStatus:
+          await set('session', 'webMcpStatus', { available: message.available, registered: message.registered || 0, tabId: sender.tab?.id || null, updatedAt: now() });
+          return { ok: true };
         default: return { ok: false, error: 'Unknown extension message' };
       }
     };
