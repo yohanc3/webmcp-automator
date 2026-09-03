@@ -364,12 +364,32 @@ func (store *Store) GetCandidateReviewState(ctx context.Context, listID string, 
 	if result.Binding.CandidateDigest != revisionValue.CandidateDigest {
 		return CandidateReviewState{}, ErrConflict
 	}
+	var rejected bool
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM action_list_reviews
+			WHERE list_id = $1 AND revision = $2 AND candidate_digest = $3 AND decision = 'reject'
+		)`, listID, revision, result.Binding.CandidateDigest).Scan(&rejected); err != nil {
+		return CandidateReviewState{}, err
+	}
+	if rejected {
+		result.Status = "rejected"
+	}
 	return result, nil
 }
 
 func (store *Store) RecordCandidateRejection(ctx context.Context, listID string, revision int, digest, reviewer string) error {
 	if strings.TrimSpace(reviewer) == "" || !validDigest(digest) {
 		return errors.New("candidate rejection is invalid")
+	}
+	var alreadyRejected bool
+	if err := store.db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM action_list_reviews WHERE list_id = $1 AND revision = $2 AND candidate_digest = $3 AND decision = 'reject'
+	)`, listID, revision, digest).Scan(&alreadyRejected); err != nil {
+		return err
+	}
+	if alreadyRejected {
+		return nil
 	}
 	result, err := store.db.ExecContext(ctx, `
 		INSERT INTO action_list_reviews (id, list_id, revision, candidate_digest, decision, reviewer, created_at)
@@ -378,6 +398,8 @@ func (store *Store) RecordCandidateRejection(ctx context.Context, listID string,
 			SELECT 1 FROM action_list_revisions WHERE list_id = $2 AND revision = $3 AND candidate_digest = $4
 		) AND NOT EXISTS (
 			SELECT 1 FROM action_list_publications WHERE list_id = $2 AND revision = $3
+		) AND NOT EXISTS (
+			SELECT 1 FROM action_list_reviews WHERE list_id = $2 AND revision = $3 AND candidate_digest = $4 AND decision = 'approve'
 		)`, newID("review"), listID, revision, digest, reviewer, time.Now().UTC())
 	if err != nil {
 		return err

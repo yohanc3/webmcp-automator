@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"webmcp-automator/server/internal/manifest"
@@ -54,21 +53,10 @@ type candidateReviewRequest struct {
 	ReplayReportID   string `json:"replayReportId"`
 }
 
-type semanticOwnedDemoReplay struct{}
+type unavailableCandidateReplay struct{}
 
-func (semanticOwnedDemoReplay) Replay(_ context.Context, list manifest.ActionList) (json.RawMessage, error) {
-	if list.Site.Origin != "http://127.0.0.1:4317" || !strings.HasPrefix(list.ListID, "owned_") {
-		return nil, errors.New("deterministic replay is available only for the owned demo")
-	}
-	for _, action := range list.Actions {
-		if len(action.Steps) == 0 {
-			return nil, errors.New("candidate has no executable actor steps")
-		}
-	}
-	return json.Marshal(map[string]any{
-		"schemaVersion": "candidate-replay/1", "executor": "action-list/1-semantic-owned-demo",
-		"privacy": "no page content, arguments, or evidence payloads retained", "status": "passed",
-	})
+func (unavailableCandidateReplay) Replay(_ context.Context, _ manifest.ActionList) (json.RawMessage, error) {
+	return nil, errors.New("production replay actor integration is unavailable")
 }
 
 func reviewIdentifier(prefix string) string {
@@ -174,12 +162,14 @@ func (server *Server) materializeCandidatePolicy(writer http.ResponseWriter, req
 			decision = "denied"
 		}
 	}
-	policy := store.PolicyRecord{ID: reviewIdentifier("policy"), ListID: state.Binding.ListID, Revision: state.Binding.Revision, CandidateDigest: state.Binding.CandidateDigest, Decision: decision, Scopes: []string{"learn", "inject", "read", "write"}, CheckedAt: checkedAt.UTC(), ExpiresAt: expiresAt}
+	// Ambient collection consent is not execution consent.  The publication gate
+	// remains closed until a separately authoritative execution policy exists.
+	policy := store.PolicyRecord{ID: reviewIdentifier("policy"), ListID: state.Binding.ListID, Revision: state.Binding.Revision, CandidateDigest: state.Binding.CandidateDigest, Decision: decision, Scopes: []string{"learn"}, CheckedAt: checkedAt.UTC(), ExpiresAt: expiresAt}
 	if err := database.SavePolicyDecision(request.Context(), policy); err != nil {
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "could not materialize candidate policy"})
 		return
 	}
-	writeJSON(writer, http.StatusCreated, map[string]any{"policyDecision": map[string]any{"id": policy.ID, "status": policy.Decision, "candidateDigest": policy.CandidateDigest}})
+	writeJSON(writer, http.StatusCreated, map[string]any{"policyDecision": map[string]any{"id": policy.ID, "status": policy.Decision, "scopes": policy.Scopes, "candidateDigest": policy.CandidateDigest}})
 }
 
 func (server *Server) replayCandidate(writer http.ResponseWriter, request *http.Request) {
@@ -260,12 +250,12 @@ func (server *Server) submitCandidateReview(writer http.ResponseWriter, request 
 		writeJSON(writer, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
-	if input.ExpectedDigest != state.Binding.CandidateDigest || strings.TrimSpace(input.Reviewer) == "" {
-		writeJSON(writer, http.StatusConflict, map[string]string{"error": "candidate digest or reviewer is invalid"})
+	if input.ExpectedDigest != state.Binding.CandidateDigest {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": "candidate digest is invalid"})
 		return
 	}
 	if input.Decision == "reject" {
-		if err := database.RecordCandidateRejection(request.Context(), state.Binding.ListID, state.Binding.Revision, state.Binding.CandidateDigest, input.Reviewer); err != nil {
+		if err := database.RecordCandidateRejection(request.Context(), state.Binding.ListID, state.Binding.Revision, state.Binding.CandidateDigest, "local-user"); err != nil {
 			writeRegistryError(writer, err)
 			return
 		}
@@ -276,7 +266,7 @@ func (server *Server) submitCandidateReview(writer http.ResponseWriter, request 
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "decision must be approve or reject"})
 		return
 	}
-	published, err := server.store.PublishActionList(request.Context(), state.Binding.ListID, state.Binding.Revision, store.PublishActionListRequest{ExpectedDigest: input.ExpectedDigest, ReviewDecision: "approve", Reviewer: input.Reviewer, PolicyDecisionID: input.PolicyDecisionID, ReplayReportID: input.ReplayReportID})
+	published, err := server.store.PublishActionList(request.Context(), state.Binding.ListID, state.Binding.Revision, store.PublishActionListRequest{ExpectedDigest: input.ExpectedDigest, ReviewDecision: "approve", Reviewer: "local-user", PolicyDecisionID: input.PolicyDecisionID, ReplayReportID: input.ReplayReportID})
 	if err != nil {
 		writeRegistryError(writer, err)
 		return

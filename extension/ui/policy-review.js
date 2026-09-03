@@ -308,6 +308,16 @@
       && binding.listRevision === listRevision;
   };
 
+  const reviewDigestsAreCurrent = (candidate, context = {}) => {
+    const binding = reviewBinding(candidate);
+    const mapDigest = context.actionMapDigest ?? actionMapBinding(context.actionMap).digest;
+    const listDigest = context.listDigest ?? context.actionList?.digest;
+    return DIGEST_PATTERN.test(mapDigest || '')
+      && DIGEST_PATTERN.test(listDigest || '')
+      && binding.actionMapDigest === mapDigest
+      && binding.listDigest === listDigest;
+  };
+
   const staleConfirmationReasons = (confirmation, context = {}) => {
     if (!confirmation) return ['No confirmation request is pending.'];
     const expected = confirmationBinding(confirmation);
@@ -612,6 +622,7 @@
     const staleReasons = staleReviewReasons(candidate, state.context);
     const reviewIsExact = staleReasons.length === 0;
     const revisionsAreCurrent = reviewRevisionsAreCurrent(candidate, state.context);
+    const digestsAreCurrent = reviewDigestsAreCurrent(candidate, state.context);
     const policyDecision = evaluatePolicy({
       policy: state.policy,
       context: {
@@ -622,12 +633,17 @@
     });
     const policyDecisionId = state.policyDecisionId || state.policy?.policyDecisionId || candidate.policyDecisionId;
     const replayReportId = candidate.replayReportId || candidate.replay?.reportId;
+    const executionPolicy = candidate.policyDecision;
+    const executionAuthorized = executionPolicy?.status === 'allowed'
+      && asArray(executionPolicy.scopes).includes('inject');
     const mayApprove = reviewIsExact
       && replay === 'passed'
       && revisionsAreCurrent
+      && digestsAreCurrent
       && policyDecision.eligible
       && Boolean(policyDecisionId)
-      && Boolean(replayReportId);
+      && Boolean(replayReportId)
+      && executionAuthorized;
     const section = createElement('section', 'trust-section candidate-review');
     section.setAttribute('aria-label', 'Candidate review');
     section.append(sectionHeading(
@@ -710,11 +726,25 @@
         'Approval is blocked until authoritative policy and replay report IDs are present.',
       ));
     }
+    if (!executionAuthorized) {
+      section.append(createElement(
+        'p',
+        'policy-blocked-note',
+        'Approval is blocked until an authoritative execution-scope policy allows injection.',
+      ));
+    }
     if (!revisionsAreCurrent) {
       section.append(createElement(
         'p',
         'policy-blocked-note',
         'Approval is blocked until current action-map and action-list revisions are supplied.',
+      ));
+    }
+    if (!digestsAreCurrent) {
+      section.append(createElement(
+        'p',
+        'policy-blocked-note',
+        'Approval is blocked until current action-map and action-list digests exactly match.',
       ));
     }
 
@@ -726,12 +756,12 @@
       approve.type = 'button';
       approve.disabled = !mayApprove;
       const submit = (decision, button) => {
-        button.disabled = true;
+        reject.disabled = true;
+        approve.disabled = true;
         const payload = candidateDecision({
           candidate,
           decision,
           policyDecisionId,
-          reviewer: state.reviewer || candidate.reviewer || 'local-user',
         });
         void coordinator.submitCandidateReview(payload).then(refresh).catch(failClosed);
       };
@@ -963,6 +993,7 @@
     observationEligibility,
     readableStep,
     reviewBinding,
+    reviewDigestsAreCurrent,
     reviewRevisionsAreCurrent,
     staleConfirmationReasons,
     staleReviewReasons,

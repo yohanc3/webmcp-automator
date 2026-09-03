@@ -79,7 +79,7 @@ func New(
 	server := &Server{
 		store: database, discoverer: discoverer, apiKeyConfigured: apiKeyConfigured,
 		provider: provider, model: model, demoDirectory: demoDirectory,
-		replay: semanticOwnedDemoReplay{},
+		replay: unavailableCandidateReplay{},
 	}
 	if actionMaps, ok := database.(store.ActionMapService); ok {
 		server.actionMaps = actionMaps
@@ -95,11 +95,11 @@ func New(
 	mux.HandleFunc("POST /v1/action-lists", server.insertActionList)
 	mux.HandleFunc("GET /v1/action-lists", server.discoverActionLists)
 	mux.HandleFunc("GET /v1/action-lists/{listID}/revisions/{revision}", server.getActionListRevision)
-	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/publish", server.publishActionList)
+	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/publish", server.requireExtensionBoundary(server.publishActionList))
 	mux.HandleFunc("GET /v1/action-lists/{listID}/revisions/{revision}/candidate-review", server.candidateState)
-	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/candidate-review/policy", server.materializeCandidatePolicy)
-	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/candidate-review/replay", server.replayCandidate)
-	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/candidate-review", server.submitCandidateReview)
+	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/candidate-review/policy", server.requireExtensionBoundary(server.materializeCandidatePolicy))
+	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/candidate-review/replay", server.requireExtensionBoundary(server.replayCandidate))
+	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/candidate-review", server.requireExtensionBoundary(server.submitCandidateReview))
 	mux.HandleFunc("POST /v1/run-observations", server.recordRunObservation)
 	if server.actionMaps != nil {
 		actionMapHandlers := actionmapapi.New(server.actionMaps)
@@ -461,7 +461,7 @@ func (server *Server) requireExtensionBoundary(next http.HandlerFunc) http.Handl
 }
 
 func isAmbientMutation(request *http.Request) bool {
-	return request.Method == http.MethodPost && (request.URL.Path == "/v1/ambient/layers" || strings.HasPrefix(request.URL.Path, "/v1/action-maps/"))
+	return request.Method == http.MethodPost && (request.URL.Path == "/v1/ambient/layers" || strings.HasPrefix(request.URL.Path, "/v1/action-maps/") || strings.Contains(request.URL.Path, "/candidate-review") || strings.HasSuffix(request.URL.Path, "/publish"))
 }
 
 func extensionOrigin(origin string) bool {

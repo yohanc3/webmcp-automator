@@ -101,7 +101,7 @@
     const requestBackend = async (path, options = {}) => {
       const response = await fetchApi(`http://127.0.0.1:4317${path}`, {
         ...options,
-        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+        headers: { 'Content-Type': 'application/json', 'X-WebMCP-Internal': 'ambient-v1', ...(options.headers || {}) },
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error || `Backend request failed with status ${response.status}`);
@@ -400,6 +400,8 @@
         publication: document.publication,
         revision: pointer.revision,
         review: review.body,
+        ...(review.body.policyDecision ? { policyDecision: review.body.policyDecision, policyDecisionId: review.body.policyDecision.id } : {}),
+        ...(review.body.replayReport ? { replayReport: review.body.replayReport, replayReportId: review.body.replayReport.id } : {}),
         status: review.body.status,
         title: document.title || document.listId,
       };
@@ -416,6 +418,10 @@
     };
 
     const handleMessage = async (message, sender = {}) => {
+      const extensionUiMessage = ['SUBMIT_CANDIDATE_REVIEW', 'SUBMIT_POLICY_DECISION', 'SET_OWNED_DEMO_OVERRIDE', 'REQUEST_RETRY_SPOOL_DELETION'].includes(message?.type);
+      if (extensionUiMessage && (sender.tab || (sender.id && chromeApi.runtime?.id && sender.id !== chromeApi.runtime.id))) {
+        return { ok: false, error: 'This decision is accepted only from trusted extension UI' };
+      }
       const ambientMessage = String(message?.type || '').startsWith('AMBIENT_');
       if (ambientMessage && sender.tab?.id) {
         const hidden = Object.values(await getJobs()).some((job) => job.tabId === sender.tab.id && !['completed', 'failed'].includes(job.status));
@@ -481,32 +487,27 @@
           return { ok: true, ...(await spool('removeMatching', { origin, scopeId })) };
         }
         case 'SUBMIT_CANDIDATE_REVIEW': {
-          const decision = message.decision;
-          const reviewer = typeof message.reviewer === 'string' ? message.reviewer.trim() : '';
-          if (!['approve', 'reject'].includes(decision) || !reviewer) return { ok: false, error: 'An explicit decision and reviewer are required' };
-          const tabs = sender.tab ? [sender.tab] : (await chromeApi.tabs?.query?.({ active: true, lastFocusedWindow: true }) || []);
+          const supplied = message.decision;
+          if (!supplied || typeof supplied !== 'object' || !['approve', 'reject'].includes(supplied.decision)) return { ok: false, error: 'A complete candidate-review decision is required' };
+          const tabs = await chromeApi.tabs?.query?.({ active: true, lastFocusedWindow: true }) || [];
           const origin = originFromUrl(tabs[0]?.url);
           if (!origin) return { ok: false, error: 'An active origin is required' };
           try {
             const { candidate, scopeId } = await currentReviewCandidate(origin);
-            if (decision === 'reject') {
+            const expected = { actionMapDigest: candidate.actionMapDigest, actionMapRevision: candidate.actionMapRevision, listDigest: candidate.listDigest, listId: candidate.listId, listRevision: candidate.listRevision };
+            if (supplied.decision === 'approve') Object.assign(expected, { policyDecisionId: candidate.policyDecisionId, replayReportId: candidate.replayReportId });
+            if (Object.keys(expected).some((key) => supplied[key] !== expected[key])) throw new Error('Candidate-review envelope does not match the current authoritative binding');
+            if (supplied.decision === 'reject') {
               const rejected = await requestBackend(`/v1/action-lists/${encodeURIComponent(candidate.listId)}/revisions/${candidate.listRevision}/candidate-review`, {
-                body: JSON.stringify({ decision, expectedDigest: candidate.listDigest, reviewer }), method: 'POST',
+                body: JSON.stringify({ decision: supplied.decision, expectedDigest: candidate.listDigest }), method: 'POST',
               });
               return { ok: true, result: rejected };
             }
-            const localPolicy = await get('local', policyKey(origin));
-            const policyResult = await requestBackend(`/v1/action-lists/${encodeURIComponent(candidate.listId)}/revisions/${candidate.listRevision}/candidate-review/policy`, {
-              body: JSON.stringify({ expectedDigest: candidate.listDigest, originPolicy: localPolicy }), method: 'POST',
-            });
-            const replayResult = await requestBackend(`/v1/action-lists/${encodeURIComponent(candidate.listId)}/revisions/${candidate.listRevision}/candidate-review/replay`, {
-              body: JSON.stringify({ expectedDigest: candidate.listDigest }), method: 'POST',
-            });
             const published = await requestBackend(`/v1/action-lists/${encodeURIComponent(candidate.listId)}/revisions/${candidate.listRevision}/candidate-review`, {
               body: JSON.stringify({
-                decision, expectedDigest: candidate.listDigest, reviewer,
-                policyDecisionId: policyResult.policyDecision?.id,
-                replayReportId: replayResult.replayReport?.id,
+                decision: supplied.decision, expectedDigest: candidate.listDigest,
+                policyDecisionId: supplied.policyDecisionId,
+                replayReportId: supplied.replayReportId,
               }), method: 'POST',
             });
             if (published.status !== 'published') throw new Error('Candidate review did not produce a published revision');

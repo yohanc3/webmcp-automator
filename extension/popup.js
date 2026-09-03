@@ -70,12 +70,6 @@ const policyReview = WebMcpPolicyReview.createController({
       decision,
     }),
   },
-  registry: {
-    openEvidence: (reference) => sendMessage({
-      type: 'OPEN_CANDIDATE_EVIDENCE',
-      reference,
-    }),
-  },
   retrySpool: {
     requestDeletion: (request) => sendMessage({
       type: 'REQUEST_RETRY_SPOOL_DELETION',

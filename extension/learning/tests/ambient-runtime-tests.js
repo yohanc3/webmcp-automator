@@ -195,7 +195,7 @@ test('service worker serializes policy revisions and tab-scoped causal lifecycle
   const sender = { tab: { id: 7, url: 'https://shop.test/catalog' } };
   const saved = await Promise.all([1, 2, 3].map(() => coordinator.handleMessage({
     type: 'SUBMIT_POLICY_DECISION', decision: { decision: 'revoked', scope: 'ambient_learn' },
-  }, sender)));
+  })));
   assert.deepEqual(saved.map(({ policy: value }) => value.revision), [1, 2, 3]);
   assert.equal(saved.at(-1).policy.status, 'revoked');
   assert.equal(saved.at(-1).policy.origin, 'https://shop.test');
@@ -259,7 +259,7 @@ test('scope-specific retry metadata and deletion preserve unrelated stored value
 
 test('candidate review and confirmation protocol messages fail closed without side effects', async () => {
   const fixture = coordinatorFixture(); const before = { ...fixture.sideEffects };
-  assert.deepEqual(await fixture.coordinator.handleMessage({ type: 'SUBMIT_CANDIDATE_REVIEW' }), { ok: false, error: 'An explicit decision and reviewer are required' });
+  assert.deepEqual(await fixture.coordinator.handleMessage({ type: 'SUBMIT_CANDIDATE_REVIEW' }), { ok: false, error: 'A complete candidate-review decision is required' });
   assert.match((await fixture.coordinator.handleMessage({ type: 'OPEN_CANDIDATE_EVIDENCE' })).error, /explicitly unavailable/);
   assert.match((await fixture.coordinator.handleMessage({ type: 'SUBMIT_RUN_CONFIRMATION' })).error, /exact coordinator run/);
   assert.deepEqual(fixture.sideEffects, before);
@@ -583,7 +583,7 @@ test('missing review bindings fail closed without fetch, tabs, jobs, or storage 
   const review = await coordinator.handleMessage({ type: 'SUBMIT_CANDIDATE_REVIEW' });
   const evidence = await coordinator.handleMessage({ type: 'OPEN_CANDIDATE_EVIDENCE' });
   const confirmation = await coordinator.handleMessage({ type: 'SUBMIT_RUN_CONFIRMATION' });
-  assert.match(review.error, /explicit decision and reviewer/);
+  assert.match(review.error, /complete candidate-review decision/);
   assert.match(evidence.error, /explicitly unavailable/);
   assert.match(confirmation.error, /exact coordinator run/);
   assert.deepEqual({ fetches, storageWrites, tabCalls }, { fetches: 0, storageWrites: 0, tabCalls: 0 });

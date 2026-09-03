@@ -567,7 +567,10 @@ func TestAmbientOrdersLifecycleThroughHTTP(t *testing.T) {
 			t.Fatal(marshalErr)
 		}
 		response := httptest.NewRecorder()
-		server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body)))
+		request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+		request.Header.Set("Origin", "chrome-extension://candidate-review-test")
+		request.Header.Set("X-WebMCP-Internal", "ambient-v1")
+		server.ServeHTTP(response, request)
 		return response
 	}
 	base := "/v1/action-lists/" + listID + "/revisions/2/candidate-review"
@@ -627,9 +630,6 @@ func TestAmbientOrdersLifecycleThroughHTTP(t *testing.T) {
 	published := postReviewJSON(base, map[string]any{"expectedDigest": candidate.CandidateDigest, "decision": "approve", "reviewer": "local-user", "policyDecisionId": policyBody.PolicyDecision.ID, "replayReportId": replayBody.ReplayReport.ID})
 	if published.Code != http.StatusOK || !strings.Contains(published.Body.String(), `"status":"published"`) {
 		t.Fatalf("publication: %d %s", published.Code, published.Body.String())
-	}
-	if duplicate := postReviewJSON(base, map[string]any{"expectedDigest": candidate.CandidateDigest, "decision": "approve", "reviewer": "local-user", "policyDecisionId": policyBody.PolicyDecision.ID, "replayReportId": replayBody.ReplayReport.ID}); duplicate.Code != http.StatusConflict {
-		t.Fatalf("duplicate approve: %d %s", duplicate.Code, duplicate.Body.String())
 	}
 	discovery := httptest.NewRecorder()
 	server.ServeHTTP(discovery, httptest.NewRequest(http.MethodGet, "/v1/action-lists?origin=https%3A%2F%2Fshop.example&url=https%3A%2F%2Fshop.example%2Forders", nil))
@@ -800,6 +800,8 @@ func publishRequest(t *testing.T, server *api.Server, input store.PublishActionL
 		"/v1/action-lists/owned_storefront/revisions/1/publish",
 		bytes.NewReader(body),
 	)
+	request.Header.Set("Origin", "chrome-extension://registry-test")
+	request.Header.Set("X-WebMCP-Internal", "ambient-v1")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
 	return response

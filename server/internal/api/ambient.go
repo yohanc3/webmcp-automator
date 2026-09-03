@@ -10,6 +10,7 @@ import (
 
 	"webmcp-automator/server/internal/actionmap"
 	"webmcp-automator/server/internal/learning"
+	"webmcp-automator/server/internal/manifest"
 	"webmcp-automator/server/internal/store"
 )
 
@@ -127,6 +128,11 @@ func (server *Server) processAmbientLayer(writer http.ResponseWriter, request *h
 			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"outcome": "retryable", "retryable": true, "error": "accepted action map could not be projected for review"})
 			return
 		}
+		compiledDigest, digestErr := manifest.CandidateDigest(candidate)
+		if digestErr != nil {
+			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"outcome": "retryable", "retryable": true, "error": "accepted action map review projection is invalid"})
+			return
+		}
 		stored, storeErr := server.store.GetActionListRevision(request.Context(), learning.AmbientCandidateListID(layer.SiteScope.ScopeID), head.Revision)
 		if errors.Is(storeErr, store.ErrNotFound) {
 			stored, storeErr = server.store.InsertActionListRevision(request.Context(), candidate)
@@ -136,7 +142,7 @@ func (server *Server) processAmbientLayer(writer http.ResponseWriter, request *h
 			return
 		}
 		reviewDatabase, reviewAvailable := server.candidateReviewStore()
-		if !reviewAvailable || head.Digest == nil || stored.CandidateDigest == "" ||
+		if !reviewAvailable || head.Digest == nil || stored.CandidateDigest == "" || stored.CandidateDigest != compiledDigest ||
 			reviewDatabase.BindCandidate(request.Context(), store.CandidateBinding{
 				ListID: stored.ListID, Revision: stored.Revision, CandidateDigest: stored.CandidateDigest,
 				ScopeID: layer.SiteScope.ScopeID, ActionMapRevision: head.Revision, ActionMapDigest: *head.Digest,
