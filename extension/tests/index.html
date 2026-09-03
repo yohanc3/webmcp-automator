@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Action Mapper extension tests</title>
+  </head>
+  <body data-status="running">
+    <main>
+      <h1>Action Mapper extension tests</h1>
+      <p id="summary">Running…</p>
+      <ol id="results"></ol>
+    </main>
+    <script>
+      window.addEventListener('error', (event) => {
+        document.body.dataset.status = 'failed';
+        document.querySelector('#summary').textContent = event.message || 'A test file did not load.';
+      });
+    </script>
+    <script src="../manifest-contract.js"></script>
+    <script src="../recorder-core.js"></script>
+    <script src="./tests.js"></script>
+    <script>
+      if (document.body.dataset.status === 'running') {
+        document.body.dataset.status = 'failed';
+        document.querySelector('#summary').textContent = 'The test runner did not complete.';
+      }
+    </script>
+  </body>
+</html>

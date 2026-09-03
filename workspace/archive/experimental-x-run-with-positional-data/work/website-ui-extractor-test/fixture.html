@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <style>
+      body { margin: 20px; font-family: sans-serif; }
+      nav { display: flex; gap: 12px; }
+      .cards { display: grid; grid-template-columns: repeat(2, 180px); gap: 16px; margin-top: 20px; }
+      .card { width: 160px; min-height: 80px; padding: 10px; cursor: pointer; }
+      img { display: block; width: 80px; height: 50px; }
+      .hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <nav id="primary-nav" class="nav shell">
+      <div><a id="home-link" class="nav-link active" href="/home">Home text is ignored</a></div>
+      <div><a id="about-link" class="nav-link" href="/about" rel="help">About</a></div>
+    </nav>
+    <main>
+      <p>This standalone text must not be emitted.</p>
+      <div class="cards">
+        <a id="promo-link" class="card promo" href="/promo" target="_blank">
+          <img id="promo-image" class="photo hero" alt="Promotion" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+        </a>
+        <button id="save-button" class="card save" type="button">
+          <img id="save-image" class="photo" alt="Save" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+        </button>
+        <div id="pointer-card" class="card custom-action">Custom pointer action</div>
+        <img id="standalone-image" class="photo standalone" alt="Standalone" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+      </div>
+      <input id="email" class="field wide" type="email" value="private@example.com">
+      <a class="hidden" href="/hidden">Hidden</a>
+      <shadow-card></shadow-card>
+    </main>
+    <script>
+      customElements.define('shadow-card', class extends HTMLElement {
+        connectedCallback() {
+          const root = this.attachShadow({ mode: 'open' });
+          root.innerHTML = `
+            <a id="shadow-link" class="shadow action" href="/shadow">
+              <img id="shadow-image" class="shadow photo" alt="Shadow" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" style="width:80px;height:50px">
+            </a>
+          `;
+        }
+      });
+    </script>
+  </body>
+</html>
