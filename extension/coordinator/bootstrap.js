@@ -31,6 +31,7 @@
     fetchApi = fetch,
     manifest = globalThis.WebMcpManifest,
     now = () => new Date().toISOString(),
+    retrySpoolApi = retrySpool,
   } = {}) => {
     let queue = Promise.resolve();
     let storage = null;
@@ -97,6 +98,18 @@
       if (!response.ok) throw new Error(body.error || `Backend request failed with status ${response.status}`);
       return body;
     };
+    const deliverAmbientLayer = async (completedLayer) => {
+      const response = await fetchApi('http://127.0.0.1:4317/v1/ambient/layers', {
+        body: JSON.stringify(completedLayer),
+        headers: { 'Content-Type': 'application/json', 'X-WebMCP-Internal': 'ambient-v1' },
+        method: 'POST',
+      });
+      const body = await response.json().catch(() => null);
+      if (response.status === 409) return { outcome: 'conflict', receiptId: body?.requestId || null };
+      if (!response.ok || !body || typeof body.outcome !== 'string') throw new Error(`Ambient delivery retryable: ${response.status}`);
+      if (!['applied', 'duplicate', 'no_change', 'rejected'].includes(body.outcome)) throw new Error('Ambient delivery returned an invalid receipt');
+      return { outcome: body.outcome, receiptId: body.requestId || null };
+    };
     const tabMessage = (tabId, value) => chromeApi.tabs.sendMessage(tabId, value);
     const getJobs = () => get('session', 'jobs', {});
     const changeJob = (id, mutate) => serial(async () => {
@@ -150,8 +163,9 @@
     };
 
     const ownedSpool = async () => {
-      if (!storage) storage = await retrySpool.createChromeEncryptedStorage({ chromeApi, keyName: KEY_NAME, recordKey: RECORD_KEY });
-      return retrySpool.createRetrySpool({ storage });
+      if (!retrySpoolApi) throw new Error('Ambient retry spool was unavailable during coordinator initialization');
+      if (!storage) storage = await retrySpoolApi.createChromeEncryptedStorage({ chromeApi, keyName: KEY_NAME, recordKey: RECORD_KEY });
+      return retrySpoolApi.createRetrySpool({ storage });
     };
     const spool = (operation, payload = {}) => serial(async () => {
       const instance = await ownedSpool();
@@ -179,6 +193,7 @@
         case 'AMBIENT_CLEAR_PENDING': return { ok: true, cleared: await lifecycle(message.scopeId, (state) => { const key = String(sender.tab?.id ?? message.documentId); if (state.pending[key]?.observationId !== message.observationId) return false; delete state.pending[key]; return true; }) };
         case 'AMBIENT_CONSUME_PENDING': return { ok: true, pending: await lifecycle(message.scopeId, (state) => { const key = String(sender.tab?.id ?? message.documentId); const pending = state.pending[key] || null; delete state.pending[key]; return pending; }) };
         case 'AMBIENT_SPOOL_OPERATION': return { ok: true, result: await spool(message.operation, message.payload) };
+        case 'AMBIENT_DELIVER_LAYER': return { ok: true, receipt: await deliverAmbientLayer(message.completedLayer) };
         case 'GET_POLICY_REVIEW_STATE': {
           const tabs = sender.tab ? [sender.tab] : await chromeApi.tabs.query({ active: true, lastFocusedWindow: true });
           const origin = originFromUrl(tabs[0]?.url) || 'http://127.0.0.1:4317';
@@ -210,7 +225,7 @@
         default: return { ok: false, error: 'Unknown extension message' };
       }
     };
-    return Object.freeze({ handleMessage, retryMetadata });
+    return Object.freeze({ handleMessage, retryMetadata, retrySpoolReady: Boolean(retrySpoolApi) });
   };
 
   let started = false;

@@ -65,6 +65,7 @@ const fakeChrome = (policies, outcomes = ['no_change']) => {
         if (message.type === 'AMBIENT_CONSUME_PENDING') { response.pending = pending; pending = null; }
         if (message.type === 'AMBIENT_PUT_PENDING') { pending = message.pending; response.pending = pending; }
         if (message.type === 'AMBIENT_CLEAR_PENDING') { response.cleared = pending?.observationId === message.observationId; if (response.cleared) pending = null; }
+        if (message.type === 'AMBIENT_DELIVER_LAYER') response.receipt = { outcome: 'no_change', receiptId: 'receipt_1' };
         if (message.type === 'AMBIENT_SPOOL_OPERATION') {
           const { operation, payload = {} } = message;
           if (operation === 'enqueue') { const record = { completedLayer: payload.completedLayer, id: payload.completedLayer.layer.layerId, state: 'queued' }; records.set(record.id, record); response.result = record; }
@@ -86,7 +87,6 @@ test('reads current policy before attaching and every transfer, then revokes que
   const runtime = ambientRuntime.createRuntime({
     chromeApi,
     documentApi: fakeDocument(),
-    fetchApi: async () => ({ json: async () => ({ outcome: 'no_change', requestId: 'receipt_1' }), ok: true, status: 200 }),
     observer,
     windowApi: fakeWindow(),
   });
@@ -103,7 +103,7 @@ test('reads current policy before attaching and every transfer, then revokes que
 test('a policy-change allow attaches automatically after an initial denial', async () => {
   const chromeApi = fakeChrome([policy({ status: 'denied', scopes: [] }), policy()]);
   const observer = fakeObserver();
-  const runtime = ambientRuntime.createRuntime({ chromeApi, documentApi: fakeDocument(), fetchApi: async () => null, observer, windowApi: fakeWindow() });
+  const runtime = ambientRuntime.createRuntime({ chromeApi, documentApi: fakeDocument(), observer, windowApi: fakeWindow() });
   assert.equal((await runtime.start()).attached, false);
   chromeApi.storage.onChanged.callback({ 'ambientPolicy:https://shop.test': { newValue: policy() } }, 'local');
   await new Promise((resolve) => setImmediate(resolve));
@@ -118,11 +118,11 @@ test('trusted navigation is bridged immediately and consumed once by the recreat
     attach(value) { callbacks = value; return { disconnect() {} }; },
     async captureInitial() { return projection(); },
   };
-  const first = ambientRuntime.createRuntime({ chromeApi, documentApi: fakeDocument(), fetchApi: async () => null, observer: firstObserver, windowApi: firstWindow });
+  const first = ambientRuntime.createRuntime({ chromeApi, documentApi: fakeDocument(), observer: firstObserver, windowApi: firstWindow });
   await first.start();
   const id = callbacks.onObservation({ kind: 'click', navigation: true, targetEvidenceId: 'node_link', trusted: true });
   await new Promise((resolve) => setImmediate(resolve));
-  const second = ambientRuntime.createRuntime({ chromeApi, documentApi: fakeDocument(), fetchApi: async () => null, observer: fakeObserver(), windowApi: fakeWindow() });
+  const second = ambientRuntime.createRuntime({ chromeApi, documentApi: fakeDocument(), observer: fakeObserver(), windowApi: fakeWindow() });
   await second.start();
   const enqueued = chromeApi.calls.filter(({ type, operation }) => type === 'AMBIENT_SPOOL_OPERATION' && operation === 'enqueue');
   assert.equal(enqueued.at(-1).payload.completedLayer.observation.observationId, id);
@@ -136,21 +136,13 @@ test('trusted navigation is bridged immediately and consumed once by the recreat
 test('denied policy never attaches, while a later fresh allow attaches without reload', async () => {
   const chromeApi = fakeChrome([policy({ status: 'denied', scopes: [] }), policy()]);
   const observer = fakeObserver();
-  const runtime = ambientRuntime.createRuntime({ chromeApi, documentApi: fakeDocument(), fetchApi: async () => null, observer, windowApi: fakeWindow() });
+  const runtime = ambientRuntime.createRuntime({ chromeApi, documentApi: fakeDocument(), observer, windowApi: fakeWindow() });
   assert.equal((await runtime.start()).attached, false);
   assert.equal(observer.options, undefined);
   assert.equal((await runtime.start()).attached, true);
   assert.equal(observer.options !== undefined, true);
 });
 
-test('classifies only explicit terminal delivery receipts as deletable', async () => {
-  for (const outcome of ['applied', 'duplicate', 'no_change', 'rejected']) {
-    assert.deepEqual(await ambientRuntime.classify({ json: async () => ({ outcome }), ok: true, status: 200 }), { outcome, receiptId: null });
-  }
-  assert.deepEqual(await ambientRuntime.classify({ json: async () => ({}), ok: false, status: 409 }), { outcome: 'conflict', receiptId: null });
-  await assert.rejects(() => ambientRuntime.classify({ json: async () => null, ok: false, status: 500 }));
-  await assert.rejects(() => ambientRuntime.classify({ json: async () => ({}), ok: true, status: 200 }));
-});
 
 test('manual learning protocol messages are absent as a supplemental source assertion', () => {
   const source = fs.readFileSync(path.join(__dirname, '../../shared/protocol.js'), 'utf8');
@@ -215,6 +207,36 @@ test('coordinator preserves backend, adapter, job, page-ready, and status dispat
   assert.equal((await coordinator.handleMessage({ type: 'PAGE_READY' }, sender)).recordingActive, false);
   assert.deepEqual(await coordinator.handleMessage({ type: 'WEBMCP_STATUS', available: true, registered: 2 }, sender), { ok: true });
   assert.equal(areas.session.webMcpStatus.registered, 2);
+});
+
+test('content forwards ambient delivery while the service worker adds the internal header and classifies receipts', async () => {
+  const areas = { local: {}, session: {} };
+  const chromeApi = { storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
+    async get(key) { return { [key]: areas[area][key] }; }, async set(value) { Object.assign(areas[area], value); }, async remove() {},
+  }])) };
+  const calls = [];
+  const responseFor = (status, body) => async (url, options) => {
+    calls.push({ options, url });
+    return { json: async () => body, ok: status >= 200 && status < 300, status };
+  };
+  const coordinator = coordinatorApi.createCoordinator({ chromeApi, fetchApi: responseFor(200, { outcome: 'applied', requestId: 'r1' }), retrySpoolApi: {} });
+  assert.equal(coordinator.retrySpoolReady, true);
+  assert.deepEqual(await coordinator.handleMessage({ type: 'AMBIENT_DELIVER_LAYER', completedLayer: { layer: { layerId: 'layer_1' } } }), { ok: true, receipt: { outcome: 'applied', receiptId: 'r1' } });
+  assert.equal(calls[0].url, 'http://127.0.0.1:4317/v1/ambient/layers');
+  assert.equal(calls[0].options.headers['X-WebMCP-Internal'], 'ambient-v1');
+  const conflict = coordinatorApi.createCoordinator({ chromeApi, fetchApi: responseFor(409, {}), retrySpoolApi: {} });
+  assert.equal((await conflict.handleMessage({ type: 'AMBIENT_DELIVER_LAYER', completedLayer: {} })).receipt.outcome, 'conflict');
+  const retryable = coordinatorApi.createCoordinator({ chromeApi, fetchApi: responseFor(503, {}), retrySpoolApi: {} });
+  await assert.rejects(() => retryable.handleMessage({ type: 'AMBIENT_DELIVER_LAYER', completedLayer: {} }), /retryable/);
+});
+
+test('content runtime never fetches ambient layers directly', async () => {
+  const chromeApi = fakeChrome([policy(), policy()]);
+  const observer = fakeObserver();
+  const runtime = ambientRuntime.createRuntime({ chromeApi, documentApi: fakeDocument(), observer, windowApi: fakeWindow() });
+  await runtime.start();
+  await runtime.controller.whenIdle();
+  assert.equal(chromeApi.calls.some(({ type }) => type === 'AMBIENT_DELIVER_LAYER'), true);
 });
 
 test('encrypted retry storage keeps only JWK session material and ciphertext local, then purges after key rotation', async () => {

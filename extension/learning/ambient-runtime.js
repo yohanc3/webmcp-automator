@@ -9,8 +9,6 @@
 }(typeof globalThis === 'undefined' ? this : globalThis, (capture, semantic, privacy) => {
   'use strict';
 
-  const BACKEND = 'http://127.0.0.1:4317';
-  const SCOPE = 'ambient_learn';
   const scopeFor = (origin) => `site_${origin.replace(/[^a-z0-9]/gi, '_').toLowerCase().slice(-80)}`;
   const message = (runtime, value) => new Promise((resolve, reject) => {
     runtime.sendMessage(value, (response) => {
@@ -30,13 +28,6 @@
     markAttempt: async (id) => (await message(runtime, { type: 'AMBIENT_SPOOL_OPERATION', operation: 'markAttempt', payload: { id } })).result,
     next: async () => (await message(runtime, { type: 'AMBIENT_SPOOL_OPERATION', operation: 'next' })).result,
   });
-  const classify = async (response) => {
-    const body = await response.json().catch(() => null);
-    if (response.status === 409) return { outcome: 'conflict', receiptId: body?.requestId || null };
-    if (!response.ok || !body || typeof body.outcome !== 'string') throw new Error(`Ambient transfer retryable: ${response.status}`);
-    if (['applied', 'duplicate', 'no_change', 'rejected'].includes(body.outcome)) return { outcome: body.outcome, receiptId: body.requestId || null };
-    throw new Error('Ambient transfer returned an unrecognized outcome');
-  };
   const defaultObserver = ({ documentApi, privacyApi = privacy, semanticApi = semantic, windowApi }) => ({
     attach({ onObservation, onSettled }) {
       let timer = null;
@@ -96,14 +87,14 @@
       return { ...page, evidenceIds: page.nodes.map(({ id }) => id), rawPersisted: false, redactions: ledger.summary() };
     },
   });
-  const createRuntime = ({ chromeApi = chrome, documentApi = document, fetchApi = fetch, observer = null, privacyApi = privacy, semanticApi = semantic, windowApi = window } = {}) => {
+  const createRuntime = ({ chromeApi = chrome, documentApi = document, observer = null, privacyApi = privacy, semanticApi = semantic, windowApi = window } = {}) => {
     const origin = windowApi.location.origin;
     const siteScope = { origin, routePatterns: ['^/.*$'], scopeId: scopeFor(origin) };
     const runtime = chromeApi.runtime;
     const observerPort = observer || defaultObserver({ documentApi, privacyApi, semanticApi, windowApi });
     let observerConnection = null;
     const controller = capture.createAmbientCapture({
-      delivery: { deliver: async (layer) => classify(await fetchApi(`${BACKEND}/v1/ambient/layers`, { body: JSON.stringify(layer), headers: { 'Content-Type': 'application/json' }, method: 'POST' })) },
+      delivery: { deliver: async (completedLayer) => (await message(runtime, { type: 'AMBIENT_DELIVER_LAYER', completedLayer })).receipt },
       eligibility: policyPort(runtime),
       layerSequence: { next: async (scopeId) => (await message(runtime, { type: 'AMBIENT_NEXT_LAYER_SEQUENCE', scopeId })).sequence },
       onNavigationPending: (pending) => void message(runtime, { type: 'AMBIENT_PUT_PENDING', scopeId: siteScope.scopeId, documentId: 'top', pending }),
@@ -128,5 +119,5 @@
     return Object.freeze({ controller, start });
   };
   const start = () => createRuntime().start();
-  return Object.freeze({ classify, createRuntime, defaultObserver, start });
+  return Object.freeze({ createRuntime, defaultObserver, start });
 }));
