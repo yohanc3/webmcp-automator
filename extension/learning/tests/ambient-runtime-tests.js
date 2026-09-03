@@ -693,3 +693,21 @@ test('default observer records trusted event kinds, route hooks, and removes the
   connection.disconnect();
   windowApi.emit('popstate');
 });
+
+test('empty-spool policy revocation detaches synchronously before another event', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../ambient-runtime.js'), 'utf8');
+  assert.match(source, /changed\.status !== 'allowed'[\s\S]*controller\.revoke/);
+});
+
+test('polling and startup timers cannot cross waiting-navigation before PAGE_READY', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../coordinator/bootstrap.js'), 'utf8');
+  assert.match(source, /job\.status === 'waiting-navigation'\) return/);
+  assert.match(source, /current\.status = 'running'/);
+});
+
+test('execution tab ownership precedes navigation and rejects ambient startup', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../coordinator/bootstrap.js'), 'utf8');
+  assert.match(source, /url: 'about:blank'/);
+  assert.match(source, /tabs\.update\(tab\.id, \{ url: sourceUrl \}\)/);
+  assert.match(source, /Ambient capture is disabled in execution tabs/);
+});

@@ -112,6 +112,11 @@
     };
     chromeApi.storage.onChanged?.addListener((changes, area) => {
       if (area !== 'local' || !changes[`ambientPolicy:${origin}`]) return;
+      const changed = changes[`ambientPolicy:${origin}`].newValue;
+      if (!changed || changed.status !== 'allowed') {
+        controller.revoke(changed || { status: 'revoked' });
+        return;
+      }
       void policyPort(runtime).current({ origin, scope: 'ambient_learn' }).then((policy) => {
         if (policy?.status !== 'allowed') controller.revoke(policy);
         else void controller.requestDelivery();
