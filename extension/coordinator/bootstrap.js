@@ -384,6 +384,11 @@
     };
 
     const handleMessage = async (message, sender = {}) => {
+      const ambientMessage = String(message?.type || '').startsWith('AMBIENT_');
+      if (ambientMessage && sender.tab?.id) {
+        const hidden = Object.values(await getJobs()).some((job) => job.tabId === sender.tab.id && !['completed', 'failed'].includes(job.status));
+        if (hidden) return { ok: false, error: 'Ambient capture is disabled in execution tabs' };
+      }
       switch (message?.type) {
         case 'AMBIENT_POLICY_CURRENT': return { ok: true, policy: await currentPolicy(message) };
         case 'AMBIENT_NEXT_LAYER_SEQUENCE': return { ok: true, sequence: await lifecycle(message.scopeId, (state) => { state.nextLayerSequence += 1; return state.nextLayerSequence; }) };
@@ -458,7 +463,7 @@
         case protocol.MESSAGE_TYPES.getJob: {
           const job = (await getJobs())[message.jobId];
           if (!job) return { ok: false, error: 'Job not found' };
-          if (!['completed', 'failed'].includes(job.status)) setTimeout(() => { void advanceJob(job.id); }, 0);
+          if (['starting', 'running'].includes(job.status)) setTimeout(() => { void advanceJob(job.id); }, 0);
           return { ok: true, job };
         }
         case protocol.MESSAGE_TYPES.webMcpStatus:
