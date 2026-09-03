@@ -33,6 +33,7 @@
         quietTimer = setTimeout(() => pending.forEach((entry, observationId) => {
           pending.delete(observationId);
           const page = projection(); onSettled(observationId, { projection: page, outcome: { kind, evidenceIds: page.evidenceIds } });
+          if (globalThis.__webMcpAmbientLastObservation?.observationId === observationId) globalThis.__webMcpAmbientLastObservation = null;
         }), 180);
       };
       const settle = (observationId) => {
@@ -59,9 +60,10 @@
       mutations.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
       document.addEventListener('click', onClick, true); document.addEventListener('input', onInput, true);
       document.addEventListener('focusin', onFocus, true); document.addEventListener('submit', onSubmit, true);
-      document.addEventListener('keydown', onKeydown, true); window.addEventListener('popstate', () => settlePending('same_document_route'));
+      const onPopstate = () => settlePending('same_document_route');
+      document.addEventListener('keydown', onKeydown, true); window.addEventListener('popstate', onPopstate);
       return {
-        disconnect() { document.removeEventListener('click', onClick, true); document.removeEventListener('input', onInput, true); document.removeEventListener('focusin', onFocus, true); document.removeEventListener('submit', onSubmit, true); document.removeEventListener('keydown', onKeydown, true); mutations.disconnect(); clearTimeout(quietTimer); pending.clear(); },
+        disconnect() { document.removeEventListener('click', onClick, true); document.removeEventListener('input', onInput, true); document.removeEventListener('focusin', onFocus, true); document.removeEventListener('submit', onSubmit, true); document.removeEventListener('keydown', onKeydown, true); window.removeEventListener('popstate', onPopstate); mutations.disconnect(); clearTimeout(quietTimer); pending.clear(); },
         discard(observationId) { pending.delete(observationId); },
       };
     },
