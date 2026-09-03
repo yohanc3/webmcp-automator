@@ -232,6 +232,34 @@ const refreshHealth = async () => {
   }
 };
 
+const policyReview = WebMcpPolicyReview.createController({
+  rootElement: document.querySelector('#policy-review'),
+  coordinator: {
+    getPolicyReviewState: async () => {
+      const response = await sendMessage({ type: 'GET_POLICY_REVIEW_STATE' });
+      return response.state;
+    },
+    setOwnedDemoOverride: (override) => sendMessage({
+      type: 'SET_OWNED_DEMO_OVERRIDE',
+      override,
+    }),
+    submitConfirmation: (decision) => sendMessage({
+      type: 'SUBMIT_RUN_CONFIRMATION',
+      decision,
+    }),
+  },
+  registry: {
+    openEvidence: (reference) => sendMessage({
+      type: 'OPEN_CANDIDATE_EVIDENCE',
+      reference,
+    }),
+    submitCandidateDecision: (decision) => sendMessage({
+      type: 'SUBMIT_CANDIDATE_REVIEW',
+      decision,
+    }),
+  },
+});
+
 elements.startButton.addEventListener('click', async () => {
   setBusy(elements.startButton, true, 'Starting…');
   showNotice();
@@ -305,7 +333,7 @@ elements.demoButton.addEventListener('click', () => {
   void chrome.tabs.create({ url: 'http://127.0.0.1:4317/demo/' });
 });
 
-void Promise.all([refreshState(), refreshHealth()]).catch((error) => {
+void Promise.all([refreshState(), refreshHealth(), policyReview.refresh()]).catch((error) => {
   showNotice(error.message, 'error');
 });
 setInterval(() => {

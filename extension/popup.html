@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Action Mapper</title>
     <link rel="stylesheet" href="popup.css">
+    <link rel="stylesheet" href="ui/policy-review.css">
   </head>
   <body>
     <main class="shell">
@@ -28,6 +29,8 @@
           <span id="model-label" class="system-value">Checking</span>
         </div>
       </section>
+
+      <div id="policy-review" class="policy-review" aria-live="polite"></div>
 
       <p id="notice" class="notice" role="status"></p>
 
@@ -88,6 +91,7 @@
         Sensitive values are stripped before storage and model transmission. WebMCP registration is paused.
       </footer>
     </main>
+    <script src="ui/policy-review.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>
