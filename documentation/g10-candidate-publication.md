@@ -52,8 +52,20 @@ assigns reviewer identity.
 
 `OPEN_CANDIDATE_EVIDENCE` remains explicitly unavailable. It must not resolve a
 compact evidence handle until a resolver can prove that handle against this
-same server-owned action-map revision and digest. G9 run confirmation remains
-unavailable for the same reason: no run or step binding is fabricated.
+same server-owned action-map revision and digest.
+
+Run confirmation is served from the durable coordinator record. The popup
+receives the exact run ID, list digest, step ID, origin, execution document ID,
+and policy revision. Approval or denial is accepted only when every field still
+matches the awaiting run; the coordinator then appends a typed `run.confirm`
+event and resumes or terminates that exact run. The candidate-review policy
+gate and the run-confirmation gate therefore remain separate authorities.
+
+`make seed-demo` publishes only the repository-owned deterministic storefront
+fixture. That fixture has no ambient action-map binding and exists to exercise
+the ready path. Map-bound learned candidates still cannot use this path: their
+publication transaction requires the authoritative candidate-review policy,
+replay, reviewer, and current action-map head checks described above.
 
 After publication, ordinary registry discovery still returns only published
 lists whose exact origin and route match. Candidate revisions never escape the
