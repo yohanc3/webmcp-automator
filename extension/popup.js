@@ -56,22 +56,8 @@ const policyReview = WebMcpPolicyReview.createController({
       type: 'SET_OWNED_DEMO_OVERRIDE',
       override,
     }),
-    submitConfirmation: (decision) => sendMessage({
-      type: 'SUBMIT_RUN_CONFIRMATION',
-      decision,
-    }),
     submitPolicyDecision: (decision) => sendMessage({
       type: 'SUBMIT_POLICY_DECISION',
-      decision,
-    }),
-  },
-  registry: {
-    openEvidence: (reference) => sendMessage({
-      type: 'OPEN_CANDIDATE_EVIDENCE',
-      reference,
-    }),
-    submitCandidateDecision: (decision) => sendMessage({
-      type: 'SUBMIT_CANDIDATE_REVIEW',
       decision,
     }),
   },

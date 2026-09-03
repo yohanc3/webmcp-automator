@@ -5,6 +5,7 @@ importScripts(
   'semantic.js',
   'recorder-core.js',
   'shared/protocol.js',
+  'shared/ambient-scope.js',
   'shared/errors.js',
   'learning/privacy.js',
   'learning/semantic.js',

@@ -29,6 +29,7 @@
         "semantic.js",
         "runner.js",
         "shared/protocol.js",
+        "shared/ambient-scope.js",
         "shared/errors.js",
         "source/bootstrap.js",
         "learning/privacy.js",

@@ -2,14 +2,12 @@
   const runtime = factory(
     root.WebMcpAmbientCapture || (typeof module === 'object' && module.exports ? require('./ambient-capture.js') : null),
     root.WebMcpLearningSemantic || (typeof module === 'object' && module.exports ? { capturePageState: () => ({ nodes: [], semanticXml: '' }), describeElement: () => ({ id: 'node_test' }) } : null),
-    root.WebMcpLearningPrivacy || (typeof module === 'object' && module.exports ? require('./privacy.js') : null),
-  );
+    root.WebMcpLearningPrivacy || (typeof module === 'object' && module.exports ? require('./privacy.js') : null), root.WebMcpAmbientScope || (typeof module === 'object' && module.exports ? require('../shared/ambient-scope.js') : null));
   root.WebMcpAmbientRuntime = runtime;
   if (typeof module === 'object' && module.exports) module.exports = runtime;
-}(typeof globalThis === 'undefined' ? this : globalThis, (capture, semantic, privacy) => {
+}(typeof globalThis === 'undefined' ? this : globalThis, (capture, semantic, privacy, ambientScope) => {
   'use strict';
 
-  const scopeFor = (origin) => `site_${origin.replace(/[^a-z0-9]/gi, '_').toLowerCase().slice(-80)}`;
   const message = (runtime, value) => new Promise((resolve, reject) => {
     runtime.sendMessage(value, (response) => {
       if (runtime.lastError) reject(new Error(runtime.lastError.message));
@@ -88,8 +86,9 @@
     },
   });
   const createRuntime = ({ chromeApi = chrome, documentApi = document, observer = null, privacyApi = privacy, semanticApi = semantic, windowApi = window } = {}) => {
-    const origin = windowApi.location.origin;
-    const siteScope = { origin, routePatterns: ['^/.*$'], scopeId: scopeFor(origin) };
+    const origin = ambientScope.originFor(windowApi.location.origin);
+    if (!origin) throw new Error('Ambient learning supports HTTP(S) origins only');
+    const siteScope = { origin, routePatterns: ['^/.*$'], scopeId: ambientScope.scopeFor(origin) };
     const runtime = chromeApi.runtime;
     const observerPort = observer || defaultObserver({ documentApi, privacyApi, semanticApi, windowApi });
     let observerConnection = null;
