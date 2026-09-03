@@ -11,10 +11,10 @@
     <main class="shell">
       <header class="masthead">
         <div>
-          <p class="eyebrow">Discovery console</p>
+          <p class="eyebrow">Policy console</p>
           <h1>Action Mapper</h1>
         </div>
-        <span id="mode-badge" class="mode-badge">Idle</span>
+        <span id="mode-badge" class="mode-badge">Ambient</span>
       </header>
 
       <section class="systems" aria-label="System status">
@@ -34,61 +34,16 @@
 
       <p id="notice" class="notice" role="status"></p>
 
-      <section id="idle-panel" class="panel">
+      <section class="panel ambient-note">
         <div class="panel-copy">
-          <h2>Demonstrate a useful path</h2>
-          <p>Perform it normally. Discovery maps the observed path and adjacent actions supported by the UI evidence.</p>
+          <h2>Ambient learning follows site policy</h2>
+          <p>Eligible page semantics are processed automatically. This console shows only safe revision metadata and evidence handles.</p>
         </div>
-        <button id="start-button" class="button button-primary" type="button">Start recording</button>
-        <button id="demo-button" class="button button-quiet" type="button">Open test storefront</button>
-      </section>
-
-      <section id="recording-panel" class="panel" hidden>
-        <div class="capture-heading">
-          <span class="recording-pulse"></span>
-          <div>
-            <h2>Capturing the workflow</h2>
-            <p id="recording-url" class="mono truncate"></p>
-          </div>
-        </div>
-        <ol id="event-tape" class="event-tape"></ol>
-        <button id="stop-button" class="button button-stop" type="button">Stop and discover actions</button>
-      </section>
-
-      <section id="ready-panel" class="panel" hidden>
-        <div class="panel-copy">
-          <h2><span id="event-count">0</span> actions observed</h2>
-          <p>Discovery paused before an action map was produced. Retry with the same sanitized recording.</p>
-        </div>
-        <button id="learn-button" class="button button-primary" type="button">Retry discovery</button>
-        <button id="clear-button" class="button button-quiet" type="button">Discard recording</button>
-      </section>
-
-      <section id="discovery-panel" class="panel" hidden>
-        <div class="map-head">
-          <div>
-            <p class="eyebrow">Discovered action map</p>
-            <h2 id="map-origin" class="mono truncate"></h2>
-          </div>
-          <span id="action-total" class="confidence">0 actions</span>
-        </div>
-        <p id="map-summary" class="map-summary"></p>
-        <div class="map-stats" aria-label="Discovery counts">
-          <span>States<strong id="state-count">0</strong></span>
-          <span>Observed<strong id="observed-count">0</strong></span>
-          <span>Resolvable<strong id="resolvable-count">0</strong></span>
-          <span>Unknown<strong id="unresolved-count">0</strong></span>
-        </div>
-        <ol id="state-rail" class="state-rail" aria-label="Observed page states"></ol>
-        <div id="action-list" class="action-list"></div>
-        <p id="map-warnings" class="candidate-issues" hidden></p>
-        <p id="privacy-summary" class="privacy-summary"></p>
-        <button id="copy-button" class="button" type="button">Copy action map JSON</button>
-        <button id="new-button" class="button button-quiet" type="button">Record another path</button>
+        <button id="demo-button" class="button button-quiet" type="button">Open owned storefront</button>
       </section>
 
       <footer>
-        Sensitive values are stripped before storage and model transmission. WebMCP registration is paused.
+        Raw page history is not shown here. Consequential actions use a separate exact confirmation boundary.
       </footer>
     </main>
     <script src="ui/policy-review.js"></script>

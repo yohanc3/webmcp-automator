@@ -1,9 +1,9 @@
 # Extension
 
-This directory is the loadable Manifest V3 Chrome extension. It captures
-semantic page states, records user-driven transitions, serializes a stepped
-`learning-trace/3`, sends the trace to the local server, and renders the returned
-action map.
+This directory is the loadable Manifest V3 Chrome extension. Eligible pages are
+observed through the policy-gated ambient lifecycle. The popup renders policy,
+safe action-map revision metadata, candidate review, local retry custody, and
+separate consequential confirmation.
 
 ## Load it
 
@@ -12,7 +12,8 @@ action map.
 3. Enable **Developer mode**.
 4. Choose **Load unpacked** and select this `extension/` directory.
 5. Open `http://127.0.0.1:4317/demo/` and reload after extension changes.
-6. Use the extension popup to start and stop a recording.
+6. Use the popup to inspect current eligibility and safe revision state. It does
+   not expose learning lifecycle controls.
 
 The extension expects the local service at `http://127.0.0.1:4317`.
 
@@ -28,7 +29,7 @@ The extension expects the local service at `http://127.0.0.1:4317`.
 - `coordinator/bootstrap.js` preserves recording, discovery, and job coordination.
 - `runner.js` contains the paused deterministic replay path.
 - `manifest-contract.js` validates the paused adapter contract.
-- `popup.*` renders recording and discovery state.
+- `popup.*` renders the ambient policy and review console.
 - `ui/policy-review.js` renders fail-closed policy, candidate review, and exact
   confirmation state through injected coordinator and registry ports.
 - `tests/test-harness.js` provides reusable browser assertions, fixtures, and fakes.

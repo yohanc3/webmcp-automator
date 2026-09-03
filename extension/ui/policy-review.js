@@ -10,6 +10,8 @@
   'use strict';
 
   const OWNED_DEMO_ORIGIN = 'http://127.0.0.1:4317';
+  const AMBIENT_LEARN_SCOPE = 'ambient_learn';
+  const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
   const BINDING_FIELDS = Object.freeze([
     ['listDigest', 'Action-list digest'],
     ['stepId', 'Step'],
@@ -51,11 +53,13 @@
 
   const policyScopes = (policy = {}) => {
     const currentPolicy = policy || {};
-    return asArray(currentPolicy.scopes || currentPolicy.scope);
+    const scopes = currentPolicy.scopes || currentPolicy.scope;
+    if (Array.isArray(scopes)) return scopes;
+    return typeof scopes === 'string' ? [scopes] : [];
   };
 
   const evaluatePolicy = ({ policy, context = {}, now = new Date() } = {}) => {
-    const requestedScope = context.requestedScope || 'learn';
+    const requestedScope = context.requestedScope || AMBIENT_LEARN_SCOPE;
     const origin = normalizedOrigin(context.origin);
     const status = policy?.decision || policy?.status || 'unknown';
     const scopes = policyScopes(policy);
@@ -78,6 +82,17 @@
 
     if (!policy || status === 'unknown') {
       return { ...base, state: 'unknown', eligible: false };
+    }
+    if (status === 'revoked') {
+      return {
+        ...base,
+        state: 'revoked',
+        eligible: false,
+        reason: policy.reason
+          || policy.reasonCode
+          || policy.note
+          || 'Ambient learning permission was revoked for this site.',
+      };
     }
     if (status === 'denied' || status === 'blocked') {
       return { ...base, state: 'blocked', eligible: false };
@@ -156,7 +171,7 @@
   const observationEligibility = ({ policy, origin, policyRevision, now } = {}) => {
     const decision = evaluatePolicy({
       policy,
-      context: { origin, policyRevision, requestedScope: 'learn' },
+      context: { origin, policyRevision, requestedScope: AMBIENT_LEARN_SCOPE },
       now,
     });
     return Object.freeze({
@@ -166,6 +181,63 @@
       reason: decision.reason,
       state: decision.state,
     });
+  };
+
+  const reviewBinding = (candidate = {}) => ({
+    actionMapDigest: candidate.actionMapDigest
+      || candidate.actionMap?.digest
+      || candidate.sourceMap?.digest
+      || null,
+    actionMapRevision: candidate.actionMapRevision
+      || candidate.actionMap?.revision
+      || candidate.sourceMap?.revision
+      || null,
+    listDigest: candidate.listDigest
+      || candidate.contentDigest
+      || candidate.publication?.contentDigest
+      || null,
+    listRevision: candidate.listRevision
+      || candidate.revision
+      || candidate.publication?.revision
+      || null,
+  });
+
+  const staleReviewReasons = (candidate, context = {}) => {
+    const binding = reviewBinding(candidate);
+    const currentMapDigest = context.actionMapDigest || context.actionMap?.digest || null;
+    const currentListDigest = context.listDigest || context.actionList?.digest || null;
+    const reasons = [];
+    const actionMapDigestIsValid = DIGEST_PATTERN.test(binding.actionMapDigest || '');
+    const listDigestIsValid = DIGEST_PATTERN.test(binding.listDigest || '');
+    if (!binding.actionMapDigest) {
+      reasons.push('Action-map digest binding is missing.');
+    } else if (!actionMapDigestIsValid) {
+      reasons.push('Action-map digest binding is invalid.');
+    }
+    if (!binding.listDigest) {
+      reasons.push('Action-list digest binding is missing.');
+    } else if (!listDigestIsValid) {
+      reasons.push('Action-list digest binding is invalid.');
+    }
+    if (currentMapDigest && !DIGEST_PATTERN.test(currentMapDigest)) {
+      reasons.push('Current action-map digest is invalid.');
+    } else if (
+      currentMapDigest
+      && actionMapDigestIsValid
+      && binding.actionMapDigest !== currentMapDigest
+    ) {
+      reasons.push('Action-map digest changed.');
+    }
+    if (currentListDigest && !DIGEST_PATTERN.test(currentListDigest)) {
+      reasons.push('Current action-list digest is invalid.');
+    } else if (
+      currentListDigest
+      && listDigestIsValid
+      && binding.listDigest !== currentListDigest
+    ) {
+      reasons.push('Action-list digest changed.');
+    }
+    return reasons;
   };
 
   const confirmationBinding = (confirmation = {}) => ({
@@ -324,7 +396,7 @@
             enabled: false,
             origin: OWNED_DEMO_ORIGIN,
             reasonCode: 'OWNED_DEMO_OVERRIDE_DISABLED',
-            requestedScope: context.requestedScope || 'learn',
+            requestedScope: context.requestedScope || AMBIENT_LEARN_SCOPE,
           }).then(refresh).catch(() => refresh());
         });
         section.append(disable);
@@ -347,11 +419,29 @@
             enabled: true,
             origin: OWNED_DEMO_ORIGIN,
             reasonCode: 'OWNED_DEMO_EXPLICIT_OVERRIDE',
-            requestedScope: context.requestedScope || 'learn',
+            requestedScope: context.requestedScope || AMBIENT_LEARN_SCOPE,
           }).then(refresh).catch(() => refresh());
         });
         section.append(acknowledgement, enable);
       }
+    }
+    if (
+      decision.state === 'allowed'
+      && decision.scopes.includes(AMBIENT_LEARN_SCOPE)
+      && coordinator?.submitPolicyDecision
+    ) {
+      const revoke = createElement('button', 'button button-stop trust-action', 'Revoke ambient learning');
+      revoke.type = 'button';
+      revoke.addEventListener('click', () => {
+        revoke.disabled = true;
+        void coordinator.submitPolicyDecision({
+          decision: 'revoked',
+          origin: decision.origin,
+          policyRevision: context.policyRevision || state.policy?.revision || null,
+          scope: AMBIENT_LEARN_SCOPE,
+        }).then(refresh).catch(() => refresh());
+      });
+      section.append(revoke);
     }
     return section;
   };
@@ -363,11 +453,101 @@
     || 'not_run'
   );
 
+  const provenanceCopy = Object.freeze({
+    inferred: 'Executable from page semantics; no causal action result observed yet.',
+    observed: 'A sanitized user action is causally linked to its resulting page state.',
+    verified: 'Deterministic replay or a ready-path run satisfied the exact action version.',
+  });
+
+  const compactEvidenceHandles = (action = {}) => asArray(action.evidenceHandles)
+    .filter((handle) => typeof handle === 'string')
+    .slice(0, 32);
+
+  const appendCompactEvidence = ({ container, action, actionMapDigest, registry }) => {
+    const evidence = createElement('div', 'evidence-links compact-evidence');
+    evidence.append(createElement('span', 'evidence-label', 'Evidence handles'));
+    compactEvidenceHandles(action).forEach((handle) => {
+      const link = createElement('button', 'evidence-link mono', handle);
+      link.type = 'button';
+      link.dataset.evidenceId = handle;
+      link.addEventListener('click', () => {
+        if (registry?.openEvidence) {
+          void registry.openEvidence({
+            actionMapDigest,
+            id: handle,
+            kind: 'compact_handle',
+            label: handle,
+          });
+        }
+      });
+      evidence.append(link);
+    });
+    if (evidence.childElementCount === 1) {
+      evidence.append(createElement('span', 'evidence-empty', 'No safe evidence handles'));
+    }
+    container.append(evidence);
+  };
+
+  const renderActionMap = ({ state, registry }) => {
+    if (!state.actionMap) return null;
+    const { actionMap } = state;
+    const revision = actionMap.revision ?? actionMap.head?.revision;
+    const digest = actionMap.digest || actionMap.head?.digest || null;
+    const actions = asArray(actionMap.actions || actionMap.context?.actions);
+    const section = createElement('section', 'trust-section action-map-review');
+    section.setAttribute('aria-label', 'Ambient action map revision');
+    section.append(sectionHeading(
+      'Ambient action map',
+      actionMap.title || actionMap.scopeId || 'Current site scope',
+      badge(`revision ${revision ?? 'unknown'}`, digest ? 'observed' : 'unknown'),
+    ));
+
+    const details = createElement('dl', 'trust-details');
+    appendDefinition(details, 'Scope', actionMap.scopeId || state.context?.siteScopeId);
+    appendDefinition(details, 'Revision', revision);
+    appendDefinition(details, 'Digest', digest, 'trust-detail-wide mono');
+    section.append(details);
+
+    const legend = createElement('div', 'provenance-legend');
+    Object.entries(provenanceCopy).forEach(([name, description]) => {
+      const item = createElement('div', 'provenance-definition');
+      item.append(badge(name, name), createElement('p', '', description));
+      legend.append(item);
+    });
+    section.append(legend);
+
+    const actionList = createElement('div', 'compact-actions');
+    actions.forEach((action) => {
+      const provenance = provenanceCopy[action.provenance] ? action.provenance : 'unknown';
+      const article = createElement('article', 'compact-action');
+      const heading = createElement('div', 'action-heading');
+      heading.append(
+        createElement('h3', '', action.title || action.actionId || 'Untitled action'),
+        badge(provenance, provenance),
+      );
+      article.append(heading);
+      const semantics = createElement('dl', 'compact-semantics');
+      appendDefinition(semantics, 'When', action.precondition || 'Not described');
+      appendDefinition(semantics, 'Effect', action.effect || 'Not described');
+      article.append(semantics);
+      appendCompactEvidence({ container: article, action, actionMapDigest: digest, registry });
+      actionList.append(article);
+    });
+    if (actions.length === 0) {
+      actionList.append(createElement('p', 'empty-state', 'No reviewed actions in this revision.'));
+    }
+    section.append(actionList);
+    return section;
+  };
+
   const renderCandidate = ({ state, registry, refresh, now }) => {
     if (!state.candidate) return null;
     const { candidate } = state;
     const decision = evaluatePolicy({ policy: state.policy, context: state.context, now: now() });
     const replay = replayState(candidate);
+    const bindingValue = reviewBinding(candidate);
+    const staleReasons = staleReviewReasons(candidate, state.context);
+    const reviewIsExact = staleReasons.length === 0;
     const section = createElement('section', 'trust-section candidate-review');
     section.setAttribute('aria-label', 'Candidate review');
     section.append(sectionHeading(
@@ -377,8 +557,10 @@
     ));
 
     const binding = createElement('dl', 'trust-details');
-    appendDefinition(binding, 'Revision', candidate.revision);
-    appendDefinition(binding, 'Digest', candidate.contentDigest, 'trust-detail-wide mono');
+    appendDefinition(binding, 'Map revision', bindingValue.actionMapRevision);
+    appendDefinition(binding, 'List revision', bindingValue.listRevision);
+    appendDefinition(binding, 'Map digest', bindingValue.actionMapDigest, 'trust-detail-wide mono');
+    appendDefinition(binding, 'List digest', bindingValue.listDigest, 'trust-detail-wide mono');
     appendDefinition(binding, 'Replay', replay);
     appendDefinition(binding, 'Report', candidate.replayReportId || candidate.replay?.reportId);
     section.append(binding);
@@ -424,20 +606,28 @@
     });
     section.append(actions);
 
+    if (!reviewIsExact) {
+      const warning = createElement('ul', 'stale-reasons');
+      staleReasons.forEach((reason) => warning.append(createElement('li', '', reason)));
+      section.append(warning);
+    }
+
     if (registry?.submitCandidateDecision) {
       const controls = createElement('div', 'decision-controls');
       const deny = createElement('button', 'button button-stop', 'Reject candidate');
       const approve = createElement('button', 'button button-verified', 'Approve candidate');
       deny.type = 'button';
       approve.type = 'button';
-      approve.disabled = !decision.eligible || replay !== 'passed' || !candidate.contentDigest;
+      deny.disabled = !reviewIsExact;
+      approve.disabled = !decision.eligible || replay !== 'passed' || !reviewIsExact;
       const submit = (approved, button) => {
         button.disabled = true;
         void registry.submitCandidateDecision({
           approved,
-          contentDigest: candidate.contentDigest || null,
+          binding: bindingValue,
+          contentDigest: bindingValue.listDigest,
           listId: candidate.listId,
-          revision: candidate.revision,
+          revision: bindingValue.listRevision,
         }).then(refresh).catch(() => refresh());
       };
       deny.addEventListener('click', () => submit(false, deny));
@@ -462,6 +652,46 @@
     });
     if (section.childElementCount === 0) {
       section.append(createElement('p', '', 'No arguments supplied.'));
+    }
+    return section;
+  };
+
+  const renderRetrySpool = ({ state, retrySpool, refresh, now }) => {
+    if (!state.retrySpool) return null;
+    const spool = state.retrySpool;
+    const count = Number.isInteger(spool.count) && spool.count >= 0 ? spool.count : null;
+    const section = createElement('section', 'trust-section retry-spool');
+    section.setAttribute('aria-label', 'Local retry spool');
+    section.append(sectionHeading(
+      'Local retry custody',
+      'Sanitized retry material',
+      badge(count === null ? 'unknown' : `${count} queued`, count > 0 ? 'unknown' : 'allowed'),
+    ));
+
+    const details = createElement('dl', 'trust-details');
+    appendDefinition(details, 'Queued', count);
+    appendDefinition(details, 'Oldest', timestamp(spool.oldestAt));
+    appendDefinition(details, 'Hard expiry', timestamp(spool.expiresAt));
+    appendDefinition(details, 'Location', 'This browser only');
+    section.append(details, createElement(
+      'p',
+      'spool-note',
+      'Deletion requests remove local retry source material, not accepted action-map revisions.',
+    ));
+
+    if (count > 0 && retrySpool?.requestDeletion) {
+      const remove = createElement('button', 'button button-stop trust-action', 'Delete local retry data');
+      remove.type = 'button';
+      remove.addEventListener('click', () => {
+        remove.disabled = true;
+        void retrySpool.requestDeletion({
+          count,
+          origin: normalizedOrigin(state.context?.origin),
+          requestedAt: now().toISOString(),
+          scopeId: spool.scopeId || state.actionMap?.scopeId || state.context?.siteScopeId || null,
+        }).then(refresh).catch(() => refresh());
+      });
+      section.append(remove);
     }
     return section;
   };
@@ -557,6 +787,7 @@
     rootElement,
     coordinator,
     registry,
+    retrySpool,
     now = () => new Date(),
   }) => {
     if (!rootElement) throw new Error('A policy review root element is required');
@@ -565,9 +796,13 @@
     const render = (nextState = currentState) => {
       currentState = nextState || {};
       const parts = [renderPolicy({ state: currentState, coordinator, refresh, now })];
+      const actionMap = renderActionMap({ state: currentState, registry });
       const candidate = renderCandidate({ state: currentState, registry, refresh, now });
+      const spool = renderRetrySpool({ state: currentState, retrySpool, refresh, now });
       const confirmation = renderConfirmation({ state: currentState, coordinator, refresh, now });
+      if (actionMap) parts.push(actionMap);
       if (candidate) parts.push(candidate);
+      if (spool) parts.push(spool);
       if (confirmation) parts.push(confirmation);
       rootElement.replaceChildren(...parts);
     };
@@ -590,7 +825,9 @@
   };
 
   return Object.freeze({
+    AMBIENT_LEARN_SCOPE,
     OWNED_DEMO_ORIGIN,
+    compactEvidenceHandles,
     confirmationBinding,
     createController,
     evaluatePolicy,
@@ -599,6 +836,8 @@
     maskArguments,
     observationEligibility,
     readableStep,
+    reviewBinding,
     staleConfirmationReasons,
+    staleReviewReasons,
   });
 }));
