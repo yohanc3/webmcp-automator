@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "action-map-revision/1",
+  "requestId": "parse_orders_002",
+  "patchId": "patch_orders_002",
+  "idempotencyKey": "sha256:ac6967e08a2c65a74951d5cd854227754c8b70d7cfd0cc7cf22b857921418d69",
+  "siteScopeId": "owned_account_orders",
+  "sourceLayerSequence": 2,
+  "application": {
+    "status": "applied",
+    "base": {
+      "revision": 1,
+      "digest": "sha256:20fd07cfcf35702ec55664cb488e5928e4684bbb959d52efeae495dd12117492"
+    },
+    "result": {
+      "revision": 2,
+      "digest": "sha256:56595101ceb38ae2ca89a1133a2e78f975ba19048beeee36a1bc2f6bd9cbdb42"
+    },
+    "current": {
+      "revision": 2,
+      "digest": "sha256:56595101ceb38ae2ca89a1133a2e78f975ba19048beeee36a1bc2f6bd9cbdb42"
+    },
+    "conflictCode": null
+  },
+  "parser": {
+    "parserId": "ambient_action_parser",
+    "parserVersion": "1.0.0",
+    "promptVersion": "ambient-v1"
+  },
+  "validation": {
+    "validatorVersion": "ambient-contract-validator/1",
+    "actionMapSchemaVersion": "action-map/1",
+    "actionListSchemaVersion": "action-list/1",
+    "checks": [
+      "request_binding",
+      "site_scope",
+      "layer_sequence",
+      "evidence_resolution",
+      "executable_actions",
+      "provenance",
+      "privacy",
+      "action_map_schema",
+      "canonical_digest"
+    ]
+  },
+  "storage": {
+    "actionMapRevisionStored": true,
+    "safeEvidenceMetadataCount": 8,
+    "semanticXmlStored": false,
+    "sanitizedObservationStored": false,
+    "rawObservationStored": false
+  },
+  "appliedAt": "2026-09-03T12:10:06Z"
+}

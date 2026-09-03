@@ -1,733 +1,423 @@
 # Parallel worktree execution plan
 
-This is the implementation sequence for turning the current partial demo into
-one end-to-end owned-site WebMCP system. It is designed for several developers
-or agents working simultaneously without sharing uncommitted files or silently
-changing each other's contracts.
+This plan assigns the fully automatic ambient-learning contract to independent
+owners without splitting a correctness invariant across branches.
 
-The branches below are proposed names. Creating, committing, merging, and
-pushing them is a separate execution step; this document does not claim those
-branches are already complete.
+## 1. Frozen base and branch rule
 
-## 1. The unit boundaries
-
-Some parts should be developed and tested together because separating them
-would put one correctness invariant across two owners. Other parts can safely
-run in parallel once the contract kernel is frozen.
-
-### Keep these together as one unit
-
-1. **Schemas + semantic validators + shared fixtures**
-
-   The JSON shape alone is not the contract. Cross-reference, safety, digest,
-   state, and evidence rules must evolve with the fixtures and JS/Go validators.
-   Splitting these produces two definitions of a valid action.
-
-2. **WebMCP registrar + source-page bridge + promise lifecycle**
-
-   Registration, invocation correlation, cancellation, and promise settlement
-   cross the page-world/isolated-world trust boundary. They need one owner and
-   one adversarial test suite.
-
-3. **Coordinator + persistent job state + execution-tab lifecycle**
-
-   Background processing is the run state machine. Tab creation, service-worker
-   recovery, sequence handling, dispatch, and cancellation cannot be separate
-   collections of callbacks. This is also where the efficient event channel is
-   made correct.
-
-4. **Locator engine + actor primitives + postconditions + extraction**
-
-   A click is not complete until the effect verifier says so, and extraction is
-   meaningful only under the same locator/cardinality rules. These form one
-   deterministic interpreter.
-
-5. **Registry API + storage + publication transaction**
-
-   Immutable revisions, digest checks, replay reports, and policy gates need one
-   transactional owner. An API that claims publication before storage enforces
-   it is unsafe.
-
-6. **Recorder + client-side privacy filter**
-
-   Sanitization must happen at capture time, before trace serialization. A
-   recorder that emits secrets for another module to remove later violates the
-   privacy boundary.
-
-7. **Trace validator + graph builder + observed-plan compiler**
-
-   These stages share evidence identity and chronology. The compiler may only
-   use facts preserved by the graph, so they should share fixtures and one
-   server-side owner. The optional AI semanticizer is an adapter inside this
-   unit, not the authority for graph truth.
-
-8. **Policy explanation + confirmation UI**
-
-   Both present why an action is allowed or paused and both must use the same
-   redaction and stale-decision rules. The coordinator owns enforcement; this
-   unit owns explanation and explicit input.
-
-### Safe to build in parallel after the seam pass
-
-- actor runtime;
-- source registrar/bridge;
-- run coordinator/background processing;
-- registry/publication backend;
-- learning capture/privacy;
-- learning compiler/semanticizer;
-- policy and confirmation UI.
-
-They communicate only through the frozen action-list, run-message, trace,
-action-map, and policy contracts.
-
-### Do not split these into separate branches tonight
-
-- one branch for “messaging” and another for “background processing”;
-- one branch for click/fill and another for locator/postcondition behavior;
-- one branch for database tables and another for publication endpoints;
-- one branch for recorder output and another for client redaction;
-- separate Amazon and Devpost work before the owned-demo runtime passes.
-
-Those splits create integration work larger than the original implementation.
-
-## 2. Branching rules
-
-1. Finish and validate the contract commit first.
-2. Finish a short behavior-preserving extension seam commit second.
-3. Record that seam commit SHA as `<parallel-base-sha>`.
-4. Create every Wave 1 worktree from that exact SHA.
-5. Each branch owns only the paths listed here. Shared bootstrap files are
-   edited once on an integration branch.
-6. A branch that needs a contract change stops and proposes a contract patch;
-   it does not add a private field or protocol variant.
-7. Every branch hands off a small commit series, tests run, failure cases, and
-   known limitations. Do not hand off a large unvalidated working tree.
-8. Integration happens into a dedicated integration branch. `main` receives
-   only the tested integrated slice.
-9. Do not merge feature branches into each other. Rebase/merge the shared base
-   or let the integration owner combine them.
-10. Keep Amazon and Devpost recordings, account data, and site-specific values
-    out of the shared fixtures and Git history.
-
-Suggested worktree parent:
+The verified pre-contract base is:
 
 ```text
-/Users/elijahkolawole/code/webmcp-worktrees/
+extension-seams
+055a97faeaae2c603c8609fb085ebbbb864b4975
 ```
 
-After the contract and seam commits exist, setup would look like:
+The contract slice is developed on the plain branch
+`ambient-learning-contracts`. Its resulting commit is referenced below as
+`<ambient-contract-sha>` because a commit cannot contain its own SHA.
 
-```bash
-mkdir -p /Users/elijahkolawole/code/webmcp-worktrees
-git rev-parse HEAD
-git worktree add -b actor-runtime /Users/elijahkolawole/code/webmcp-worktrees/actor-runtime <parallel-base-sha>
-git worktree add -b source-webmcp-bridge /Users/elijahkolawole/code/webmcp-worktrees/source-webmcp-bridge <parallel-base-sha>
-git worktree add -b run-coordinator /Users/elijahkolawole/code/webmcp-worktrees/run-coordinator <parallel-base-sha>
-git worktree add -b action-registry /Users/elijahkolawole/code/webmcp-worktrees/action-registry <parallel-base-sha>
-git worktree add -b learning-capture /Users/elijahkolawole/code/webmcp-worktrees/learning-capture <parallel-base-sha>
-git worktree add -b learning-compiler /Users/elijahkolawole/code/webmcp-worktrees/learning-compiler <parallel-base-sha>
-git worktree add -b policy-review /Users/elijahkolawole/code/webmcp-worktrees/policy-review <parallel-base-sha>
-```
+Every dependent owner must merge or rebase `<ambient-contract-sha>` before
+implementing the contract. Existing worktrees do not need to be recreated, but
+they must record both their original base and the contract commit in the
+handoff. No owner may copy a schema into its own branch or implement the old
+goal-led/manual-recording contract behind a compatibility name.
 
-Do not substitute the current `main` SHA for `<parallel-base-sha>`; the purpose
-is to give every branch the same frozen contracts and extracted seams.
+No branch is pushed by this plan. Push, integration, and deployment require
+separate explicit authorization.
 
-## 3. Dependency map
+## 2. Contract kernel
+
+All owners consume these exact versions:
+
+| Contract | Producer | Primary consumers |
+|---|---|---|
+| `semantic-ui/2` | ambient capture | parser/compiler |
+| `ambient-parse-request/1` | request assembler | parser/compiler |
+| `action-map-patch/1` | AI parser/compiler | deterministic validator, persistence |
+| `action-map-revision/1` | persistence/API | capture retry queue, parser, UI, integration |
+| `action-map/1` | patch materializer | context projector, action-list compiler, review UI |
+| `action-list/1` | action-list compiler/publication | ready-path registry and runtime |
+| `webmcp-run/1` | ready-path contexts | coordinator, actor, source bridge |
+
+`action-map/1` and `action-list/1` are unchanged. The patch envelope carries
+incremental provenance, evidence bindings, and composition lineage. Applying a
+patch must materialize a valid `action-map/1` document. Runtime consumes only a
+validated published `action-list/1` revision.
+
+The historical `learning-trace/3` path remains for replay and migration
+fixtures. It is not the ambient parser request and must not reintroduce a user
+goal or manual session gate.
+
+## 3. Dependency graph
 
 ```mermaid
 flowchart TD
-  G0[G0 Contract kernel] --> G1[G1 Behavior-preserving seams]
-  G1 --> A[G2 Actor runtime]
-  G1 --> B[G3 Source registrar + bridge]
-  G1 --> C[G4 Run coordinator]
-  G1 --> D[G5 Registry + publication]
-  G1 --> E[G6 Learning capture + privacy]
-  G1 --> F[G7 Learning compiler]
-  G1 --> P[G8 Policy + review UI]
-
-  A --> RI[G9 Ready-path integration]
-  B --> RI
-  C --> RI
-  D --> RI
-  P --> RI
-
-  E --> LI[G10 Learn-path integration]
-  F --> LI
-  D --> LI
-  P --> LI
-
-  RI --> M[G11 Owned-demo MVP hardening]
-  LI --> M
-  M --> AS[G12 Amazon search compatibility]
-  AS --> AO[G13 Amazon order confirmation boundary]
-  M --> DV[G14 Devpost filter compatibility]
+  C[ambient-learning-contracts\n<ambient-contract-sha>]
+  C --> A[learning-capture]
+  C --> P[learning-compiler]
+  C --> D[action-registry]
+  C --> U[policy-review]
+  A --> I[learn-integration]
+  P --> I
+  D --> I
+  U --> I
+  I --> M[mvp-integration]
+  D --> R[ready-integration]
+  U --> R
+  R --> M
 ```
 
-The long poles are G4 coordinator recovery and G9 integration. Give those to
-the strongest state-machine/debugging owner. G2 and G5 have the cleanest
-independent boundaries. G6 and G7 can start at the same time because they meet
-at `learning-trace/3` rather than shared code.
+Wave 1 begins after the contract commit and runs in parallel:
 
-## 4. File ownership matrix
+- ambient capture/privacy;
+- incremental AI parser/compiler;
+- action-map/list persistence/API;
+- policy and revision-review UI; and
+- ready-path owners whose interfaces are unchanged.
 
-The seam pass creates the new files named below. Until it lands, current
-`extension/content.js` and `extension/background.js` are conflict hotspots.
+Wave 2 is `learn-integration`. It begins as soon as the capture fixture, fake
+parser, and in-memory revision store are available; it does not wait for UI
+polish or a live provider.
+
+Wave 3 is `mvp-integration`, combining the accepted ambient revision path with
+the already independent ready path.
+
+## 4. Ownership matrix
 
 | Branch | Owns | Must not edit |
 |---|---|---|
-| `system-contracts` | `documentation/contracts/**`, contract docs | runtime behavior |
-| `extension-seams` | thin `content.js`, thin `background.js`, test/module bootstraps | protocol semantics |
-| `actor-runtime` | `extension/actor/**`, actor unit tests | `content.js`, `background.js`, `manifest.json`, popup, server |
-| `source-webmcp-bridge` | `extension/source/**`, source tests | actor, coordinator, `manifest.json` |
-| `run-coordinator` | `extension/coordinator/**`, coordinator tests | source, actor, popup, server, `manifest.json` |
-| `action-registry` | `server/internal/manifest/**`, `server/internal/store/**`, registry API handlers/tests/migrations | learning packages, extension |
-| `learning-capture` | `extension/learning/**`, recorder/privacy browser tests | ready runtime, server, `manifest.json` |
-| `learning-compiler` | `server/internal/trace/**`, `privacy/**`, `actionmap/**`, `learning/**`, compiler tests | registry store/API, extension |
-| `policy-review` | `extension/ui/**`, popup files, UI tests | coordinator enforcement, registry persistence |
-| integration branches | `extension/manifest.json`, root `Makefile`, test indexes, bootstraps, cross-module fixtures | schema changes without contract pass |
+| `ambient-learning-contracts` | `documentation/contracts/**`, `documentation/mvp-system-contract.md`, `documentation/parallel-worktrees.md`, contract fixtures/tests | runtime behavior |
+| `learning-capture` | `extension/learning/**`, capture/privacy tests, local retry spool adapter | server persistence, model client, action schemas, user-facing record controls |
+| `learning-compiler` | parser request assembly, compact context adapter, model adapter, patch validation/materialization tests, action-list compiler | capture lifecycle, registry transactions, schemas |
+| `action-registry` | action-map/list revision tables, compare-and-append API, digests, safe evidence metadata, context projection reads | capture code, model prompts, raw/sanitized observation storage |
+| `policy-review` | ambient eligibility/revoke UI, revision/provenance review, local-spool deletion UI, confirmation UI | enforcement, persistence internals, goal/record/start/stop controls |
+| `learn-integration` | queue/API wiring, shared bootstraps, test indexes, cross-owner fixtures | redefining contracts or absorbing owner internals |
+| `ready-integration` | ready-path composition and shared runtime wiring | ambient source capture/parser semantics |
+| `mvp-integration` | final end-to-end wiring, clean-reset test, demo documentation | silent schema or privacy-boundary changes |
 
-Special collision rules:
+Shared hotspots are integration-owned:
 
-- `extension/manifest.json` is integration-owned because almost every extension
-  branch may need a new script. Feature branches document the desired order in
-  their handoff and do not edit it.
-- `extension/tests/index.html` is integration-owned. Feature branches add
-  independent test files; integration adds them to the browser test loader.
-- `server/internal/api/server.go` is owned by the registry branch for Wave 1.
-  The learning compiler exposes package functions and fixtures, not new routes.
-- `server/go.mod`, root `Makefile`, and shared READMEs change only during
-  integration unless a new dependency is absolutely required.
+- `extension/background.js`, `extension/content.js`, and
+  `extension/manifest.json`;
+- extension test index/bootstrap registration;
+- `server/internal/api/server.go` routing composition;
+- root `Makefile`; and
+- cross-module fixture indexes.
 
-## 5. Goal series
+Feature owners add modules and focused tests. Integration owners make the thin
+shared-file edits after consuming the feature commits.
 
-### G0 — Freeze the contract kernel
+## 5. Owner contracts
 
-Branch: `system-contracts`.
-
-Objective: make every parallel owner implement the same action and message
-semantics.
-
-Deliverables:
-
-- strict Draft 2020-12 action-list schema;
-- strict run-message schema;
-- valid owned-storefront list and lifecycle examples;
-- semantic-rule checklist;
-- full component contract and this worktree plan;
-- JS and Go validation implementation plan with positive/negative fixture list.
-
-Validation:
-
-```bash
-python3 -m json.tool documentation/contracts/action-list.schema.json
-python3 -m json.tool documentation/contracts/run-message.schema.json
-make test-documentation
-git diff --check
-```
-
-Done when:
-
-- both schemas pass their meta-schema;
-- the owned-storefront action list validates;
-- every example run message validates, including its external step reference;
-- action IDs, state IDs, confirmation, safety, provenance, and digest semantics
-  have one written meaning;
-- all branch owners accept the frozen base.
-
-Estimated focused time: 45–75 minutes.
-
-### G1 — Extract extension seams without changing behavior
-
-Branch: `extension-seams`, based on G0.
-
-Objective: turn the two monolithic shared files into thin composition roots so
-parallel branches add modules instead of editing the same files.
-
-Deliverables:
-
-```text
-extension/content.js                 thin context bootstrap only
-extension/background.js              thin service-worker bootstrap only
-extension/shared/protocol.js          constants and envelope helpers
-extension/shared/errors.js            public error helpers
-extension/source/bootstrap.js         existing source behavior adapter
-extension/coordinator/bootstrap.js    existing background behavior adapter
-extension/learning/bootstrap.js       existing recorder behavior adapter
-extension/tests/test-harness.js        reusable assertions/fixtures
-```
-
-Rules:
-
-- move existing code mechanically; do not enable WebMCP registration;
-- do not replace polling yet;
-- keep current message names through compatibility wrappers;
-- capture before/after browser tests to prove no behavior change;
-- integration files become intentionally thin and remain integration-owned.
-
-Done when existing extension tests and owned-demo behavior pass unchanged and
-the Wave 1 modules can be added without editing `content.js` or `background.js`.
-
-Estimated focused time: 30–60 minutes. This is serial and should stay small.
-
-### G2 — Deterministic actor runtime
-
-Branch/worktree: `actor-runtime` / `actor-runtime`.
-
-Objective: implement the complete version-1 action interpreter independent of
-WebMCP, background tabs, and server availability.
+### A. `learning-capture` — ambient capture and privacy
 
 Inputs:
 
-- one `action-list/1` action;
-- one `step.command`;
-- typed arguments;
-- current document and abort signal.
+- current normalized origin/route;
+- a current `ambient_learn` policy decision;
+- top-level document lifecycle;
+- user-generated events and resulting semantic updates/navigation.
 
-Outputs: `step.completed` or `step.failed` payloads.
+Output:
 
-Tasks:
+```text
+CompletedLayer {
+  siteScope,
+  layer,
+  observation | null,
+  policy,
+  privacy
+}
+```
 
-1. Extract/adapt current runner behavior into `extension/actor/`.
-2. Implement ordered role/name, label, test-id/stable-attribute, and CSS
-   fallback strategies supported by the schema.
-3. Enforce zero/one/many cardinality, visible, enabled, and item scoping.
-4. Implement `fill`, `click`, `press`, `wait`, and `extract` exactly as the
-   schema defines.
-5. Implement conditions for URL, element, collection, state, target value, DOM
-   change, and DOM stability.
-6. Resolve argument placeholders without string interpolation or `eval`.
-7. Enforce step/action timeout and abort.
-8. Produce bounded before/after effects and public error codes.
+Required behavior:
 
-Tests:
+1. Attach only after policy allows capture.
+2. Treat `start`/`stop` as internal document/policy lifecycle primitives.
+3. Expose no learning goal and no user-operated record control.
+4. Build the semantic allowlist projection without serializing raw DOM/history.
+5. Complete the initial page and every user-effect/navigation layer.
+6. Enqueue every completed meaningful layer; do not score novelty or wait for
+   multiple events.
+7. Preserve causal order and include exactly one leading observation after the
+   initial layer.
+8. Mark and exclude deterministic actor events/background tabs.
+9. Keep raw material in memory only; enforce the 30-second incomplete-layer
+   limit and 24-hour sanitized local-spool hard TTL.
+10. Delete delivered source material after `applied`, `duplicate`, or
+    `no_change`; retain on conflict only long enough for a reparse.
 
-- one positive and at least one negative case per primitive and condition;
-- ambiguous target never picks first;
-- collection fields remain scoped to each product card;
-- a click without a passing effect fails;
-- SPA mutation and full navigation are distinguished;
-- abort during wait prevents later steps;
-- no network/LLM calls.
+Contract tests:
 
-Done when the owned-storefront action runs against an in-page fixture through a
-direct actor API and returns structured products.
+- initial layer with `observation: null`;
+- equal XML digest after two distinct observations creates two requests;
+- click + SPA update and click + navigation preserve causal order;
+- policy revocation disconnects capture and blocks queued transfer;
+- seeded secrets never enter serialized layer/observation data;
+- synthetic events are ignored; and
+- no goal/record/start/stop UI message exists.
 
-Estimated focused time: 2–3 hours. Can start immediately after G1.
+Handoff to parser/integration: a deterministic fake `CompletedLayer` stream
+matching the X and Orders fixtures.
 
-### G3 — WebMCP registrar and source bridge
+### B. `learning-compiler` — incremental parser and compiler
 
-Branch/worktree: `source-webmcp-bridge` / `source-webmcp-bridge`.
+Inputs:
 
-Objective: register published actions as WebMCP tools and turn each invocation
-into one correlated event-driven extension request.
+- `CompletedLayer`;
+- exact action-map head revision/digest;
+- compact context read for that revision; and
+- parser/provider configuration.
 
-Tasks:
+Outputs:
 
-1. Verify whether `document.modelContext` registration is discoverable from an
-   isolated content script in the target Chrome build.
-2. If not, create the smallest main-world registrar shim; keep plans and
-   privileged APIs in the isolated world.
-3. Project public `tool` metadata only.
-4. Validate arguments before sending `run.request`.
-5. Open one named runtime port and implement acknowledgment, reconnect, and
-   idempotent resend for unacknowledged messages.
-6. Correlate concurrent requests and settle each promise once.
-7. Forward cancellation through `run.cancel`.
-8. Unregister or refresh tools when URL, policy, or list digest changes.
+- `ambient-parse-request/1`;
+- validated `action-map-patch/1` or typed rejection;
+- action-list candidate from an exact accepted map revision.
 
-Tests:
+Required behavior:
 
-- duplicate initialization registers once;
-- two concurrent requests get the correct result;
-- forged `window.postMessage` payload cannot choose a plan or result;
-- invalid arguments never reach the worker;
-- cancellation and navigation reject the right promise;
-- port reconnect does not duplicate a run.
+1. Invoke one parse for every completed layer.
+2. Send current semantic XML, causal observation when present, and compact
+   context only.
+3. Never add a goal or expand every prior action's steps/locators into context.
+4. Require every AI action to have at least one step, empty missing evidence,
+   and `resolvable`/`observed` status.
+5. Require semantic node/evidence bindings for clicks and extraction fields.
+6. Allow page XML alone to infer executable actions.
+7. Use observations to upgrade provenance, connect states, and flatten
+   composite paths.
+8. Return explicit `no_change` with citations when a parsed layer adds no
+   semantics; do not create a fake upsert or skip the parse.
+9. Preserve full executable steps and target binding tokens on the action-map
+   entry and revision sidecar.
+10. Reject invented evidence, unsupported primitives, unsafe effects, private
+   literals, and invalid materialized `action-map/1` results.
+11. On base conflict, re-read compact context and reparse the same source layer
+    with a new request/key linked by `retryOf`.
+12. Provide a deterministic fake parser; CI must not require provider/network.
 
-Done when a fake coordinator can receive an owned-demo tool call and return a
-typed result through the real WebMCP registration promise.
+Contract tests:
 
-Estimated focused time: 2–3 hours. Can start immediately after G1.
+- X page yields `Open Posts` and `Get recent posts` without an observation;
+- Account page yields inferred `Open orders`;
+- Orders result layer upgrades `Open orders`, yields page-local `Get recent
+  orders`, and composes higher-level `Get recent orders`;
+- missing step, unbound click, unbound output, invented evidence, prompt
+  injection, private literal, stale verification, and malformed JSON fail; and
+- compact context contains semantics/evidence handles but no steps/locators.
 
-### G4 — Durable run coordinator and background processing
+Handoff to persistence/integration: fake parser outputs matching the contract
+fixtures plus field-addressed rejection fixtures.
 
-Branch/worktree: `run-coordinator` / `run-coordinator`.
+### C. `action-registry` — persistence and API
 
-Objective: replace polling with an event-driven, persisted run state machine
-that safely operates a separate execution tab.
+Inputs:
 
-Tasks:
+- bound `action-map-patch/1` and source request identity;
+- `action-list/1` candidate/publication transactions; and
+- privacy-safe verification/run metadata.
 
-1. Implement the persisted run record and legal-transition reducer.
-2. Accept validated source ports and bind requests to sender tab/document.
-3. Resolve an exact action digest through an injected registry interface.
-4. Recheck policy before opening a tab.
-5. Create/reuse an inactive site tab and track tab/document navigation.
-6. Dispatch one step at a time and persist before dispatch.
-7. Handle `page.ready`, step completion/failure, confirmation, cancellation,
-   timeout, tab closure, source closure, and service-worker restart.
-8. Cache command/event digests for idempotent duplicate handling.
-9. Send one terminal result/error and create a redacted run observation.
-10. Retain the old polling API only behind a temporary compatibility adapter;
-    the WebMCP path must not poll.
+Outputs:
 
-Tests use fake tabs/storage/ports and suspend the coordinator after every state.
-The highest-value test is: click dispatch persisted -> worker disappears -> page
-navigates -> new document announces ready -> run resumes at next step without
-clicking again.
+- `action-map-revision/1` receipts;
+- exact map head/revision reads;
+- compact context projections;
+- existing action-list discovery/publication reads.
 
-Done when an in-memory/fake-browser scenario completes and all recovery paths
-terminate exactly once.
+Required behavior:
 
-Estimated focused time: 3–4 hours. Start first and assign the strongest owner.
+1. Compare base revision and digest transactionally.
+2. Apply canonical state/action ordering to an in-memory copy.
+3. Validate evidence bindings, provenance, executable actions, privacy, and the
+   full materialized `action-map/1`.
+4. Append an immutable canonical revision and digest atomically.
+5. Return the original receipt for an exact idempotent duplicate.
+6. Reject key reuse with changed input and conflict on stale base; never use
+   last-write-wins.
+7. Project compact context without steps, locators, XML, or observations.
+8. Store only map/list revisions and safe evidence metadata in Universal DB.
+9. Reject schema columns/payload fields for semantic XML, raw or sanitized
+   observations, prompt bodies, typed values, or browsing history.
 
-### G5 — Action-list registry and publication backend
+Minimum API:
 
-Branch/worktree: `action-registry` / `action-registry`.
+```text
+GET  /v1/action-maps/{scopeId}/head
+GET  /v1/action-maps/{scopeId}/context?revision=<n>
+POST /v1/action-maps/{scopeId}/patches
+GET  /v1/action-maps/{scopeId}/revisions/{revision}
+```
 
-Objective: store and serve immutable, validated action-list revisions with a
-real publication gate.
+Contract tests:
 
-Tasks:
+- append revision 1 and 2 from the Orders fixtures;
+- exact duplicate returns the first receipt and count remains unchanged;
+- two concurrent patches on one base produce one apply and one conflict;
+- stale revision/digest, stale layer, and reused key fail;
+- context contains no step/locator/XML/observation fields; and
+- Universal DB writes pass a strict storage-field allowlist.
 
-1. Add canonical action-list validation on ingestion and retrieval.
-2. Migrate/replace paused `learned-adapter/1` storage as an action-list
-   projection without creating a second source of truth.
-3. Add immutable list/revision/publication/policy/replay-report tables.
-4. Implement origin/route-filtered discovery and exact revision lookup.
-5. Implement compare-and-publish with digest, policy, replay, and review checks.
-6. Return ETag/digest and support conditional reads for efficient discovery.
-7. Accept privacy-safe terminal observations.
-8. Keep current `/api/*` callers working through explicit migration adapters
-   until G9 removes them from the runtime path.
+Handoff to parser/UI/integration: in-memory and database-backed implementations
+of the four endpoints with the fixture receipts.
 
-Tests:
+### D. `policy-review` — eligibility and revision UI
 
-- append-only revisions and deterministic canonical digest;
-- exact-origin and route matching;
-- candidate is never returned to ready runtime;
-- stale expected digest cannot publish;
-- failed replay or blocked policy cannot publish;
-- concurrent publish attempts have one winner;
-- no arbitrary JS field can pass schema validation.
+Inputs:
 
-Done when the owned-storefront sample can be inserted, reviewed, published, and
-retrieved by exact digest through the target API.
+- normalized site scope and policy source;
+- action-map head/revision/context;
+- replay/review state; and
+- local retry-spool counts/deletion action.
 
-Estimated focused time: 2–3 hours. Can start immediately after G1.
+Outputs:
 
-### G6 — Learning capture and client privacy
+- allow/block/revoke decisions for `ambient_learn`;
+- review/publication decisions for exact digests; and
+- local-spool delete requests.
 
-Branch/worktree: `learning-capture` / `learning-capture`.
+Required behavior:
 
-Objective: turn a real owned-demo user demonstration into a deterministic,
-sanitized `learning-trace/3` without contaminating the ready runtime.
+1. Show allowed, blocked, expired, and revoked site scope clearly.
+2. Do not expose a user goal, learning start/stop, or recording button.
+3. Explain inferred/observed/verified provenance and evidence handles without
+   exposing private event history.
+4. Bind review decisions to exact action-map/list digests.
+5. Keep consequential ready-path confirmation separate from ambient capture.
+6. Never enforce policy or write publication rows directly; call authoritative
+   coordinator/registry interfaces.
 
-Tasks:
+Contract tests: allow/block/revoke, stale decision, exact digest review, no
+recording controls, masked sensitive data, and local-spool deletion.
 
-1. Move current recorder/semantic extraction into the learning module boundary.
-2. Add explicit start/stop session state and clear recording indicator.
-3. Preserve `page -> action -> update -> page` ordering across SPA and full
-   navigation.
-4. Apply allowlist-based semantic capture and client-side redaction before
-   serialization.
-5. Replace input values with typed argument tokens while keeping originals only
-   in ephemeral local memory where necessary.
-6. Mark synthetic actor events so replay is not learned as a user demo.
-7. Add a downloadable/local debug trace with redaction ledger summaries, never
-   secret values.
+### E. `learn-integration` — ambient composition
 
-Tests seed unique secrets into visible text, form values, attributes, query
-parameters, and mutations, then assert those tokens are absent from every
-serialized frame.
-
-Done when one manual storefront search creates a valid sanitized trace matching
-the server fixture chronology.
-
-Estimated focused time: 2–3 hours. Can start immediately after G1.
-
-### G7 — Learning graph, semanticizer, and plan compiler
-
-Branch/worktree: `learning-compiler` / `learning-compiler`.
-
-Objective: deterministically convert accepted evidence into a candidate action
-list, with AI limited to evidence-backed semantic proposals.
-
-Tasks:
-
-1. Tighten trace chronology and server-side privacy validation.
-2. Preserve deterministic graph construction as the first stage.
-3. Define the minimized semanticizer input and strict structured output.
-4. Require every AI-proposed state/action/argument/locator to cite evidence.
-5. Reject invented transitions, unsupported operations, and reconstructed
-   sensitive values.
-6. Compile the action map into `action-list/1` with conservative safety class,
-   explicit conditions, and output projection.
-7. Return field-addressed diagnostics suitable for the review UI.
-8. Provide a deterministic fake semanticizer so CI has no network dependency.
-
-Tests:
-
-- current storefront trace compiles to the shared sample semantics;
-- shuffled frames fail;
-- prompt injection in page text remains inert evidence;
-- invented evidence IDs fail;
-- an unobserved purchase/submit step cannot be created;
-- unsupported locator or missing postcondition fails;
-- fake and real semanticizers pass through the same validator.
-
-Done when the owned demo trace produces a schema-valid candidate action list
-whose every consequential field can be traced to evidence.
-
-Estimated focused time: 2–3 hours. Can start immediately after G1.
-
-### G8 — Policy, terms, confirmation, and review UI
-
-Branch/worktree: `policy-review` / `policy-review`.
-
-Objective: make site eligibility and consequential effects explicit to the
-user, with deny-by-default behavior.
-
-Tasks:
-
-1. Display origin policy state, source, scope, checked/expiry time, and reason.
-2. Allow an explicit local override for the owned demo only; keep it auditable.
-3. Show candidate readable steps, evidence links, safety class, and replay
-   status before publication.
-4. Implement exact run/step confirmation with sensitive argument masking.
-5. Detect stale confirmation when digest, step, origin, or document changes.
-6. Provide clear blocked/unknown/expired states and no hidden auto-approval.
-
-Important boundary: this branch does not enforce policy and does not publish by
-writing directly to storage. It calls coordinator/registry interfaces; those
-components remain authoritative.
-
-Done when an owned-demo candidate can be reviewed and a consequential test
-action can be approved or denied through mocked contracts.
-
-Estimated focused time: 1.5–2.5 hours. Can start immediately after G1.
-
-### G9 — Ready-path integration
-
-Branch: `ready-integration`, based on `<parallel-base-sha>`.
-
-Dependencies: G2, G3, G4, G5, and the confirmation slice of G8.
-
-Objective: complete one real WebMCP invocation through registration, source
-bridge, coordinator, execution tab, actor, result, and promise settlement.
+Dependencies: A, B, C, and the eligibility/revision slice of D.
 
 Integration order:
 
-1. actor runtime;
-2. registry/publication;
-3. coordinator;
-4. source registrar/bridge;
-5. policy/confirmation UI;
-6. integration-owned manifest/bootstrap/test wiring.
+1. policy-before-attach adapter;
+2. capture `CompletedLayer` queue;
+3. head/context request assembly;
+4. deterministic fake parser, then configured live parser behind the same
+   interface;
+5. compare-and-append revision API;
+6. provenance/revision UI; and
+7. action-list compile/replay/review/publication.
 
-Resolve contracts, not implementations: if two branches disagree, preserve the
-frozen schema/state-machine meaning and adapt at the composition boundary.
+The integration owner must preserve exact contracts at each adapter. If an
+owner disagrees with a schema, work stops for a focused contract patch; the
+integration branch does not translate two incompatible meanings silently.
 
-Required tests:
+Required end-to-end tests:
 
-- owned search happy path through actual extension contexts;
-- structured product result;
-- no polling on result path;
-- missing/ambiguous target failures;
-- navigation and worker restart;
-- cancellation;
-- blocked policy;
-- confirmation approve/deny;
-- every source promise settles once.
+- initial account page automatically yields revision 1 with `Open orders`;
+- clicking Orders yields revision 2 with observed linkage, page-local
+  extraction, and flattened `Get recent orders` composition;
+- exact retry is idempotent;
+- injected concurrent update returns a conflict and successful reparse;
+- private canaries are absent from parser logs and Universal DB;
+- deleting source spool material does not delete accepted revisions; and
+- no user goal or recording lifecycle is involved.
 
-Done when the owned site can be driven from an actual WebMCP-aware client and
-the event ledger visibly explains every transition.
+## 6. Ready-path relationship
 
-Estimated focused integration time: 2–3 hours after dependencies produce their
-first compatible commits. Start integrating early; do not wait for polish.
+The ready-path worktrees remain independently owned:
 
-### G10 — Learn-path integration
+- `actor-runtime` interprets `action-list/1` primitives;
+- `source-webmcp-bridge` registers/invokes tools;
+- `run-coordinator` persists run state and drives an execution tab;
+- `action-registry` publishes and serves exact action-list revisions;
+- `policy-review` supplies confirmation/review UI; and
+- `ready-integration` composes them.
 
-Branch: `learn-integration`, based on `<parallel-base-sha>`.
+Ambient learning changes only how candidate action-map revisions are created.
+It does not add an LLM to execution and does not allow unreviewed action maps to
+reach the ready runtime.
 
-Dependencies: G5, G6, G7, and the review slice of G8.
+## 7. Worktree commands and update rule
 
-Objective: demonstrate manual action -> trace -> live graph -> candidate ->
-validation/replay -> publication.
+For a new worktree after the contract commit:
 
-Tasks:
+```bash
+git worktree add -b <branch> <absolute-worktree-path> <ambient-contract-sha>
+```
 
-1. wire explicit learning session controls;
-2. send only sanitized accepted trace to server;
-3. stream deterministic graph events to a simple visualization;
-4. compile candidate and show readable action steps/evidence;
-5. replay against the owned demo through the same actor semantics;
-6. approve and publish the immutable revision;
-7. verify registry discovery returns it to the ready path.
+For an existing feature worktree that already contains work based on
+`055a97f`, inspect its state first, then merge or rebase the contract commit by
+an explicit owner-approved workflow. Never force-reset it to the contract SHA.
 
-Done when deleting the pre-seeded candidate and demonstrating Search recreates
-a publishable action list that G9 can register without hand editing.
+Before editing, every owner records:
 
-Estimated focused integration time: 2–3 hours.
+```text
+Repository: /Users/elijahkolawole/code/webmcp-automator
+Original base: 055a97faeaae2c603c8609fb085ebbbb864b4975
+Contract commit: <ambient-contract-sha>
+Branch: <owned branch>
+Starting state: <clean or exact existing changes>
+Owned paths: <from matrix>
+Contracts implemented: <versions>
+```
 
-### G11 — Owned-demo MVP hardening
+Contract changes after Wave 1 starts require a focused commit that updates:
 
-Branch: `mvp-integration`.
+1. the relevant schema;
+2. positive and negative fixtures;
+3. deterministic contract tests;
+4. compatibility notes for `action-map/1` and `action-list/1`; and
+5. every active owner handoff.
 
-Dependencies: G9 and G10.
+## 8. Handoff contract
 
-Objective: produce the morning demo and a clean integration candidate for
-`main`.
-
-Test script:
-
-1. start server and owned storefront from a clean database;
-2. load unpacked extension;
-3. learn storefront Search from one manual demonstration;
-4. display live trace/graph events;
-5. validate, replay, review, and publish;
-6. refresh source page and observe WebMCP tool registration;
-7. invoke Search with a different query;
-8. show background tab execution and event map;
-9. return structured results;
-10. intentionally break a locator and show typed failure/quarantine;
-11. seed privacy canaries and prove they are absent from outbound artifacts.
-
-Hardening tasks:
-
-- run all extension, Go, documentation, and smoke tests;
-- exercise one worker restart and one cancellation live;
-- remove debug logs that reveal arguments/results;
-- document exact setup/reset/demo commands;
-- preserve a pre-published fixture as demo fallback without claiming it was
-  learned live;
-- capture known limitations honestly.
-
-Done when the script passes twice consecutively from a clean reset and every
-team member can explain the event and data flow.
-
-Estimated focused time: 1.5–2.5 hours.
-
-### G12 — Amazon search compatibility
-
-Branch: `amazon-search`, after G11.
-
-Objective: test whether the generic contracts are sufficient for a read-only
-search action without adding site-specific code to the actor.
-
-Allowed changes: a site-specific action-list candidate, new generic locator or
-condition only after contract review, and privacy-safe test observations.
-
-Success: search query returns bounded `{title, price, url, imageUrl?}` items.
-
-Stop conditions: policy blocks injection; CAPTCHA/anti-bot challenge; account
-or sensitive data would be captured; success requires arbitrary JS or a hidden
-API. Record the incompatibility rather than bypassing it.
-
-### G13 — Amazon order confirmation boundary
-
-Branch: `amazon-order-confirmation`, after G12.
-
-Objective: prove safe orchestration up to an explicit final-order confirmation,
-not autonomously place a real order during development.
-
-Required action decomposition:
-
-- search/select: read;
-- add to cart: external write, conditional idempotency;
-- checkout navigation: external write workflow;
-- place order: unsafe, `before_step`/`always` confirmation.
-
-Success for the demo is reaching the exact review boundary with a redacted
-summary and refusing to click Place order without a fresh explicit decision.
-Use a test/sandbox account and non-purchase fixture if available.
-
-### G14 — Devpost filter compatibility
-
-Branch: `devpost-filter-search`, after G11 and in parallel with G12.
-
-Objective: find hackathons under specific filters using generic select/check/
-click/wait/extract semantics.
-
-First determine whether the page needs `select`, `check`, or `uncheck`. If so,
-add those operations through a contract update with actor tests; do not encode
-Devpost-only DOM logic in the coordinator.
-
-Success: typed filter arguments produce bounded structured hackathon items with
-name, URL, dates, location/online status, and relevant tags where present.
-
-## 6. Twelve-hour scheduling recommendation
-
-This is an aggressive but coherent schedule. The critical promise should be the
-owned-demo learn + ready vertical slice; Amazon/Devpost are compatibility goals,
-not reasons to destabilize it.
-
-| Elapsed | Contract/seams | Runtime lane | Backend lane | Learning lane | Product lane |
-|---|---|---|---|---|---|
-| 0:00–1:15 | G0 | review contracts | review contracts | review contracts | review policy contract |
-| 1:15–2:00 | G1 | help seam tests | prepare registry fixtures | prepare trace fixtures | prepare UI mocks |
-| 2:00–5:00 | available for schema arbitration | G2 + G3 + G4 in three worktrees | G5 | G6 + G7 in two worktrees | G8 |
-| 4:00–7:00 | contract support | begin G9 with first compatible commits | support G9 | begin G10 | support confirmations/review |
-| 7:00–9:00 | freeze contracts | finish G9 | finish publication path | finish G10 | finish event/review view |
-| 9:00–11:00 | — | G11 recovery/failure tests | clean-reset test | privacy-canary test | demo rehearsal |
-| 11:00–12:00 | — | fix only demo blockers | fix only demo blockers | fix only demo blockers | two clean rehearsals |
-
-If there are fewer people/agents, prioritize in this order:
-
-1. G0 and G1;
-2. G2 + G4 as one runtime owner, G3 as a second owner, G5 as a third;
-3. G9 ready-path integration;
-4. G6 + G7 as one learning owner and G10;
-5. minimal G8 for policy/confirmation;
-6. G11 hardening;
-7. G12/G14 only after the owned demo is repeatable.
-
-## 7. Handoff contract for every branch
-
-Every feature branch handoff must include:
+Every branch handoff must include:
 
 ```text
 Branch:
-Base SHA:
+Original base SHA:
+Ambient contract SHA:
 Head SHA:
-Contract versions implemented:
+Contracts implemented:
 Files owned/changed:
 Public interfaces added:
+Retention/storage behavior:
 Tests run and exact results:
-Positive fixture demonstrated:
-Negative/failure cases demonstrated:
+Positive fixtures demonstrated:
+Negative/conflict cases demonstrated:
 Known limitations:
 Integration wiring requested:
-Schema change requested: none | link/commit
+Schema change requested: none | commit
 ```
 
-The integration owner rejects a handoff if:
+The integration owner rejects a handoff if it:
 
-- it changes an unowned hotspot;
-- it duplicates a schema or protocol constant;
-- it has no failure-path tests;
-- it reports click completion without postcondition evidence;
-- it logs sensitive values;
-- it depends on an uncommitted change in another worktree;
-- it cannot state its exact base and contract version.
+- omits `<ambient-contract-sha>` or implements an older contract;
+- adds goal/session/record controls to ambient learning;
+- suppresses a completed layer by novelty/confidence/evidence count;
+- emits an action with zero steps or unresolved evidence;
+- cannot map click/extraction targets to semantic evidence IDs;
+- persists XML, observations, prompt bodies, or browsing history in Universal
+  DB;
+- relies on uncommitted files from another worktree;
+- edits an unowned hotspot; or
+- lacks retry, duplicate, conflict, and privacy tests.
 
-## 8. Definition of morning success
+## 9. Integrated success
 
-Morning success is not “several branches contain promising code.” It is one
-tested chain:
+The learning chain is complete when this passes twice from a clean local state:
 
 ```text
-manual owned-demo action
- -> redacted deterministic trace
- -> visible evidence graph
- -> validated candidate action list
- -> replay + review + publication
- -> WebMCP tool registration
- -> event-driven background execution
- -> deterministic actor steps in inactive tab
- -> verified structured result
+eligible page load
+ -> automatic privacy-sanitized semantic layer
+ -> one no-goal parse request
+ -> executable page-inferred action-map patch
+ -> immutable revision receipt
+ -> observed event + resulting semantic layer
+ -> provenance/path/composition patch
+ -> idempotent next revision
+ -> action-list compile + replay + review + publication
+ -> ready-path WebMCP registration and deterministic execution
 ```
 
-The repository should also contain the isolated unit branches and handoffs so
-work can continue, but the demonstration runs from one integration branch and
-one documented clean-reset procedure.
+The demonstration must also show that the local source spool is deleted after
+receipt, accepted revisions remain, and Universal DB contains safe evidence
+metadata rather than browsing history.
