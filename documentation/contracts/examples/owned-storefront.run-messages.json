@@ -1,0 +1,188 @@
+[
+  {
+    "protocol": "webmcp-run/1",
+    "type": "run.request",
+    "requestId": "req_search_1",
+    "runId": null,
+    "sequence": 1,
+    "sentAt": "2026-09-03T00:01:00Z",
+    "sender": {
+      "context": "source_content",
+      "tabId": 10,
+      "documentId": "source_document_1"
+    },
+    "payload": {
+      "listId": "owned_storefront",
+      "actionId": "search_products",
+      "actionVersion": 1,
+      "sourceUrl": "http://127.0.0.1:4317/demo/",
+      "arguments": {
+        "query": "headphones"
+      }
+    }
+  },
+  {
+    "protocol": "webmcp-run/1",
+    "type": "run.accepted",
+    "requestId": "req_search_1",
+    "runId": "run_search_1",
+    "sequence": 2,
+    "sentAt": "2026-09-03T00:01:00.050Z",
+    "sender": {
+      "context": "service_worker",
+      "tabId": null,
+      "documentId": null
+    },
+    "payload": {
+      "planDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "executionTabId": 11
+    }
+  },
+  {
+    "protocol": "webmcp-run/1",
+    "type": "page.ready",
+    "requestId": "req_search_1",
+    "runId": "run_search_1",
+    "sequence": 3,
+    "sentAt": "2026-09-03T00:01:00.500Z",
+    "sender": {
+      "context": "execution_content",
+      "tabId": 11,
+      "documentId": "execution_document_1"
+    },
+    "payload": {
+      "url": "http://127.0.0.1:4317/demo/",
+      "title": "Instrument Supply",
+      "stateId": "catalog",
+      "navigationSequence": 0
+    }
+  },
+  {
+    "protocol": "webmcp-run/1",
+    "type": "step.command",
+    "requestId": "req_search_1",
+    "runId": "run_search_1",
+    "sequence": 4,
+    "sentAt": "2026-09-03T00:01:00.550Z",
+    "sender": {
+      "context": "service_worker",
+      "tabId": null,
+      "documentId": null
+    },
+    "payload": {
+      "commandId": "command_fill_query",
+      "stepIndex": 0,
+      "step": {
+        "id": "fill_query",
+        "op": "fill",
+        "target": {
+          "cardinality": "one",
+          "visible": true,
+          "enabled": true,
+          "strategies": [
+            {
+              "kind": "role",
+              "role": "searchbox",
+              "name": "Search the catalog",
+              "exact": true
+            }
+          ]
+        },
+        "value": {
+          "fromArgument": "query"
+        },
+        "expect": {
+          "mode": "all",
+          "checks": [
+            {
+              "kind": "target_value",
+              "value": {
+                "fromArgument": "query"
+              }
+            }
+          ]
+        },
+        "timeoutMs": 5000,
+        "evidence": [
+          {
+            "traceId": "trace_storefront_search",
+            "transitionId": "transition_1",
+            "fromPageId": "page_1",
+            "actionFrameSequence": 2,
+            "updateFrameSequence": 3,
+            "toPageId": "page_2"
+          }
+        ]
+      },
+      "arguments": {
+        "query": "headphones"
+      }
+    }
+  },
+  {
+    "protocol": "webmcp-run/1",
+    "type": "step.completed",
+    "requestId": "req_search_1",
+    "runId": "run_search_1",
+    "sequence": 5,
+    "sentAt": "2026-09-03T00:01:00.600Z",
+    "sender": {
+      "context": "execution_content",
+      "tabId": 11,
+      "documentId": "execution_document_1"
+    },
+    "payload": {
+      "commandId": "command_fill_query",
+      "stepId": "fill_query",
+      "stepIndex": 0,
+      "effect": {
+        "urlBefore": "http://127.0.0.1:4317/demo/",
+        "urlAfter": "http://127.0.0.1:4317/demo/",
+        "urlChanged": false,
+        "navigationExpected": false,
+        "navigationObserved": false,
+        "stateBefore": "catalog",
+        "stateAfter": "catalog",
+        "postconditionSatisfied": true
+      },
+      "result": null
+    }
+  },
+  {
+    "protocol": "webmcp-run/1",
+    "type": "run.result",
+    "requestId": "req_search_1",
+    "runId": "run_search_1",
+    "sequence": 12,
+    "sentAt": "2026-09-03T00:01:01.500Z",
+    "sender": {
+      "context": "service_worker",
+      "tabId": null,
+      "documentId": null
+    },
+    "payload": {
+      "actionId": "search_products",
+      "actionVersion": 1,
+      "data": {
+        "count": 1,
+        "items": [
+          {
+            "name": "Field H1",
+            "price": "$129",
+            "url": "http://127.0.0.1:4317/demo/product/field-h1"
+          }
+        ]
+      },
+      "evidence": {
+        "finalUrl": "http://127.0.0.1:4317/demo/search?q=headphones",
+        "finalStateId": "search_results",
+        "completedSteps": [
+          "fill_query",
+          "submit_search",
+          "wait_for_results",
+          "extract_results"
+        ]
+      }
+    }
+  }
+]

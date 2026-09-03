@@ -1,0 +1,618 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webmcp-automator.local/schemas/run-message.schema.json",
+  "title": "WebMCP Automator run message",
+  "description": "The versioned event envelope shared by the source bridge, MV3 coordinator, and execution-tab actor.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/runRequest"
+    },
+    {
+      "$ref": "#/$defs/runAccepted"
+    },
+    {
+      "$ref": "#/$defs/runCancel"
+    },
+    {
+      "$ref": "#/$defs/pageReady"
+    },
+    {
+      "$ref": "#/$defs/stepCommand"
+    },
+    {
+      "$ref": "#/$defs/stepCompleted"
+    },
+    {
+      "$ref": "#/$defs/stepFailed"
+    },
+    {
+      "$ref": "#/$defs/runAwaitingConfirmation"
+    },
+    {
+      "$ref": "#/$defs/runConfirm"
+    },
+    {
+      "$ref": "#/$defs/runResult"
+    },
+    {
+      "$ref": "#/$defs/runError"
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]{0,127}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sender": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "context",
+        "tabId",
+        "documentId"
+      ],
+      "properties": {
+        "context": {
+          "enum": [
+            "main_world_registrar",
+            "source_content",
+            "service_worker",
+            "execution_content",
+            "review_ui"
+          ]
+        },
+        "tabId": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "documentId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 300
+        }
+      }
+    },
+    "runRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "type",
+        "requestId",
+        "runId",
+        "sequence",
+        "sentAt",
+        "sender",
+        "payload"
+      ],
+      "properties": {
+        "protocol": {
+          "const": "webmcp-run/1"
+        },
+        "type": {
+          "const": "run.request"
+        },
+        "requestId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "runId": {
+          "type": "null"
+        },
+        "sequence": {
+          "const": 1
+        },
+        "sentAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "sender": {
+          "$ref": "#/$defs/sender"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "listId",
+            "actionId",
+            "actionVersion",
+            "sourceUrl",
+            "arguments"
+          ],
+          "properties": {
+            "listId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "actionId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "actionVersion": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sourceUrl": {
+              "type": "string",
+              "format": "uri"
+            },
+            "arguments": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "runAccepted": {
+      "$ref": "#/$defs/standardMessage",
+      "description": "Coordinator accepted a validated request and persisted the initial run state.",
+      "properties": {
+        "type": {
+          "const": "run.accepted"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "planDigest",
+            "executionTabId"
+          ],
+          "properties": {
+            "planDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "executionTabId": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "runCancel": {
+      "$ref": "#/$defs/standardMessage",
+      "properties": {
+        "type": {
+          "const": "run.cancel"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reason"
+          ],
+          "properties": {
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            }
+          }
+        }
+      }
+    },
+    "pageReady": {
+      "$ref": "#/$defs/standardMessage",
+      "properties": {
+        "type": {
+          "const": "page.ready"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "url",
+            "title",
+            "stateId",
+            "navigationSequence"
+          ],
+          "properties": {
+            "url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 1000
+            },
+            "stateId": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/identifier"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "navigationSequence": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "stepCommand": {
+      "$ref": "#/$defs/standardMessage",
+      "properties": {
+        "type": {
+          "const": "step.command"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "commandId",
+            "stepIndex",
+            "step",
+            "arguments"
+          ],
+          "properties": {
+            "commandId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "stepIndex": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "step": {
+              "$ref": "action-list.schema.json#/$defs/step"
+            },
+            "arguments": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "stepCompleted": {
+      "$ref": "#/$defs/standardMessage",
+      "properties": {
+        "type": {
+          "const": "step.completed"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "commandId",
+            "stepId",
+            "stepIndex",
+            "effect",
+            "result"
+          ],
+          "properties": {
+            "commandId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "stepId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "stepIndex": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "effect": {
+              "$ref": "#/$defs/effect"
+            },
+            "result": {}
+          }
+        }
+      }
+    },
+    "stepFailed": {
+      "$ref": "#/$defs/standardMessage",
+      "properties": {
+        "type": {
+          "const": "step.failed"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "commandId",
+            "stepId",
+            "stepIndex",
+            "error"
+          ],
+          "properties": {
+            "commandId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "stepId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "stepIndex": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "error": {
+              "$ref": "#/$defs/error"
+            }
+          }
+        }
+      }
+    },
+    "runAwaitingConfirmation": {
+      "$ref": "#/$defs/standardMessage",
+      "properties": {
+        "type": {
+          "const": "run.awaiting_confirmation"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "stepId",
+            "summary",
+            "argumentPreview"
+          ],
+          "properties": {
+            "stepId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "summary": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            "argumentPreview": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "runConfirm": {
+      "$ref": "#/$defs/standardMessage",
+      "properties": {
+        "type": {
+          "const": "run.confirm"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "stepId",
+            "approved"
+          ],
+          "properties": {
+            "stepId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "approved": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "runResult": {
+      "$ref": "#/$defs/standardMessage",
+      "properties": {
+        "type": {
+          "const": "run.result"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "actionId",
+            "actionVersion",
+            "data",
+            "evidence"
+          ],
+          "properties": {
+            "actionId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "actionVersion": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "data": {},
+            "evidence": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "finalUrl",
+                "finalStateId",
+                "completedSteps"
+              ],
+              "properties": {
+                "finalUrl": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "finalStateId": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/identifier"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "completedSteps": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/identifier"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "runError": {
+      "$ref": "#/$defs/standardMessage",
+      "properties": {
+        "type": {
+          "const": "run.error"
+        },
+        "payload": {
+          "$ref": "#/$defs/error"
+        }
+      }
+    },
+    "standardMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "type",
+        "requestId",
+        "runId",
+        "sequence",
+        "sentAt",
+        "sender",
+        "payload"
+      ],
+      "properties": {
+        "protocol": {
+          "const": "webmcp-run/1"
+        },
+        "type": {
+          "type": "string"
+        },
+        "requestId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "runId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sentAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "sender": {
+          "$ref": "#/$defs/sender"
+        },
+        "payload": {}
+      }
+    },
+    "effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "urlBefore",
+        "urlAfter",
+        "urlChanged",
+        "navigationExpected",
+        "navigationObserved",
+        "stateBefore",
+        "stateAfter",
+        "postconditionSatisfied"
+      ],
+      "properties": {
+        "urlBefore": {
+          "type": "string",
+          "format": "uri"
+        },
+        "urlAfter": {
+          "type": "string",
+          "format": "uri"
+        },
+        "urlChanged": {
+          "type": "boolean"
+        },
+        "navigationExpected": {
+          "type": "boolean"
+        },
+        "navigationObserved": {
+          "type": "boolean"
+        },
+        "stateBefore": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/identifier"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stateAfter": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/identifier"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "postconditionSatisfied": {
+          "type": "boolean"
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "stepId",
+        "retryable",
+        "observed"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "POLICY_BLOCKED",
+            "PLAN_NOT_FOUND",
+            "PLAN_VERSION_MISMATCH",
+            "INVALID_ARGUMENTS",
+            "PRECONDITION_FAILED",
+            "TARGET_NOT_FOUND",
+            "TARGET_AMBIGUOUS",
+            "TARGET_NOT_INTERACTABLE",
+            "POSTCONDITION_FAILED",
+            "NAVIGATION_OUT_OF_SCOPE",
+            "CONFIRMATION_REQUIRED",
+            "CONFIRMATION_DENIED",
+            "CANCELLED",
+            "TIMEOUT",
+            "EXECUTION_TAB_CLOSED",
+            "TRANSPORT_DISCONNECTED",
+            "INTERNAL_ERROR"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "stepId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/identifier"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "observed": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

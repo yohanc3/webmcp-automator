@@ -7,6 +7,14 @@ extension/README.md
 extension/tests/index.html
 documentation/README.md
 documentation/architecture.md
+documentation/mvp-system-contract.md
+documentation/parallel-worktrees.md
+documentation/contracts/README.md
+documentation/contracts/action-list.schema.json
+documentation/contracts/run-message.schema.json
+documentation/contracts/system-contract.md
+documentation/contracts/examples/owned-storefront.action-list.json
+documentation/contracts/examples/owned-storefront.run-messages.json
 documentation/development.md
 documentation/privacy.md
 workspace/demo/index.html

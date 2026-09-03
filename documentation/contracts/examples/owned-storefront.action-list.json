@@ -1,0 +1,441 @@
+{
+  "schemaVersion": "action-list/1",
+  "listId": "owned_storefront",
+  "site": {
+    "origin": "http://127.0.0.1:4317",
+    "routePatterns": [
+      "^/demo/?$",
+      "^/demo/search(?:\\?.*)?$"
+    ],
+    "topFrameOnly": true
+  },
+  "publication": {
+    "status": "candidate",
+    "revision": 1,
+    "createdAt": "2026-09-03T00:00:00Z",
+    "updatedAt": "2026-09-03T00:00:00Z",
+    "sourceMapId": "map_storefront_search",
+    "contentDigest": null
+  },
+  "policy": {
+    "status": "allowed",
+    "scopes": [
+      "learn",
+      "inject",
+      "read",
+      "write"
+    ],
+    "basis": "local_fixture",
+    "evidenceUrl": null,
+    "checkedAt": "2026-09-03T00:00:00Z",
+    "expiresAt": null,
+    "reviewedBy": "repository owner",
+    "note": "Owned deterministic demo served by the local Action Mapper service."
+  },
+  "states": [
+    {
+      "id": "catalog",
+      "label": "Catalog",
+      "description": "The storefront catalog with its search form is visible.",
+      "match": {
+        "mode": "all",
+        "checks": [
+          {
+            "kind": "url",
+            "pattern": "^http://127\\.0\\.0\\.1:4317/demo/?$"
+          },
+          {
+            "kind": "element",
+            "target": {
+              "cardinality": "one",
+              "visible": true,
+              "enabled": true,
+              "strategies": [
+                {
+                  "kind": "role",
+                  "role": "searchbox",
+                  "name": "Search the catalog",
+                  "exact": true
+                }
+              ]
+            },
+            "assertion": "visible"
+          }
+        ]
+      }
+    },
+    {
+      "id": "search_results",
+      "label": "Search results",
+      "description": "A result collection for the submitted catalog query is visible.",
+      "match": {
+        "mode": "all",
+        "checks": [
+          {
+            "kind": "url",
+            "pattern": "^http://127\\.0\\.0\\.1:4317/demo/search(?:\\?.*)?$"
+          },
+          {
+            "kind": "collection",
+            "target": {
+              "cardinality": "many",
+              "visible": true,
+              "enabled": false,
+              "strategies": [
+                {
+                  "kind": "role",
+                  "role": "article",
+                  "name": "Product",
+                  "exact": false
+                },
+                {
+                  "kind": "css",
+                  "selector": "[data-product-id]"
+                }
+              ]
+            },
+            "minimumItems": 0
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "search_products",
+      "version": 1,
+      "lifecycle": "candidate",
+      "tool": {
+        "name": "search_products",
+        "title": "Search products",
+        "description": "Search the owned storefront catalog and return matching products with names, prices, and links.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Words to find in the product catalog.",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "untrustedContentHint": true
+        }
+      },
+      "precondition": {
+        "allowedStateIds": [
+          "catalog"
+        ],
+        "urlPatterns": [
+          "^http://127\\.0\\.0\\.1:4317/demo/?$"
+        ],
+        "checks": {
+          "mode": "all",
+          "checks": [
+            {
+              "kind": "element",
+              "target": {
+                "cardinality": "one",
+                "visible": true,
+                "enabled": true,
+                "strategies": [
+                  {
+                    "kind": "role",
+                    "role": "searchbox",
+                    "name": "Search the catalog",
+                    "exact": true
+                  },
+                  {
+                    "kind": "css",
+                    "selector": "#catalog-search"
+                  }
+                ]
+              },
+              "assertion": "enabled"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "id": "fill_query",
+          "op": "fill",
+          "target": {
+            "cardinality": "one",
+            "visible": true,
+            "enabled": true,
+            "strategies": [
+              {
+                "kind": "role",
+                "role": "searchbox",
+                "name": "Search the catalog",
+                "exact": true
+              },
+              {
+                "kind": "css",
+                "selector": "#catalog-search"
+              }
+            ]
+          },
+          "value": {
+            "fromArgument": "query"
+          },
+          "expect": {
+            "mode": "all",
+            "checks": [
+              {
+                "kind": "target_value",
+                "value": {
+                  "fromArgument": "query"
+                }
+              }
+            ]
+          },
+          "timeoutMs": 5000,
+          "evidence": [
+            {
+              "traceId": "trace_storefront_search",
+              "transitionId": "transition_1",
+              "fromPageId": "page_1",
+              "actionFrameSequence": 2,
+              "updateFrameSequence": 3,
+              "toPageId": "page_2"
+            }
+          ]
+        },
+        {
+          "id": "submit_search",
+          "op": "click",
+          "target": {
+            "cardinality": "one",
+            "visible": true,
+            "enabled": true,
+            "strategies": [
+              {
+                "kind": "role",
+                "role": "button",
+                "name": "Search",
+                "exact": true
+              },
+              {
+                "kind": "css",
+                "selector": "form[role='search'] button[type='submit']"
+              }
+            ]
+          },
+          "expect": {
+            "mode": "all",
+            "checks": [
+              {
+                "kind": "url",
+                "pattern": "^http://127\\.0\\.0\\.1:4317/demo/search(?:\\?.*)?$"
+              },
+              {
+                "kind": "state",
+                "stateId": "search_results"
+              }
+            ]
+          },
+          "timeoutMs": 10000,
+          "evidence": [
+            {
+              "traceId": "trace_storefront_search",
+              "transitionId": "transition_2",
+              "fromPageId": "page_2",
+              "actionFrameSequence": 5,
+              "updateFrameSequence": 6,
+              "toPageId": "page_3"
+            }
+          ]
+        },
+        {
+          "id": "wait_for_results",
+          "op": "wait",
+          "expect": {
+            "mode": "all",
+            "checks": [
+              {
+                "kind": "dom_stable",
+                "quietMs": 300
+              },
+              {
+                "kind": "state",
+                "stateId": "search_results"
+              }
+            ]
+          },
+          "timeoutMs": 10000,
+          "evidence": [
+            {
+              "traceId": "trace_storefront_search",
+              "transitionId": "transition_2",
+              "fromPageId": "page_2",
+              "actionFrameSequence": 5,
+              "updateFrameSequence": 6,
+              "toPageId": "page_3"
+            }
+          ]
+        },
+        {
+          "id": "extract_results",
+          "op": "extract",
+          "expect": {
+            "mode": "all",
+            "checks": [
+              {
+                "kind": "state",
+                "stateId": "search_results"
+              }
+            ]
+          },
+          "timeoutMs": 5000,
+          "evidence": [
+            {
+              "traceId": "trace_storefront_search",
+              "transitionId": "transition_2",
+              "fromPageId": "page_2",
+              "actionFrameSequence": 5,
+              "updateFrameSequence": 6,
+              "toPageId": "page_3"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "mode": "collection",
+        "collectionRoot": {
+          "cardinality": "one",
+          "visible": true,
+          "enabled": false,
+          "strategies": [
+            {
+              "kind": "css",
+              "selector": "main"
+            }
+          ]
+        },
+        "item": {
+          "cardinality": "many",
+          "visible": true,
+          "enabled": false,
+          "strategies": [
+            {
+              "kind": "css",
+              "selector": "[data-product-id]"
+            },
+            {
+              "kind": "role",
+              "role": "article",
+              "name": "Product",
+              "exact": false
+            }
+          ]
+        },
+        "limit": 25,
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "locator": {
+              "cardinality": "one",
+              "visible": true,
+              "enabled": false,
+              "strategies": [
+                {
+                  "kind": "role",
+                  "role": "heading",
+                  "name": "Product name",
+                  "exact": false
+                },
+                {
+                  "kind": "css",
+                  "selector": "h2, h3"
+                }
+              ]
+            },
+            "read": "text",
+            "required": true,
+            "untrusted": true
+          },
+          {
+            "name": "price",
+            "type": "string",
+            "locator": {
+              "cardinality": "one",
+              "visible": true,
+              "enabled": false,
+              "strategies": [
+                {
+                  "kind": "css",
+                  "selector": "[data-price], .product-price"
+                }
+              ]
+            },
+            "read": "text",
+            "required": true,
+            "untrusted": true
+          },
+          {
+            "name": "url",
+            "type": "url",
+            "locator": {
+              "cardinality": "one",
+              "visible": true,
+              "enabled": true,
+              "strategies": [
+                {
+                  "kind": "role",
+                  "role": "link",
+                  "name": "Product details",
+                  "exact": false
+                },
+                {
+                  "kind": "css",
+                  "selector": "a[href*='/demo/product/']"
+                }
+              ]
+            },
+            "read": "href",
+            "required": true,
+            "untrusted": true
+          }
+        ]
+      },
+      "safety": {
+        "class": "read",
+        "writesExternalState": false,
+        "confirmation": "never",
+        "confirmationStepId": null,
+        "idempotency": "safe",
+        "sensitiveArguments": []
+      },
+      "runtime": {
+        "executionSurface": "inactive_tab",
+        "allowedOrigins": [
+          "http://127.0.0.1:4317"
+        ],
+        "maxDurationMs": 30000,
+        "maxNavigations": 2,
+        "closeExecutionTab": true
+      },
+      "provenance": {
+        "source": "demonstration",
+        "observationCount": 1,
+        "traceIds": [
+          "trace_storefront_search"
+        ],
+        "compiler": "action-map deterministic projection plus reviewed semantic labels",
+        "compiledAt": "2026-09-03T00:00:00Z",
+        "reviewedAt": null,
+        "reviewedBy": null
+      }
+    }
+  ]
+}
