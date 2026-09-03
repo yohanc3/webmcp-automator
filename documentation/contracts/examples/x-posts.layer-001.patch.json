@@ -1,0 +1,320 @@
+{
+  "schemaVersion": "action-map-patch/1",
+  "patchId": "patch_x_posts_001",
+  "requestId": "parse_x_posts_001",
+  "idempotencyKey": "sha256:fda4150e50e4a7c96074538a9e260d9b82fc678c4192ef4fb38c78e9017ef5d6",
+  "siteScopeId": "x_posts",
+  "layerSequence": 1,
+  "mapBase": {
+    "revision": 0,
+    "digest": null
+  },
+  "parser": {
+    "parserId": "ambient_action_parser",
+    "parserVersion": "1.0.0",
+    "promptVersion": "ambient-v1"
+  },
+  "decision": "patch",
+  "summary": "Infer executable Posts navigation and recent-post extraction from the initial semantic layer.",
+  "operations": [
+    {
+      "op": "upsert_state",
+      "entityId": "x_posts",
+      "state": {
+        "id": "x_posts",
+        "label": "X Posts",
+        "urlPattern": "^https://x\\.com/home(?:\\?.*)?$",
+        "fingerprint": null,
+        "evidence": [
+          "layer_x_001:node_x_feed"
+        ]
+      },
+      "provenance": "inferred",
+      "reason": "The current semantic layer contains the Posts navigation and a repeated posts feed.",
+      "citationIds": [
+        "cite_x_feed"
+      ]
+    },
+    {
+      "op": "upsert_action",
+      "entityId": "open_posts",
+      "action": {
+        "id": "open_posts",
+        "name": "Open Posts",
+        "description": "Open the Posts view from the primary navigation.",
+        "category": "navigate",
+        "status": "resolvable",
+        "safety": "read",
+        "confidence": 0.83,
+        "fromState": "x_posts",
+        "toState": null,
+        "parameters": [],
+        "steps": [
+          {
+            "op": "click",
+            "target": {
+              "css": null,
+              "role": "link",
+              "name": "Posts",
+              "placeholder": null,
+              "text": "Posts",
+              "hrefContains": "/home"
+            },
+            "valueFrom": null,
+            "literalValue": null,
+            "key": null,
+            "expect": {
+              "kind": "navigation",
+              "state": null,
+              "urlPattern": "^https://x\\.com/home(?:\\?.*)?$",
+              "target": {
+                "css": null,
+                "role": null,
+                "name": null,
+                "placeholder": null,
+                "text": null,
+                "hrefContains": null
+              }
+            },
+            "timeoutMs": 10000
+          }
+        ],
+        "output": {
+          "mode": "none",
+          "collectionRoot": {
+            "css": null,
+            "role": null,
+            "name": null,
+            "placeholder": null,
+            "text": null,
+            "hrefContains": null
+          },
+          "item": {
+            "css": null,
+            "role": null,
+            "name": null,
+            "placeholder": null,
+            "text": null,
+            "hrefContains": null
+          },
+          "limit": 1,
+          "fields": []
+        },
+        "evidence": [
+          "layer_x_001:node_x_posts_link:step_0_target"
+        ],
+        "missingEvidence": []
+      },
+      "provenance": "inferred",
+      "reason": "The same-origin Posts link exposes a deterministic click target and destination route without requiring an observed event.",
+      "componentActionIds": [],
+      "citationIds": [
+        "cite_x_posts_link"
+      ],
+      "stepEvidence": [
+        {
+          "stepIndex": 0,
+          "role": "target",
+          "evidenceId": "node_x_posts_link",
+          "layerId": "layer_x_001",
+          "fieldName": null
+        }
+      ]
+    },
+    {
+      "op": "upsert_action",
+      "entityId": "get_recent_posts",
+      "action": {
+        "id": "get_recent_posts",
+        "name": "Get recent posts",
+        "description": "Return the recent posts visible in the X Posts feed.",
+        "category": "read",
+        "status": "resolvable",
+        "safety": "read",
+        "confidence": 0.88,
+        "fromState": "x_posts",
+        "toState": "x_posts",
+        "parameters": [],
+        "steps": [
+          {
+            "op": "extract",
+            "target": {
+              "css": null,
+              "role": null,
+              "name": null,
+              "placeholder": null,
+              "text": null,
+              "hrefContains": null
+            },
+            "valueFrom": null,
+            "literalValue": null,
+            "key": null,
+            "expect": {
+              "kind": "collection",
+              "state": "x_posts",
+              "urlPattern": null,
+              "target": {
+                "css": null,
+                "role": "article",
+                "name": null,
+                "placeholder": null,
+                "text": null,
+                "hrefContains": null
+              }
+            },
+            "timeoutMs": 5000
+          }
+        ],
+        "output": {
+          "mode": "collection",
+          "collectionRoot": {
+            "css": null,
+            "role": "feed",
+            "name": "Home timeline",
+            "placeholder": null,
+            "text": null,
+            "hrefContains": null
+          },
+          "item": {
+            "css": null,
+            "role": "article",
+            "name": null,
+            "placeholder": null,
+            "text": null,
+            "hrefContains": null
+          },
+          "limit": 25,
+          "fields": [
+            {
+              "name": "author",
+              "locator": {
+                "css": "[data-testid='User-Name']",
+                "role": null,
+                "name": null,
+                "placeholder": null,
+                "text": null,
+                "hrefContains": null
+              },
+              "attribute": null,
+              "required": true
+            },
+            {
+              "name": "text",
+              "locator": {
+                "css": "[data-testid='tweetText']",
+                "role": null,
+                "name": null,
+                "placeholder": null,
+                "text": null,
+                "hrefContains": null
+              },
+              "attribute": null,
+              "required": true
+            },
+            {
+              "name": "url",
+              "locator": {
+                "css": null,
+                "role": "link",
+                "name": "Open post",
+                "placeholder": null,
+                "text": null,
+                "hrefContains": "/status/"
+              },
+              "attribute": "href",
+              "required": true
+            }
+          ]
+        },
+        "evidence": [
+          "layer_x_001:node_x_feed:step_0_output",
+          "layer_x_001:node_x_author:field_author",
+          "layer_x_001:node_x_text:field_text",
+          "layer_x_001:node_x_url:field_url"
+        ],
+        "missingEvidence": []
+      },
+      "provenance": "inferred",
+      "reason": "The current page exposes a semantic feed, repeated articles, and evidence-backed author, text, and URL fields.",
+      "componentActionIds": [],
+      "citationIds": [
+        "cite_x_feed",
+        "cite_x_author",
+        "cite_x_text",
+        "cite_x_url"
+      ],
+      "stepEvidence": [
+        {
+          "stepIndex": 0,
+          "role": "output",
+          "evidenceId": "node_x_feed",
+          "layerId": "layer_x_001",
+          "fieldName": null
+        },
+        {
+          "stepIndex": 0,
+          "role": "output",
+          "evidenceId": "node_x_author",
+          "layerId": "layer_x_001",
+          "fieldName": "author"
+        },
+        {
+          "stepIndex": 0,
+          "role": "output",
+          "evidenceId": "node_x_text",
+          "layerId": "layer_x_001",
+          "fieldName": "text"
+        },
+        {
+          "stepIndex": 0,
+          "role": "output",
+          "evidenceId": "node_x_url",
+          "layerId": "layer_x_001",
+          "fieldName": "url"
+        }
+      ]
+    }
+  ],
+  "evidenceCitations": [
+    {
+      "citationId": "cite_x_posts_link",
+      "evidenceId": "node_x_posts_link",
+      "layerId": "layer_x_001",
+      "source": "current_layer",
+      "kind": "node",
+      "digest": "sha256:227abc79d69673961fd9c32d1d0f6a82ea13b4d366c6166236c1e9d9ee9318da"
+    },
+    {
+      "citationId": "cite_x_feed",
+      "evidenceId": "node_x_feed",
+      "layerId": "layer_x_001",
+      "source": "current_layer",
+      "kind": "node",
+      "digest": "sha256:227abc79d69673961fd9c32d1d0f6a82ea13b4d366c6166236c1e9d9ee9318da"
+    },
+    {
+      "citationId": "cite_x_author",
+      "evidenceId": "node_x_author",
+      "layerId": "layer_x_001",
+      "source": "current_layer",
+      "kind": "node",
+      "digest": "sha256:227abc79d69673961fd9c32d1d0f6a82ea13b4d366c6166236c1e9d9ee9318da"
+    },
+    {
+      "citationId": "cite_x_text",
+      "evidenceId": "node_x_text",
+      "layerId": "layer_x_001",
+      "source": "current_layer",
+      "kind": "node",
+      "digest": "sha256:227abc79d69673961fd9c32d1d0f6a82ea13b4d366c6166236c1e9d9ee9318da"
+    },
+    {
+      "citationId": "cite_x_url",
+      "evidenceId": "node_x_url",
+      "layerId": "layer_x_001",
+      "source": "current_layer",
+      "kind": "node",
+      "digest": "sha256:227abc79d69673961fd9c32d1d0f6a82ea13b4d366c6166236c1e9d9ee9318da"
+    }
+  ]
+}

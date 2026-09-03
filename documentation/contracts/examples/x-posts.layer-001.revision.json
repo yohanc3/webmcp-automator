@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "action-map-revision/1",
+  "requestId": "parse_x_posts_001",
+  "patchId": "patch_x_posts_001",
+  "idempotencyKey": "sha256:fda4150e50e4a7c96074538a9e260d9b82fc678c4192ef4fb38c78e9017ef5d6",
+  "siteScopeId": "x_posts",
+  "sourceLayerSequence": 1,
+  "application": {
+    "status": "applied",
+    "base": {
+      "revision": 0,
+      "digest": null
+    },
+    "result": {
+      "revision": 1,
+      "digest": "sha256:b1b6cb40863949416b2f65c9dd677e369438bf859dbcdf25a2812c2b4f5d2b3c"
+    },
+    "current": {
+      "revision": 1,
+      "digest": "sha256:b1b6cb40863949416b2f65c9dd677e369438bf859dbcdf25a2812c2b4f5d2b3c"
+    },
+    "conflictCode": null
+  },
+  "parser": {
+    "parserId": "ambient_action_parser",
+    "parserVersion": "1.0.0",
+    "promptVersion": "ambient-v1"
+  },
+  "validation": {
+    "validatorVersion": "ambient-contract-validator/1",
+    "actionMapSchemaVersion": "action-map/1",
+    "actionListSchemaVersion": "action-list/1",
+    "checks": [
+      "request_binding",
+      "site_scope",
+      "layer_sequence",
+      "evidence_resolution",
+      "executable_actions",
+      "provenance",
+      "privacy",
+      "action_map_schema",
+      "canonical_digest"
+    ]
+  },
+  "storage": {
+    "actionMapRevisionStored": true,
+    "safeEvidenceMetadataCount": 5,
+    "semanticXmlStored": false,
+    "sanitizedObservationStored": false,
+    "rawObservationStored": false
+  },
+  "appliedAt": "2026-09-03T12:00:01Z"
+}

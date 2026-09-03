@@ -10,16 +10,29 @@ branches begin.
   deterministic actions that can be projected into WebMCP tools.
 - `run-message.schema.json` defines events exchanged by the source bridge,
   extension service worker, execution tab, and confirmation UI.
+- `ambient-parse-request.schema.json` defines the one-layer, no-goal input sent
+  to the ambient AI parser after policy and privacy checks.
+- `action-map-patch.schema.json` defines an evidence-bound incremental parser
+  result whose actions already contain executable steps.
+- `action-map-revision.schema.json` defines idempotent compare-and-append
+  receipts, conflicts, validation identity, and storage-boundary assertions.
 - `examples/owned-storefront.action-list.json` is the first shared conformance
   fixture.
 - `examples/owned-storefront.run-messages.json` is a complete positive message
   lifecycle fixture from request through structured result.
+- the `x-posts.layer-*` and `orders.layer-*` fixtures show page-only inference,
+  compact context propagation, observed linkage, and flattened composition.
 - `system-contract.md` assigns every producer, consumer, invariant, failure,
   and acceptance boundary surrounding these schemas.
+- `ambient-learning.md` is the normative automatic-learning lifecycle,
+  retention, provenance, retry, and owner handoff contract.
 
-The existing `learning-trace/3` and `action-map/1` remain the learning-side
-contracts. `action-list/1` is the runtime projection of executable actions from
-an action map. Runtime code never consumes a model response directly.
+The existing `learning-trace/3` remains a compatibility input for historical
+batched traces and deterministic replay fixtures. Ambient learning parses every
+completed `semantic-ui/2` layer through `ambient-parse-request/1` and applies an
+`action-map-patch/1` to the canonical `action-map/1` artifact. `action-list/1`
+is still the runtime projection. Runtime code never consumes a model response
+directly.
 
 ## Validation layers
 
@@ -53,7 +66,13 @@ the following semantic checks because they require cross-object knowledge:
 14. Read actions are safe to repeat. Conditional or unsafe actions are never
     automatically replayed after an uncertain result.
 15. Literal values are scanned for credentials, payment data, contact details,
-    account identifiers, and demonstrated user input before publication.
+   account identifiers, and demonstrated user input before publication.
+16. Every ambient AI-produced action has at least one step, an empty
+   `missingEvidence`, and evidence bindings for each click target and extracted
+   output field.
+17. Parse requests contain no user goal and no expanded prior steps or locators.
+18. Universal DB writes contain revisions and safe evidence metadata, never
+   semantic XML or raw/sanitized browsing observations.
 
 ## Compatibility rule
 

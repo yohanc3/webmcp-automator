@@ -7,13 +7,17 @@ tools. It is deliberately narrower than a production automation platform.
 
 The product has two paths with one executable contract between them:
 
-- the **learn path** turns an observed browser trace into a reviewed action map;
+- the **learn path** automatically parses every eligible completed semantic
+  page layer and incrementally revises a visible action map;
 - the **ready path** exposes executable actions as WebMCP tools and interprets
   their deterministic steps in a separate browser tab.
 
-AI may label, group, and generalize captured evidence during learning. AI is not
-part of ready-path execution. A ready action either satisfies its explicit
-preconditions and postconditions or fails with a structured error.
+There is no user-supplied learning goal and no hidden learned internal model.
+The source material is the current sanitized semantic XML page map, the causal
+sanitized user observation that led to it when present, and compact semantics
+from prior accepted action-map revisions. AI incrementally proposes the visible
+map; deterministic validation and persistence remain authoritative. AI is not
+part of ready-path execution.
 
 For this MVP, `action-map/1` is the canonical editable learning representation.
 Published runtime capabilities are immutable `action-list/1` projections. The
@@ -23,19 +27,25 @@ source of truth; it must not evolve independently.
 The detailed machine-readable schemas and component boundaries are in
 [`contracts/`](contracts/), and the branch/worktree sequence is in
 [`parallel-worktrees.md`](parallel-worktrees.md).
+The automatic learning lifecycle, incremental request/patch/revision protocol,
+and retention rules are normative in
+[`contracts/ambient-learning.md`](contracts/ambient-learning.md).
 
 ## Current baseline
 
-The repository already has:
+The repository baseline already has:
 
 - a stepped `learning-trace/3` recorder;
 - deterministic `page -> action -> update -> page` ordering;
 - server-side trace validation, graph reconstruction, and sanitization;
-- AI-assisted `action-map/1` discovery with strict output validation;
+- AI-assisted batched `action-map/1` discovery with strict output validation;
 - a deterministic runner for `fill`, `click`, `press`, `wait`, and `extract`;
 - an owned storefront for repeatable tests.
 
-The ready path is not connected end to end. WebMCP registration is disabled in
+The ambient request/patch/revision contract defined here is new; existing
+batched `learning-trace/3` code remains a compatibility and replay-fixture path
+until the capture and compiler worktrees adopt it. The ready path is not
+connected end to end. WebMCP registration is disabled in
 `extension/content.js`, action-map discovery no longer produces active adapter
 versions, and the current source page polls the service worker for job results.
 
@@ -316,42 +326,48 @@ uncertain result, or claim success from the absence of an exception.
 
 ```mermaid
 flowchart TD
-  G[Policy and ownership gate] --> I[User states the demonstrated goal]
-  I --> R[Deterministic recorder]
-  R --> L[Client-side structural sanitizer]
-  L --> V[Server validation and second sanitizer]
-  V --> X[Trace graph reconstruction]
-  X --> C[Observed-plan compiler]
-  C --> S[AI semantic labeling and grouping]
-  S --> Q[Schema, evidence, privacy, and safety validation]
-  Q --> P[Safe replay on owned fixture]
-  P --> H[Human review]
-  H --> U[Versioned publication]
-  U --> M[Run health and drift signals]
+  G[Policy gate before capture] --> R[Automatic privacy-filtered semantic observer]
+  R --> L[Completed semantic XML layer]
+  L --> O[Causal sanitized observation when present]
+  O --> C[Current map base plus compact prior context]
+  C --> P[AI incremental parser]
+  P --> Q[Evidence and executable-action validation]
+  Q --> A[Idempotent action-map revision]
+  A --> X[Action-list compiler]
+  X --> V[Replay, safety, and review]
+  V --> U[Versioned publication]
+  U --> M[Run health and provenance signals]
 ```
 
 ### Learning invariants
 
-1. Capture is deterministic. AI does not decide what happened.
-2. The user supplies a goal before recording so the compiler does not have to
-   infer the entire action boundary from incidental browsing.
-3. The browser emits causal frames and stable evidence IDs. The server rebuilds
-   the graph rather than trusting a client-supplied graph.
-4. A deterministic compiler first creates an observed skeleton from exact
-   transitions. The model may name, group, parameterize, and choose among
-   captured evidence IDs.
-5. Every generated step cites trace evidence. A step without evidence is
-   unresolved and cannot be published.
-6. Read-only plans may be replay-tested automatically on owned fixtures. Write
+1. Capture chronology is deterministic. AI does not decide what happened.
+2. Policy and privacy gates run before capture/model transfer; raw DOM and event
+   values are never serialized for a later sanitizer.
+3. Every completed meaningful layer is parsed. There is no novelty threshold,
+   evidence-count threshold, user-operated recording flow, or goal gate.
+4. Each parse receives the current sanitized semantic XML layer, the causal
+   observation that produced it when present, and compact accepted context.
+5. Page XML alone may yield actions. A semantic Orders link may yield `Open
+   orders`; an Orders collection may yield `Get recent orders`.
+6. Every AI-produced action is already executable with at least one step. Click
+   targets and extracted fields bind to semantic node/evidence IDs retained on
+   the map entry.
+7. Observations connect inferred actions into reachable paths and may produce a
+   flattened higher-level action whose internal navigation is an ordinary step.
+8. Exact base revision/digest, parser version, evidence citations, provenance,
+   retries, and conflicts are explicit and deterministically validated.
+9. Read-only plans may be replay-tested automatically on owned fixtures. Write
    and danger plans require a sandbox or a human confirmation boundary.
-7. Publication is versioned and reversible. Runtime failures can degrade or
+10. Publication is versioned and reversible. Runtime failures can degrade or
    quarantine a version but cannot silently rewrite it.
 
 The state model is a labeled directed multigraph. A node is a materially
-distinct semantic page state. An edge is an observed action with parameters,
-ordered primitives, and a postcondition. Multiple edges may connect the same
-states, and loops are valid. A published action plan is a guarded path through
-that graph, not free-form browser control.
+distinct semantic page state. An action is an inferred, observed, or verified
+executable transition/extraction with ordered primitives and postconditions.
+Multiple actions may connect the same states, loops are valid, and an observed
+path may be flattened into a composite action. A published action plan is a
+guarded path through that graph, not free-form browser control.
 
 ## Privacy, terms, and safety gates
 
@@ -367,9 +383,18 @@ Use an allowlist instead:
 - passwords, payment fields, tokens, account identifiers, and form values stay
   local;
 - only semantic attributes needed for resolution are retained;
-- server-side sanitization repeats the checks before storage and model calls;
+- policy is allowed before capture attaches, and privacy exclusion occurs while
+  the semantic projection is built;
+- server-side sanitization repeats the checks before model calls;
 - model-provider guardrails are defense in depth, not the privacy boundary;
 - regression fixtures test that private values cannot cross either boundary.
+
+Raw DOM/events are memory-only and never persisted. Sanitized semantic XML and
+its one causal observation may remain in a local encrypted retry spool until an
+applied/duplicate/no-change receipt, with a 24-hour hard TTL. Universal DB
+stores only action-map/list revisions and safe evidence metadata; it never
+stores semantic XML, raw or sanitized browsing observations, or private
+history.
 
 ### Terms policy
 
@@ -415,8 +440,8 @@ The credible target is one owned-site vertical slice, not Amazon and Devpost.
 5. Return structured product JSON to the WebMCP caller.
 6. Emit the run event ledger and one precise failure when a target or
    postcondition is wrong.
-7. Demonstrate record -> discover -> review -> publish -> invoke -> result on the
-   owned storefront.
+7. Demonstrate eligible page -> automatic semantic layer -> incremental map
+   revision -> review -> publish -> invoke -> result on the owned storefront.
 
 ### Parallel tracks after this contract freezes
 
@@ -425,14 +450,22 @@ The credible target is one owned-site vertical slice, not Amazon and Devpost.
 - **Track B — actor and execution:** primitive semantics, target cardinality,
   postconditions, navigation resume, and structured extraction.
 - **Track C — compiler and registry:** action-map-to-runtime projection,
-  publication, origin/route matching, policy gate, and versioning.
-- **Track D — learning quality:** goal capture, evidence-ID-only compilation,
-  client sanitizer, and owned-site replay fixture.
-- **Track E — integration:** one fixed demo plan and the full browser smoke test.
+  action-map compare-and-append, publication, origin/route matching, policy
+  gate, safe evidence metadata, and versioning.
+- **Track D — ambient capture:** policy-before-attach, semantic projection,
+  causal observations, internal lifecycle, client sanitizer, and local retry
+  retention.
+- **Track E — incremental parser:** one parse per completed layer, compact
+  context, executable evidence-bound patches, provenance upgrades, and path
+  composition.
+- **Track F — policy/review UI:** site-scope allow/block/revoke and revision
+  review, with no goal, record, start, or stop control.
+- **Track G — integration:** one fixed demo plan and the full browser smoke test.
 
-Tracks A through D share only the JSON schemas and event envelopes above. Track
-E starts immediately with a hand-authored fixture, then swaps in the learned
-plan when Track C connects publication.
+The detailed dependency order and non-overlapping ownership are in
+[`parallel-worktrees.md`](parallel-worktrees.md). All learning owners consume
+`ambient-parse-request/1`, `action-map-patch/1`, and
+`action-map-revision/1`; none may invent a parallel session/goal contract.
 
 ### Explicitly deferred
 
@@ -440,7 +473,7 @@ plan when Track C connects publication.
 - Devpost automation;
 - screenshots or temporary image URLs;
 - multi-user universal publication;
-- automatic merging of several demonstrations;
+- cross-device merging of private browsing observations;
 - self-healing selectors;
 - arbitrary-site write or danger actions.
 

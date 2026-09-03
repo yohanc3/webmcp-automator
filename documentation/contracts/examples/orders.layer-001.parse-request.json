@@ -1,0 +1,61 @@
+{
+  "schemaVersion": "ambient-parse-request/1",
+  "requestId": "parse_orders_001",
+  "idempotencyKey": "sha256:9bb83aa28261962a45302016f2ef9c040bbd057d5e8fc8cab73f3a02a1449f3b",
+  "attempt": 1,
+  "retryOf": null,
+  "siteScope": {
+    "scopeId": "owned_account_orders",
+    "origin": "https://shop.example",
+    "routePatterns": [
+      "^/account(?:\\?.*)?$",
+      "^/orders(?:\\?.*)?$"
+    ]
+  },
+  "layer": {
+    "layerId": "layer_orders_001",
+    "sequence": 1,
+    "completedAt": "2026-09-03T12:10:00Z",
+    "completionReason": "initial_document",
+    "url": "https://shop.example/account",
+    "semanticXmlVersion": "semantic-ui/2",
+    "semanticXmlDigest": "sha256:083328f70788701f3ce315f7c9c634ebbce5db3859a730ba8a304b1005d90e25",
+    "semanticXml": "<semantic-ui version='2' origin='https://shop.example' route='/account'><main><h1 ref='node_account_heading'>Account</h1><nav accessible-name='Account'><a ref='node_orders_link' role='link' accessible-name='Orders' href='/orders'>Orders</a></nav></main></semantic-ui>",
+    "evidenceIds": [
+      "node_account_heading",
+      "node_orders_link"
+    ]
+  },
+  "observation": null,
+  "mapBase": {
+    "revision": 0,
+    "digest": null,
+    "previousLayerSequence": 0
+  },
+  "context": {
+    "states": [],
+    "actions": []
+  },
+  "parser": {
+    "parserId": "ambient_action_parser",
+    "parserVersion": "1.0.0",
+    "promptVersion": "ambient-v1",
+    "outputSchemaVersion": "action-map-patch/1"
+  },
+  "policy": {
+    "decisionId": "policy_owned_orders",
+    "status": "allowed",
+    "scope": "ambient_learn",
+    "checkedAt": "2026-09-03T12:09:59Z"
+  },
+  "privacy": {
+    "sanitizerVersion": "semantic-sanitizer/1",
+    "redactionCount": 2,
+    "redactionDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "categories": [
+      "account_identifiers",
+      "query_parameters"
+    ],
+    "rawPersisted": false
+  }
+}
