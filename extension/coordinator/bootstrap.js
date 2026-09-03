@@ -97,6 +97,23 @@
       if (!response.ok) throw new Error(body.error || `Backend request failed with status ${response.status}`);
       return body;
     };
+    const validDigest = (value) => /^sha256:[a-f0-9]{64}$/.test(value || '');
+    const loadActionMapStatus = async (origin, scopeId) => {
+      try {
+        const headResponse = await fetchApi(`http://127.0.0.1:4317/v1/action-maps/${encodeURIComponent(scopeId)}/head`);
+        if (headResponse.status === 404) return { status: 'absent' };
+        if (!headResponse.ok) return { status: 'unavailable' };
+        const head = await headResponse.json();
+        const revision = head.revision;
+        const digest = head.digest;
+        if (head.siteScopeId !== scopeId || !Number.isInteger(revision) || revision < 1 || !validDigest(digest)) return { status: 'unavailable' };
+        const contextResponse = await fetchApi(`http://127.0.0.1:4317/v1/action-maps/${encodeURIComponent(scopeId)}/context?revision=${revision}`);
+        if (!contextResponse.ok) return { status: 'unavailable' };
+        const compact = await contextResponse.json();
+        if (compact.siteScopeId !== scopeId || compact.revision !== revision || compact.digest !== digest) return { status: 'unavailable' };
+        return { status: 'available', actionMap: { actions: compact.actions || [], states: compact.states || [] }, revision, digest };
+      } catch (error) { return { status: 'unavailable' }; }
+    };
     const deliverAmbientLayer = async (completedLayer) => {
       const response = await fetchApi('http://127.0.0.1:4317/v1/ambient/layers', {
         body: JSON.stringify(completedLayer),
@@ -207,7 +224,8 @@
           const stored = await get('local', policyKey(origin));
           const policy = await currentPolicy({ origin, scope: 'ambient_learn', revision: stored?.revision ?? null });
           const scopeId = ambientScope.scopeFor(origin);
-          return { ok: true, state: { context: { origin, siteScopeId: scopeId, policyRevision: policy?.revision ?? null, requestedScope: 'ambient_learn' }, policy, retrySpool: await retryMetadata(origin, scopeId) } };
+          const map = await loadActionMapStatus(origin, scopeId);
+          return { ok: true, state: { context: { origin, siteScopeId: scopeId, policyRevision: policy?.revision ?? null, requestedScope: 'ambient_learn', actionMapRevision: map.revision || null, actionMapDigest: map.digest || null }, policy, actionMap: map.status === 'available' ? map.actionMap : null, actionMapStatus: map.status, retrySpool: await retryMetadata(origin, scopeId) } };
         }
         case 'SET_OWNED_DEMO_OVERRIDE':
         {
