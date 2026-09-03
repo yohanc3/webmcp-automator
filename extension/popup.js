@@ -47,6 +47,7 @@ const refreshHealth = async () => {
 
 const policyReview = WebMcpPolicyReview.createController({
   rootElement: document.querySelector('#policy-review'),
+  onError: (error) => showNotice(error.message, 'error'),
   coordinator: {
     getPolicyReviewState: async () => {
       const response = await sendMessage({ type: 'GET_POLICY_REVIEW_STATE' });
@@ -59,6 +60,20 @@ const policyReview = WebMcpPolicyReview.createController({
     submitPolicyDecision: (decision) => sendMessage({
       type: 'SUBMIT_POLICY_DECISION',
       decision,
+    }),
+    submitCandidateReview: (decision) => sendMessage({
+      type: 'SUBMIT_CANDIDATE_REVIEW',
+      decision,
+    }),
+    submitRunConfirmation: (decision) => sendMessage({
+      type: 'SUBMIT_RUN_CONFIRMATION',
+      decision,
+    }),
+  },
+  registry: {
+    openEvidence: (reference) => sendMessage({
+      type: 'OPEN_CANDIDATE_EVIDENCE',
+      reference,
     }),
   },
   retrySpool: {

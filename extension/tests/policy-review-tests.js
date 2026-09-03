@@ -28,6 +28,8 @@
     actionMapDigest: MAP_DIGEST,
     actionMapRevision: 2,
     listDigest: DIGEST,
+    listRevision: 3,
+    runId: 'run_1',
     stepId: 'submit_order',
     documentId: 'document_1',
     policyRevision: 'policy_7',
@@ -306,6 +308,7 @@
 
   test('marks confirmation stale when any exact binding changes or is absent', () => {
     const fields = [
+      'runId',
       'listDigest',
       'stepId',
       'origin',
@@ -489,14 +492,12 @@
     rootElement.remove();
   });
 
-  test('renders candidate review as read-only even if a publication port is supplied', () => {
+  test('keeps candidate decisions unavailable without an authoritative coordinator port', () => {
     const rootElement = root();
     const controller = policyReview.createController({
       rootElement,
       coordinator: { getPolicyReviewState: async () => ({}) },
-      registry: {
-        submitCandidateDecision: () => Promise.resolve(),
-      },
+      registry: {},
     });
     controller.render({ context: context(), policy: policy(), candidate: candidate() });
     equal(buttonNamed(rootElement, 'Approve candidate'), undefined);
@@ -504,12 +505,53 @@
     rootElement.remove();
   });
 
+  test('submits one exact candidate decision and gates approval on every authority binding', () => {
+    const decisions = [];
+    const rootElement = root();
+    const controller = policyReview.createController({
+      rootElement,
+      now: () => NOW,
+      coordinator: {
+        getPolicyReviewState: async () => ({}),
+        submitCandidateReview: (decision) => {
+          decisions.push(decision);
+          return Promise.resolve();
+        },
+      },
+      registry: {},
+    });
+    const reviewedCandidate = candidate({ policyDecisionId: 'policy_3' });
+    controller.render({ context: context(), policy: policy(), candidate: reviewedCandidate });
+    equal(buttonNamed(rootElement, 'Approve candidate').disabled, false);
+    buttonNamed(rootElement, 'Approve candidate').click();
+    deepEqual(decisions, [policyReview.candidateDecision({
+      candidate: reviewedCandidate,
+      decision: 'approve',
+      policyDecisionId: 'policy_3',
+      reviewer: 'local-user',
+    })]);
+
+    controller.render({
+      context: context({ actionMapRevision: 4 }),
+      policy: policy(),
+      candidate: reviewedCandidate,
+    });
+    equal(buttonNamed(rootElement, 'Approve candidate').disabled, true);
+    equal(buttonNamed(rootElement, 'Reject candidate').disabled, false);
+    buttonNamed(rootElement, 'Reject candidate').click();
+    equal(decisions[1].decision, 'reject');
+    rootElement.remove();
+  });
+
   test('does not allow candidate decisions without current exact map and list digests', () => {
     const rootElement = root();
     const controller = policyReview.createController({
       rootElement,
-      coordinator: { getPolicyReviewState: async () => ({}) },
-      registry: { submitCandidateDecision: () => Promise.resolve() },
+      coordinator: {
+        getPolicyReviewState: async () => ({}),
+        submitCandidateReview: () => Promise.resolve(),
+      },
+      registry: {},
     });
     controller.render({
       context: context(),
@@ -522,6 +564,7 @@
     });
     match(rootElement.textContent, /Action-map digest binding is missing/);
     match(rootElement.textContent, /Action-list digest binding is missing/);
+    equal(buttonNamed(rootElement, 'Approve candidate').disabled, true);
     rootElement.remove();
   });
 
@@ -530,7 +573,7 @@
     const controller = policyReview.createController({
       rootElement,
       coordinator: { getPolicyReviewState: async () => ({}) },
-      registry: { submitCandidateDecision: () => Promise.resolve() },
+      registry: {},
     });
     controller.render({
       context: context({ actionMapDigest: `sha256:${'c'.repeat(64)}` }),
@@ -553,7 +596,7 @@
     const controller = policyReview.createController({
       rootElement,
       coordinator: { getPolicyReviewState: async () => ({}) },
-      registry: { submitCandidateDecision: () => Promise.resolve() },
+      registry: {},
     });
     controller.render({
       context: context({ listDigest: 'sha256:not-a-digest' }),
@@ -562,6 +605,30 @@
     });
     match(rootElement.textContent, /Action-map digest binding is invalid/);
     match(rootElement.textContent, /Current action-list digest is invalid/);
+    rootElement.remove();
+  });
+
+  test('blocks candidate approval for replay failure or absent authority IDs while preserving rejection', () => {
+    const rootElement = root();
+    const controller = policyReview.createController({
+      rootElement,
+      coordinator: {
+        getPolicyReviewState: async () => ({}),
+        submitCandidateReview: () => Promise.resolve(),
+      },
+      registry: {},
+    });
+    controller.render({
+      context: context(),
+      policy: policy(),
+      candidate: candidate({ policyDecisionId: 'policy_3', replayStatus: 'failed' }),
+    });
+    equal(buttonNamed(rootElement, 'Approve candidate').disabled, true);
+    equal(buttonNamed(rootElement, 'Reject candidate').disabled, false);
+
+    controller.render({ context: context(), policy: policy(), candidate: candidate() });
+    equal(buttonNamed(rootElement, 'Approve candidate').disabled, true);
+    match(rootElement.textContent, /authoritative policy and replay report IDs/);
     rootElement.remove();
   });
 
@@ -610,7 +677,7 @@
       rootElement,
       coordinator: {
         getPolicyReviewState: async () => ({}),
-        submitConfirmation: (decision) => {
+        submitRunConfirmation: (decision) => {
           decisions.push(decision);
           return Promise.resolve();
         },
@@ -635,9 +702,14 @@
     equal(decisions.length, 2);
     equal(decisions[0].approved, true);
     equal(decisions[1].approved, false);
-    equal(decisions[0].runId, 'run_1');
-    equal(decisions[0].stepId, 'submit_order');
-    deepEqual(decisions[0].binding, policyReview.confirmationBinding(confirmation()));
+    deepEqual(decisions[0], {
+      approved: true,
+      ...policyReview.confirmationBinding(confirmation()),
+    });
+    deepEqual(decisions[1], {
+      approved: false,
+      ...policyReview.confirmationBinding(confirmation()),
+    });
     rootElement.remove();
   });
 
@@ -647,7 +719,7 @@
       rootElement,
       coordinator: {
         getPolicyReviewState: async () => ({}),
-        submitConfirmation: () => Promise.resolve(),
+        submitRunConfirmation: () => Promise.resolve(),
       },
       registry: {},
     });
@@ -669,7 +741,7 @@
       now: () => NOW,
       coordinator: {
         getPolicyReviewState: async () => ({}),
-        submitConfirmation: () => Promise.resolve(),
+        submitRunConfirmation: () => Promise.resolve(),
       },
       registry: {},
     });
@@ -701,5 +773,13 @@
     ].join('\n');
     equal(/chrome\.storage|localStorage|sessionStorage/.test(source), false);
     equal(/START_RECORDING|STOP_RECORDING|CLEAR_RECORDING/.test(source), false);
+  });
+
+  test('popup routes review, evidence, and confirmation through fail-closed ports', () => {
+    const source = loadText('../popup.js');
+    match(source, /type: 'SUBMIT_CANDIDATE_REVIEW'/);
+    match(source, /type: 'OPEN_CANDIDATE_EVIDENCE'/);
+    match(source, /type: 'SUBMIT_RUN_CONFIRMATION'/);
+    match(source, /onError: \(error\) => showNotice\(error\.message, 'error'\)/);
   });
 })();
