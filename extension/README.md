@@ -29,6 +29,8 @@ The extension expects the local service at `http://127.0.0.1:4317`.
 - `runner.js` contains the paused deterministic replay path.
 - `manifest-contract.js` validates the paused adapter contract.
 - `popup.*` renders recording and discovery state.
+- `ui/policy-review.js` renders fail-closed policy, candidate review, and exact
+  confirmation state through injected coordinator and registry ports.
 - `tests/test-harness.js` provides reusable browser assertions, fixtures, and fakes.
 
 ## Test
