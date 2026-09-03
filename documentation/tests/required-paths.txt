@@ -10,9 +10,15 @@ server/internal/store/runtime_feedback_test.go
 extension/README.md
 extension/background.js
 extension/content.js
+extension/actor/bootstrap.js
+extension/actor/client.js
+extension/actor/runtime.js
 extension/coordinator/bootstrap.js
 extension/coordinator/candidate-replay.js
 extension/coordinator/candidate-replay.test.cjs
+extension/coordinator/ready-runtime.js
+extension/coordinator/run-coordinator.js
+extension/integration/ready-path.test.cjs
 extension/learning/bootstrap.js
 extension/shared/errors.js
 extension/shared/protocol.js
@@ -30,6 +36,7 @@ documentation/contracts/action-list.schema.json
 documentation/contracts/run-message.schema.json
 documentation/contracts/ambient-learning.md
 documentation/g10-candidate-publication.md
+documentation/g11-mvp-integration.md
 documentation/contracts/ambient-parse-request.schema.json
 documentation/contracts/action-map-patch.schema.json
 documentation/contracts/action-map-revision.schema.json

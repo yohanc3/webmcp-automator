@@ -42,12 +42,13 @@ The repository baseline already has:
 - a deterministic runner for `fill`, `click`, `press`, `wait`, and `extract`;
 - an owned storefront for repeatable tests.
 
-The ambient request/patch/revision contract defined here is new; existing
-batched `learning-trace/3` code remains a compatibility and replay-fixture path
-until the capture and compiler worktrees adopt it. The ready path is not
-connected end to end. WebMCP registration is disabled in
-`extension/content.js`, action-map discovery no longer produces active adapter
-versions, and the current source page polls the service worker for job results.
+The ambient request/patch/revision contract is implemented alongside the
+historical batched `learning-trace/3` compatibility and replay-fixture path.
+Published action lists are discovered and registered directly by the source
+bridge. Invocation is event-driven through the durable coordinator, isolated
+execution actor, exact confirmation boundary, terminal acknowledgement, and
+privacy-safe runtime feedback. Candidate replay uses a separate actor port and
+private coordinator while sharing the same pinned execution protocol.
 
 ## Ready-path architecture
 
@@ -137,7 +138,7 @@ Use events rather than 200 ms job polling. Extension-owned contexts use a named
 
 Allowed message types are:
 
-- `run.request`, `run.accepted`, `run.cancel`;
+- `run.request`, `run.accepted`, `run.ack`, `run.cancel`;
 - `page.ready`;
 - `step.command`, `step.completed`, `step.failed`;
 - `run.awaiting_confirmation`, `run.result`, `run.error`.
@@ -146,6 +147,18 @@ Receivers reject unknown protocol versions, message types, stale document IDs,
 duplicate sequence numbers with different payloads, and payloads that do not
 match their schema. Duplicate identical events are acknowledged without
 repeating the action.
+
+Every `run.request` pins the registered `listId`, `listRevision`, and
+`listDigest`. The coordinator resolves that immutable registry revision rather
+than whichever revision is newest when execution begins. Each `page.ready`
+also reports deterministic actor evaluation of the entry precondition and any
+pending navigation-step condition; the coordinator remains responsible for
+binding those results to the current execution document.
+
+Before dispatching a confirmed consequential step, the coordinator requires a
+new `page.ready` sequence that matches the confirmation-bound URL, state, and
+navigation sequence. A same-document SPA or DOM transition therefore cannot
+reuse an approval that was presented for an earlier page attestation.
 
 The bridge carries no API keys, database credentials, raw action maps, or
 unredacted traces. The host page can observe and forge main-world messages, so

@@ -80,12 +80,12 @@
         });
         return tab;
       },
-      async findReusable({ excludeTabIds = [], origin }) {
+      async findReusable({ excludeTabIds = [], origin, url = null }) {
         const [ids, tabs] = await Promise.all([readOwned(), chromeApi.tabs.query({ active: false })]);
         return tabs.find((tab) => {
           if (!ids.includes(tab.id) || excludeTabIds.includes(tab.id)) return false;
           try {
-            return new URL(tab.url).origin === origin;
+            return new URL(tab.url).origin === origin && (!url || tab.url === url);
           } catch (error) {
             return false;
           }

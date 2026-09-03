@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Action Mapper Lab",
   "version": "0.1.0",
-  "description": "Record browser workflows and discover deterministic page states and actions.",
+  "description": "Learn browser actions from eligible semantic page changes and expose reviewed WebMCP tools.",
   "permissions": [
     "storage",
     "tabs"
@@ -32,6 +32,7 @@
         "shared/ambient-scope.js",
         "shared/errors.js",
         "actor/runtime.js",
+        "actor/bootstrap.js",
         "actor/client.js",
         "source/bootstrap.js",
         "learning/privacy.js",

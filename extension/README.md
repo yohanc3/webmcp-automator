@@ -26,9 +26,13 @@ The extension expects the local service at `http://127.0.0.1:4317`.
 - `shared/` owns the versioned run-envelope protocol and public errors.
 - `source/bootstrap.js` discovers published action lists and exposes their WebMCP tools.
 - `actor/runtime.js` executes pinned deterministic action primitives without network access.
-- `actor/client.js` binds an execution document to the durable coordinator port.
+- `actor/bootstrap.js` binds normal and isolated replay documents to the same
+  durable actor protocol; `actor/client.js` remains a compatibility-tested
+  predecessor rather than the production replay transport.
 - `learning/bootstrap.js` captures page interactions and semantic evidence.
 - `coordinator/run-coordinator.js` persists runs, confirmations, navigation, and outcomes.
+- `coordinator/ready-runtime.js` owns immutable registry resolution, exact
+  confirmation DTOs, Chrome persistence, and restart recovery.
 - `coordinator/bootstrap.js` composes ready-path execution with ambient learning and review.
 - `runner.js` and `manifest-contract.js` remain only for learned-adapter compatibility tests.
 - `popup.*` renders the ambient policy and review console.

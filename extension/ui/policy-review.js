@@ -13,12 +13,20 @@
   const AMBIENT_LEARN_SCOPE = 'ambient_learn';
   const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
   const BINDING_FIELDS = Object.freeze([
-    ['runId', 'Run'],
+    ['confirmationId', 'Confirmation'],
+    ['boundary', 'Boundary'],
     ['listDigest', 'Action-list digest'],
     ['stepId', 'Step'],
     ['origin', 'Origin'],
     ['documentId', 'Document'],
     ['policyRevision', 'Policy revision'],
+  ]);
+  const PAGE_BINDING_FIELDS = Object.freeze([
+    ['url', 'Page URL'],
+    ['stateId', 'Page state'],
+    ['navigationSequence', 'Navigation sequence'],
+    ['pageRevision', 'Page revision'],
+    ['actorSequence', 'Page attestation'],
   ]);
 
   const asArray = (value) => (Array.isArray(value) ? value : []);
@@ -275,12 +283,22 @@
   };
 
   const confirmationBinding = (confirmation = {}) => ({
-    runId: confirmation.runId || confirmation.binding?.runId || null,
+    actorSequence: confirmation.actorSequence ?? confirmation.binding?.actorSequence ?? null,
+    boundary: confirmation.boundary || confirmation.binding?.boundary || null,
+    confirmationId: confirmation.confirmationId
+      || confirmation.binding?.confirmationId
+      || null,
     listDigest: confirmation.listDigest || confirmation.binding?.listDigest || null,
     stepId: confirmation.stepId || confirmation.binding?.stepId || null,
     origin: normalizedOrigin(confirmation.origin || confirmation.binding?.origin),
     documentId: confirmation.documentId || confirmation.binding?.documentId || null,
+    navigationSequence: confirmation.navigationSequence
+      ?? confirmation.binding?.navigationSequence
+      ?? null,
     policyRevision: confirmation.policyRevision || confirmation.binding?.policyRevision || null,
+    pageRevision: confirmation.pageRevision ?? confirmation.binding?.pageRevision ?? null,
+    stateId: confirmation.stateId || confirmation.binding?.stateId || null,
+    url: confirmation.url || confirmation.binding?.url || null,
   });
 
   const candidateDecision = ({ candidate = {}, decision, policyDecisionId } = {}) => {
@@ -321,11 +339,12 @@
     if (!confirmation) return ['No confirmation request is pending.'];
     const expected = confirmationBinding(confirmation);
     const current = confirmationBinding(context);
-    const fields = BINDING_FIELDS.filter(([field]) => (
-      field !== 'runId' || expected.runId || current.runId
-    ));
+    const fields = expected.boundary === 'before_run'
+      ? BINDING_FIELDS
+      : [...BINDING_FIELDS, ...PAGE_BINDING_FIELDS];
+    const missing = (value) => value === null || value === undefined || value === '';
     return fields.reduce((reasons, [field, label]) => {
-      if (!expected[field] || !current[field]) {
+      if (missing(expected[field]) || missing(current[field])) {
         return [...reasons, `${label} binding is missing.`];
       }
       if (expected[field] !== current[field]) {
@@ -894,6 +913,13 @@
     appendDefinition(details, 'Digest', binding.listDigest, 'trust-detail-wide mono');
     appendDefinition(details, 'Document', binding.documentId, 'mono');
     appendDefinition(details, 'Policy rev', binding.policyRevision, 'mono');
+    if (binding.boundary !== 'before_run') {
+      appendDefinition(details, 'Page state', binding.stateId, 'mono');
+      appendDefinition(details, 'Navigation', binding.navigationSequence, 'mono');
+      appendDefinition(details, 'Page rev', binding.pageRevision, 'mono');
+      appendDefinition(details, 'Attestation', binding.actorSequence, 'mono');
+      appendDefinition(details, 'Page URL', binding.url, 'trust-detail-wide mono');
+    }
     section.append(details, renderArguments(confirmation));
 
     if (confirmation.step) {
@@ -915,19 +941,24 @@
       ));
     }
 
-    if (coordinator?.submitRunConfirmation) {
+    if (coordinator?.submitConfirmation) {
       const controls = createElement('div', 'decision-controls');
       const deny = createElement('button', 'button button-stop', 'Deny run');
       const approve = createElement('button', 'button button-verified', 'Approve exact step');
       deny.type = 'button';
       approve.type = 'button';
-      approve.disabled = stale || !binding.runId || !policyDecision.eligible;
+      approve.disabled = stale || !policyDecision.eligible;
+      let submitted = false;
       const submit = (approved) => {
+        if (submitted) return;
+        submitted = true;
         deny.disabled = true;
         approve.disabled = true;
-        void coordinator.submitRunConfirmation({
+        void coordinator.submitConfirmation({
           approved,
-          ...binding,
+          binding,
+          runId: confirmation.runId,
+          stepId: binding.stepId,
         }).then(refresh).catch(failClosed);
       };
       deny.addEventListener('click', () => submit(false));

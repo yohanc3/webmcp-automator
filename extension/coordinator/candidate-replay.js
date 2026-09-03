@@ -106,12 +106,17 @@
       observations: { async save() {} },
       validateActionList: () => ({ valid: true }),
       registry: {
-        async resolveExact({ actionId, actionVersion, listId }) {
+        async resolveExact({ actionId, actionVersion, expectedDigest, listId, revision }) {
           const list = plans.get(listId);
           const action = list?.actions?.find((candidate) => (
             candidate.id === actionId && candidate.version === actionVersion
           ));
-          if (!list || !action) throw new Error('The replay plan is no longer active');
+          if (!list
+            || !action
+            || list.publication?.contentDigest !== expectedDigest
+            || list.publication?.revision !== revision) {
+            throw new Error('The exact replay plan is no longer active');
+          }
           return { digest: list.publication.contentDigest, list: clone(list) };
         },
       },
@@ -165,7 +170,9 @@
               actionId: action.id,
               actionVersion: action.version,
               arguments: deriveArguments(action, sourceUrl),
+              listDigest: list.publication.contentDigest,
               listId: list.listId,
+              listRevision: list.publication.revision,
               sourceUrl,
             },
           })).catch(reject);

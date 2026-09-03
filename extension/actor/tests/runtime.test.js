@@ -210,6 +210,24 @@
     completed(await execute(waitStep(present('#later'), 180)));
   });
 
+  test('readiness condition evaluation waits for delayed DOM evidence', async () => {
+    reset('');
+    const step = waitStep(present('#ready-later'), 180);
+    const action = actionFor(step);
+    setTimeout(() => sandbox.insertAdjacentHTML(
+      'beforeend',
+      '<div id="ready-later">ready</div>',
+    ), 30);
+    equal(await WebMcpActor.evaluateConditionSet({
+      action,
+      document,
+      set: step.expect,
+      states: [],
+      step,
+      timeoutMs: 180,
+    }), true);
+  });
+
   test('wait condition timeout is TIMEOUT', async () => {
     reset();
     failed(await execute(waitStep(present('#never'), 100)), 'TIMEOUT');
@@ -412,6 +430,18 @@
     const response = await fetch('/documentation/contracts/examples/owned-storefront.action-list.json');
     const list = await response.json();
     const action = list.actions.find(({ id }) => id === 'search_products');
+    const escapedOrigin = origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    action.runtime.allowedOrigins = [origin];
+    action.precondition.urlPatterns = [`^${escapedOrigin}/demo/?$`];
+    action.steps[1].expect.checks.find(({ kind }) => kind === 'url').pattern = (
+      `^${escapedOrigin}/demo/search(?:\\?.*)?$`
+    );
+    list.states.find(({ id }) => id === 'catalog')
+      .match.checks.find(({ kind }) => kind === 'url').pattern = `^${escapedOrigin}/demo/?$`;
+    list.states.find(({ id }) => id === 'search_results')
+      .match.checks.find(({ kind }) => kind === 'url').pattern = (
+        `^${escapedOrigin}/demo/search(?:\\?.*)?$`
+      );
     history.replaceState({}, '', '/demo/');
     sandbox.innerHTML = `<form role="search">
       <label for="catalog-search">Search the catalog</label>

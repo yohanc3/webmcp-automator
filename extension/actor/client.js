@@ -66,8 +66,10 @@
         runId: message.runId,
       };
       const stateId = await actorApi.detectStateId({
+        action: plan.action,
         states: plan.states,
         document: documentObject,
+        timeoutMs: plan.action?.runtime?.stateDetectionTimeoutMs || 0,
       });
       post(protocol.RUN_MESSAGE_TYPES.pageReady, plan.requestId, plan.runId, {
         navigationSequence,

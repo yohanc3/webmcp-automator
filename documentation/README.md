@@ -12,6 +12,9 @@
   privacy retention, and parallel-owner handoffs.
 - [`g10-candidate-publication.md`](g10-candidate-publication.md) defines the
   authoritative candidate replay, review, and explicit publication lifecycle.
+- [`g11-mvp-integration.md`](g11-mvp-integration.md) documents the composed
+  learn-to-candidate and published-tool execution path plus its reproducible
+  owned-demo boundary.
 - [`parallel-worktrees.md`](parallel-worktrees.md) defines which components must
   move together and the dependency-aware branches, ownership, handoffs, and
   integration waves for parallel implementation.

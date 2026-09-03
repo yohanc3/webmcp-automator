@@ -1,9 +1,9 @@
 # Server
 
-The server is the trusted boundary for recorded browser traces. It validates
-frame order, strips sensitive evidence, stores the sanitized trace in PostgreSQL,
-asks the selected AI provider to compile an action map, validates the model
-output, and stores the result.
+The server is the trusted boundary for ambient semantic layers and historical
+browser traces. It strips sensitive evidence, validates causal order, asks the
+selected AI provider to incrementally revise an action map, validates every
+patch, and stores immutable map and action-list revisions in PostgreSQL.
 
 ## Packages
 
@@ -58,8 +58,9 @@ Configuration:
 
 `server/.env` is ignored by Git; `.env.example` documents the expected variable
 without storing a secret. A non-empty `CEREBRAS_API_KEY` takes precedence;
-otherwise the service uses `OPENROUTER_API_KEY`. Without either key, recording
-and persistence remain available but synthesis cannot complete.
+otherwise the service uses `OPENROUTER_API_KEY`. Without either key, sanitized
+capture and persistence remain available but AI action-map synthesis cannot
+complete.
 
 The Go process reads `.env` directly. Unquoted URL characters such as `&` are
 treated literally, and variables already present in the process environment
@@ -71,8 +72,8 @@ take precedence over the file.
 - `POST /api/discover` validates and stores a trace, then starts discovery.
 - `GET /api/discover/{sessionId}` returns discovery progress and results.
 - `POST /api/learn` is a compatibility alias for `/api/discover`.
-- Adapter publication and run-history routes are retained for the paused replay
-  experiment.
+- Action-list discovery, exact revision reads, candidate review, publication,
+  and durable run-feedback routes support the active ready path.
 - Candidate-review replay accepts an exact actor coverage report from the
   extension and validates every action/version/step before storing a passed
   gate.

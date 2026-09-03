@@ -329,7 +329,80 @@ test('action-map heads and candidate bindings require the exact current digests'
   assert.deepEqual(policyReview.reviewBinding(candidate), { actionMapDigest: mapDigest, actionMapRevision: 7, listDigest, listRevision: 3 });
   assert.deepEqual(policyReview.staleReviewReasons(candidate, { actionMap: { head: { digest: mapDigest } }, listDigest }), []);
   assert.deepEqual(policyReview.staleReviewReasons(candidate, { actionMapDigest: `sha256:${'c'.repeat(64)}`, listDigest }), ['Action-map digest changed.']);
-  assert.deepEqual(policyReview.staleConfirmationReasons({ documentId: 'doc_1', listDigest, origin: 'https://shop.test', policyRevision: 5, stepId: 'step_1' }, { documentId: 'doc_1', listDigest, origin: 'https://shop.test', policyRevision: 5, stepId: 'step_1' }), []);
+  const confirmationBinding = {
+    actorSequence: 2,
+    boundary: 'before_step',
+    confirmationId: 'confirmation_run_1_step_1_1',
+    documentId: 'doc_1',
+    listDigest,
+    navigationSequence: 0,
+    origin: 'https://shop.test',
+    pageRevision: 1,
+    policyRevision: 5,
+    stateId: 'catalog',
+    stepId: 'step_1',
+    url: 'https://shop.test/catalog',
+  };
+  assert.deepEqual(policyReview.staleConfirmationReasons(
+    { binding: confirmationBinding }, confirmationBinding,
+  ), []);
+});
+
+test('ambient policy review delegates exact run confirmation to the ready runtime', async () => {
+  const binding = {
+    actorSequence: 9,
+    boundary: 'before_step',
+    confirmationId: 'confirmation_run_2_submit_search_1',
+    documentId: 'document_2',
+    listDigest: `sha256:${'c'.repeat(64)}`,
+    navigationSequence: 1,
+    origin: 'https://shop.test',
+    pageRevision: 3,
+    policyRevision: '2026-09-03T12:00:00.000Z',
+    stateId: 'catalog',
+    stepId: 'submit_search',
+    url: 'https://shop.test/catalog',
+  };
+  const submitted = [];
+  const readyExecution = {
+    async getPolicyReviewState() {
+      return {
+        confirmation: {
+          binding,
+          documentId: binding.documentId,
+          listDigest: binding.listDigest,
+          origin: binding.origin,
+          policyRevision: binding.policyRevision,
+          runId: 'run_2',
+          stepId: binding.stepId,
+        },
+        context: binding,
+      };
+    },
+    async submitRunConfirmation(decision) { submitted.push(decision); },
+  };
+  const fixture = coordinatorFixture();
+  const coordinator = coordinatorApi.createCoordinator({
+    chromeApi: fixture.chromeApi,
+    fetchApi: async () => { throw new Error('offline'); },
+    readyExecution,
+    retrySpoolApi: retrySpool,
+  });
+  const state = await coordinator.handleMessage({ type: 'GET_POLICY_REVIEW_STATE' });
+  const decision = {
+    approved: true,
+    binding,
+    runId: 'run_2',
+    stepId: binding.stepId,
+  };
+
+  assert.deepEqual(state.state.confirmation.binding, binding);
+  assert.equal(state.state.context.actorSequence, 9);
+  assert.deepEqual(await coordinator.handleMessage({
+    decision,
+    type: 'SUBMIT_RUN_CONFIRMATION',
+  }), { ok: true });
+  assert.deepEqual(submitted, [decision]);
 });
 
 test('coordinator discovers published action lists and preserves readiness and status dispatch', async () => {

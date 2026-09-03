@@ -7,10 +7,11 @@
     root.WebMcpRunCoordinator || (typeof module === 'object' && module.exports ? require('./run-coordinator.js') : null),
     root.WebMcpChromeCoordinatorAdapters || (typeof module === 'object' && module.exports ? require('./chrome-adapters.js') : null),
     root.WebMcpCandidateReplay || (typeof module === 'object' && module.exports ? require('./candidate-replay.js') : null),
+    root.WebMcpReadyRuntime || (typeof module === 'object' && module.exports ? require('./ready-runtime.js') : null),
   );
   root.WebMcpCoordinatorBootstrap = api;
   if (typeof module === 'object' && module.exports) module.exports = api;
-}(typeof globalThis === 'undefined' ? this : globalThis, (retrySpool, publicErrors, protocol, ambientScope, runCoordinatorApi, chromeAdapters, candidateReplayApi) => {
+}(typeof globalThis === 'undefined' ? this : globalThis, (retrySpool, publicErrors, protocol, ambientScope, runCoordinatorApi, chromeAdapters, candidateReplayApi, readyRuntimeApi) => {
   'use strict';
 
   const POLICY_PREFIX = 'ambientPolicy:';
@@ -43,6 +44,7 @@
     fetchApi = fetch,
     isExecutionTab = async () => false,
     now = () => new Date().toISOString(),
+    readyExecution = null,
     retrySpoolApi = retrySpool,
   } = {}) => {
     let queue = Promise.resolve();
@@ -61,6 +63,14 @@
     const lifecycleKey = (scopeId) => `${LIFECYCLE_PREFIX}${scopeId}`;
     const candidateKey = (scopeId) => `${CANDIDATE_PREFIX}${scopeId}`;
     const confirmationFor = async ({ origin, runId = null } = {}) => {
+      if (readyExecution?.getPolicyReviewState) {
+        const state = await readyExecution.getPolicyReviewState();
+        const confirmation = state?.confirmation || null;
+        if (!confirmation
+          || (runId && confirmation.runId !== runId)
+          || (origin && confirmation.origin !== origin)) return null;
+        return confirmation;
+      }
       if (!durableCoordinator) return null;
       const runs = await durableCoordinator.storage.list();
       const record = runs.find((run) => (
@@ -362,11 +372,15 @@
             mapState.candidate = await currentCandidate({ actionMap: mapState.actionMap, scopeId });
           }
           const confirmation = await confirmationFor({ origin });
+          const readyState = confirmation && readyExecution?.getPolicyReviewState
+            ? await readyExecution.getPolicyReviewState()
+            : null;
           return { ok: true, state: {
             ...mapState,
             context: {
               actionMapDigest: mapState.actionMap?.digest || null,
               actionMapRevision: mapState.actionMap?.revision || null,
+              ...(readyState?.context || {}),
               documentId: confirmation?.documentId || null,
               listDigest: confirmation?.listDigest || mapState.candidate?.listDigest || null,
               listRevision: mapState.candidate?.listRevision || null,
@@ -487,7 +501,7 @@
         }
         case 'SUBMIT_RUN_CONFIRMATION':
         {
-          if (!durableCoordinator) {
+          if (!readyExecution && !durableCoordinator) {
             return { ok: false, error: 'No matching exact coordinator run confirmation is pending' };
           }
           const supplied = message.decision || {};
@@ -497,15 +511,24 @@
           if (!expected || typeof supplied.approved !== 'boolean') {
             return { ok: false, error: 'No matching exact coordinator run confirmation is pending' };
           }
-          const fields = ['runId', 'listDigest', 'stepId', 'origin', 'documentId', 'policyRevision'];
-          if (fields.some((field) => supplied[field] !== expected[field])) {
-            return { ok: false, error: 'Run confirmation does not match the current exact binding' };
+          try {
+            if (readyExecution?.submitRunConfirmation) {
+              await readyExecution.submitRunConfirmation(supplied);
+            } else {
+              const suppliedBinding = supplied.binding || supplied;
+              const fields = ['listDigest', 'stepId', 'origin', 'documentId', 'policyRevision'];
+              if (fields.some((field) => suppliedBinding[field] !== expected[field])) {
+                throw new Error('Run confirmation does not match the current exact binding');
+              }
+              await durableCoordinator.submitConfirmation({
+                approved: supplied.approved,
+                runId: expected.runId,
+                stepId: expected.stepId,
+              });
+            }
+          } catch (error) {
+            return { ok: false, error: error.message };
           }
-          await durableCoordinator.submitConfirmation({
-            approved: supplied.approved,
-            runId: expected.runId,
-            stepId: expected.stepId,
-          });
           return { ok: true };
         }
         case protocol.MESSAGE_TYPES.pageReady:
@@ -528,67 +551,56 @@
     return Object.freeze({ handleMessage, retryMetadata, retrySpoolReady: Boolean(retrySpoolApi) });
   };
 
-  const createDurableCoordinator = ({ chromeApi = chrome, fetchApi = fetch, now, tabs = null } = {}) => {
-    if (!runCoordinatorApi?.DurableRunCoordinator || !chromeAdapters) {
-      throw new Error('Durable run coordinator dependencies are unavailable');
-    }
+  const createObservationSink = ({ chromeApi = chrome, fetchApi = fetch } = {}) => {
     const area = chromeApi.storage.local;
     const localObservations = chromeAdapters.createChromeObservationStore(area);
-    return new runCoordinatorApi.DurableRunCoordinator({
-      storage: chromeAdapters.createChromeRunStorage(area),
-      observations: {
-        async save(observation) {
-          await localObservations.save(observation);
-          const response = await fetchApi('http://127.0.0.1:4317/v1/run-observations', {
-            body: JSON.stringify(observation),
-            headers: { 'Content-Type': 'application/json', 'X-WebMCP-Internal': 'ambient-v1' },
-            method: 'POST',
-          }).catch(() => null);
-          const body = await response?.json?.().catch(() => null);
-          if (!response?.ok) throw new Error('Run observation feedback delivery failed');
-          const candidate = body?.actionListCandidate;
-          const scopeId = body?.feedback?.scopeId;
-          if (response?.ok && scopeId && candidate?.status === 'candidate'
-            && validRevision(candidate.revision) && validDigest(candidate.digest)) {
-            await chromeApi.storage.session.set({
-              [`${CANDIDATE_PREFIX}${scopeId}`]: {
-                digest: candidate.digest,
-                listId: candidate.listId,
-                revision: candidate.revision,
-                status: candidate.status,
-              },
-            });
-          }
-        },
+    return {
+      async save(observation) {
+        await localObservations.save(observation);
+        const response = await fetchApi('http://127.0.0.1:4317/v1/run-observations', {
+          body: JSON.stringify(observation),
+          headers: { 'Content-Type': 'application/json', 'X-WebMCP-Internal': 'ambient-v1' },
+          method: 'POST',
+        }).catch(() => null);
+        const body = await response?.json?.().catch(() => null);
+        if (!response?.ok) throw new Error('Run observation feedback delivery failed');
+        const candidate = body?.actionListCandidate;
+        const scopeId = body?.feedback?.scopeId;
+        if (scopeId && candidate?.status === 'candidate'
+          && validRevision(candidate.revision) && validDigest(candidate.digest)) {
+          await chromeApi.storage.session.set({
+            [`${CANDIDATE_PREFIX}${scopeId}`]: {
+              digest: candidate.digest,
+              listId: candidate.listId,
+              revision: candidate.revision,
+              status: candidate.status,
+            },
+          });
+        }
       },
-      tabs: tabs || chromeAdapters.createChromeTabs(chromeApi, area),
-      ...(now ? { now } : {}),
-      registry: {
-        async resolveExact({ actionId, actionVersion, listId }) {
-          const response = await fetchApi(
-            `http://127.0.0.1:4317/v1/action-lists/${encodeURIComponent(listId)}/revisions/${actionVersion}`,
-            { headers: { 'X-WebMCP-Internal': 'ambient-v1' } },
-          );
-          const list = await response.json().catch(() => null);
-          if (!response.ok || !list || !list.actions?.some((action) => (
-            action.id === actionId && action.version === actionVersion
-          ))) throw new Error('Exact published action was unavailable');
-          return {
-            digest: response.headers?.get?.('X-Content-Digest')
-              || list.publication?.contentDigest,
-            list,
-          };
-        },
-      },
-    });
+    };
+  };
+
+  const createDurableCoordinator = ({ chromeApi = chrome, fetchApi = fetch, tabs = null } = {}) => {
+    if (!readyRuntimeApi?.createReadyRuntime || !chromeAdapters) {
+      throw new Error('Ready run coordinator dependencies are unavailable');
+    }
+    return readyRuntimeApi.createReadyRuntime({
+      chromeApi,
+      fetchApi,
+      observations: createObservationSink({ chromeApi, fetchApi }),
+      ...(tabs ? { tabs } : {}),
+    }).coordinator;
   };
 
   let started = false;
   const start = () => {
     if (started) return;
     started = true;
+    if (!readyRuntimeApi?.createReadyRuntime || !candidateReplayApi?.createReplayRunner) {
+      throw new Error('Integrated ready runtime dependencies are unavailable');
+    }
     const tabs = chromeAdapters.createChromeTabs(chrome, chrome.storage.local);
-    const durable = createDurableCoordinator({ tabs });
     const replayTabs = {
       ...tabs,
       // Candidate replay always gets a fresh isolated actor tab. Sharing a reusable
@@ -596,16 +608,19 @@
       findReusable: async () => null,
     };
     const replay = candidateReplayApi?.createReplayRunner?.({ chromeApi: chrome, tabs: replayTabs });
-    chromeAdapters.installChromeCoordinator({
+    const ready = readyRuntimeApi.createReadyRuntime({
       chromeApi: chrome,
-      coordinator: durable,
+      observations: createObservationSink({ chromeApi: chrome }),
       portHandlers: replay ? { [candidateReplayApi.PORT_NAME]: replay.bindPort } : {},
       tabClosedHandlers: replay ? [replay.tabClosed] : [],
+      tabs,
     });
+    ready.start();
     const coordinator = createCoordinator({
       candidateReplayRunner: replay,
-      durableCoordinator: durable,
-      isExecutionTab: async (tabId) => (await durable.storage.list()).some((run) => (
+      durableCoordinator: ready.coordinator,
+      readyExecution: ready,
+      isExecutionTab: async (tabId) => (await ready.coordinator.storage.list()).some((run) => (
         run.execution?.tabId === tabId && !['completed', 'failed', 'cancelled'].includes(run.status)
       )),
     });
@@ -614,5 +629,5 @@
       return true;
     });
   };
-  return Object.freeze({ createCoordinator, createDurableCoordinator, start });
+  return Object.freeze({ createCoordinator, createDurableCoordinator, createObservationSink, start });
 }));

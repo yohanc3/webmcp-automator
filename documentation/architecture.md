@@ -4,8 +4,8 @@
 
 Action Mapper is currently testing one narrow question:
 
-> Can one demonstrated workflow plus semantic UI evidence produce a useful map
-> of what a website can do and the steps required to do it?
+> Can continuous privacy-bounded semantic evidence produce a useful map of what
+> a website can do and the deterministic steps required to do it?
 
 Published actions are registered as WebMCP tools. Invocation crosses one named
 source port into a durable coordinator, which opens an inactive execution tab,
@@ -33,21 +33,21 @@ name, but its `kind` is `directed_action_graph`.
 ## Discovery pipeline
 
 ```text
-user starts recording
-  -> extension captures the initial semantic page map
-  -> interactions and their UI changes become ordered causal frames
-  -> extension normalizes focus clicks and repeated fills
-  -> server validates frame order and rebuilds the directed graph
-  -> server removes typed values, URL parameters, duplicate XML, and identifiers
-  -> sanitized evidence is stored in PostgreSQL
-  -> API returns while discovery continues asynchronously
-  -> the configured Cerebras or OpenRouter model groups evidence into meaningful actions
-  -> server validates and stores the action-map/1 result
-  -> extension renders states, actions, steps, evidence, and missing evidence
+eligible top-level page with current ambient policy
+  -> extension captures one sanitized semantic-ui/2 layer
+  -> trusted user interactions and resulting UI changes preserve causal order
+  -> every completed layer is delivered once or kept in the encrypted local retry spool
+  -> server builds a bounded parse request from that layer plus compact prior map context
+  -> configured Cerebras or OpenRouter model proposes a typed action-map patch
+  -> server validates, materializes, digests, and appends one immutable action-map revision
+  -> executable actions become an exact action-list candidate
+  -> actor replay, policy, and explicit review gates control publication
 ```
 
-The model groups already captured evidence. It does not receive permission to
-invent DOM behavior, hidden APIs, locators, or transitions.
+The model parses every accepted layer; there is no novelty threshold, goal, or
+manual recording lifecycle. It receives only bounded current evidence and
+compact accepted semantics from prior revisions. It does not receive permission
+to invent DOM behavior, hidden APIs, locators, or transitions.
 
 ## Semantic evidence
 
@@ -62,7 +62,7 @@ deltas. Geometry supports interpretation but is not used as a replay locator.
 published action-list/1 revision
   -> source bridge registers the public WebMCP tool
   -> durable coordinator resolves the exact list, action version, digest, and policy
-  -> execution client identifies the current learned state
+  -> actor bootstrap identifies the current learned state
   -> actor executes pinned steps without network or model access
   -> write/danger steps pause on an exact run confirmation
   -> coordinator stores the terminal observation and settles the source call once
@@ -72,10 +72,13 @@ The model participates in learning and compilation. It is never in the execution
 
 ## Current limits
 
-- One recording is evidence, not universal site understanding.
-- Several observations are not yet merged into one durable graph.
+- A completed layer is evidence, not universal site understanding; prior context
+  is deliberately compact and accepted revisions remain the authority.
 - Generated CSS, A/B layouts, virtualized content, closed Shadow DOM, and
   cross-origin frames can weaken the evidence.
-- Privacy stripping is heuristic.
-- The owned demo has a deterministic published basket action; broader sites still need
-  more demonstrations, replay coverage, and reviewed publication before tools appear.
+- Privacy stripping is heuristic and the local retry key is session-scoped.
+- Candidate generation is automatic, but execution policy, actor replay, and
+  publication review remain explicit safety gates.
+- The owned demo has deterministic published search and basket actions; broader
+  sites still require live-model evidence, replay coverage, and reviewed
+  publication before tools appear.

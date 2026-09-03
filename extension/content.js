@@ -2,7 +2,7 @@
   'use strict';
 
   const source = WebMcpSourceBootstrap;
-  const actor = WebMcpActorClient;
+  const actor = WebMcpActorBootstrap;
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const sourceResult = source.handleMessage(message, sender, sendResponse);

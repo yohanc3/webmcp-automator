@@ -14,6 +14,7 @@
     executionInitialize: 'execution.initialize',
     pageReady: 'page.ready',
     runAccepted: 'run.accepted',
+    runAck: 'run.ack',
     runAwaitingConfirmation: 'run.awaiting_confirmation',
     runCancel: 'run.cancel',
     runConfirm: 'run.confirm',

@@ -61,10 +61,12 @@ test('selects a concrete start URL for each action in a multi-route candidate', 
 
 test('uses the durable coordinator result to build complete replay coverage', async () => {
   const calls = [];
+  let requestPayload;
   const coordinator = {
     bindPort(port) { calls.push(['bind', port.name]); return {}; },
     async receive(port, _binding, message) {
       calls.push(['receive', message.type]);
+      requestPayload = message.payload;
       port.postMessage({
         type: 'run.result',
         payload: { evidence: { completedSteps: ['fill_query', 'submit_search'] } },
@@ -85,6 +87,8 @@ test('uses the durable coordinator result to build complete replay coverage', as
     actionId: 'search_products', actionVersion: 3,
     postconditionsVerified: 2, stepsExecuted: 2,
   }]);
+  assert.equal(requestPayload.listDigest, DIGEST);
+  assert.equal(requestPayload.listRevision, 3);
   assert.deepEqual(calls, [['bind', 'webmcp-run/1:source'], ['receive', 'run.request']]);
 
   const port = {

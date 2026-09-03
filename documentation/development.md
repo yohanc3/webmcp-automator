@@ -10,23 +10,29 @@ make test
 make check
 ```
 
-`make run` starts the Go service. `make test` runs server, extension, and
-documentation tests. `make check` adds `go vet`. None of these commands requires
-Node.js or npm.
+`make run` starts the Go service. `make test` runs server, Node, browser, actor,
+and documentation tests. `make check` adds `go vet`. Node.js is required, but
+npm is not.
 
 ## Demo walkthrough
 
 The owned storefront lives in `workspace/demo/` and is served by the Go service
 at `http://127.0.0.1:4317/demo/`.
 
-1. Start the server and load the unpacked extension.
-2. Open the demo and start recording.
-3. Demonstrate a path such as search, product inspection, basket, and checkout.
-4. Stop the recording and inspect the state rail and action ledger.
-5. Copy the complete action-map JSON when deeper inspection is needed.
+1. Run `make seed-demo`, start the server, and load the unpacked extension.
+2. Open the demo and enable the popup's audited owned-demo ambient policy.
+3. Browse normally. Each completed sanitized semantic layer is parsed without a
+   goal, start button, stop button, or evidence threshold.
+4. Inspect the current action-map revision and any exact candidate in the popup.
+   Resolve evidence, run isolated actor replay, and explicitly review only the
+   candidate bound to that revision and digest.
+5. Use a WebMCP client to invoke `search_products`; confirm that it returns the
+   structured product collection. Invoke the seeded basket action separately to
+   exercise exact consequential-step confirmation.
 
-The decisive manual test is a real extension recording that produces a useful
-multi-action map from this owned flow.
+The decisive manual test is the full automatic learn-to-candidate chain plus a
+published tool invocation. The seeded search and basket lists make the ready
+half reproducible even when no live model key is configured.
 
 ## Workspace
 

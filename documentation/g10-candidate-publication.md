@@ -68,11 +68,13 @@ matches the awaiting run; the coordinator then appends a typed `run.confirm`
 event and resumes or terminates that exact run. The candidate-review policy
 gate and the run-confirmation gate therefore remain separate authorities.
 
-`make seed-demo` publishes only the repository-owned deterministic storefront
-fixture. That fixture has no ambient action-map binding and exists to exercise
-the ready path. Map-bound learned candidates still cannot use this path: their
-publication transaction requires the authoritative candidate-review policy,
-replay, reviewer, and current action-map head checks described above.
+`make seed-demo` publishes the repository-owned deterministic search and basket
+fixtures. They have no ambient action-map binding and exercise both a structured
+read result and an exact consequential-step confirmation through the ready
+path. Map-bound learned candidates cannot bypass review through this command:
+their publication transaction still requires the authoritative
+candidate-review policy, replay, reviewer, and current action-map head checks
+described above.
 
 After publication, ordinary registry discovery still returns only published
 lists whose exact origin and route match. Candidate revisions never escape the

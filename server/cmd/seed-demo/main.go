@@ -14,8 +14,27 @@ import (
 	"webmcp-automator/server/internal/store"
 )
 
-const listID = "owned_storefront_basket"
-const revisionNumber = 2
+type fixture struct {
+	actionID      string
+	actionVersion int
+	filename      string
+	listID        string
+	revision      int
+	steps         int
+}
+
+var fixtures = []fixture{
+	{
+		actionID: "search_products", actionVersion: 1,
+		filename: "owned-storefront.action-list.json", listID: "owned_storefront",
+		revision: 1, steps: 4,
+	},
+	{
+		actionID: "add_field_h1_to_basket", actionVersion: 2,
+		filename: "owned-storefront-basket.action-list.json", listID: "owned_storefront_basket",
+		revision: 2, steps: 1,
+	},
+}
 
 func main() {
 	if err := config.LoadDotEnv(".env"); err != nil {
@@ -29,56 +48,68 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if existing, getErr := database.GetActionListRevision(ctx, listID, revisionNumber); getErr == nil && existing.Status == "published" {
+	for _, item := range fixtures {
+		if err := seedFixture(ctx, database, item); err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+
+func seedFixture(ctx context.Context, database *store.Store, item fixture) error {
+	if existing, err := database.GetActionListRevision(ctx, item.listID, item.revision); err == nil && existing.Status == "published" {
 		fmt.Printf("demo action list already published: %s revision %d %s\n", existing.ListID, existing.Revision, existing.Digest)
-		return
+		return nil
 	}
 
-	path := filepath.Join("..", "documentation", "contracts", "examples", "owned-storefront-basket.action-list.json")
+	path := filepath.Join("..", "documentation", "contracts", "examples", item.filename)
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	revision, err := database.InsertActionListRevision(ctx, json.RawMessage(raw))
 	if err != nil {
 		if !errors.Is(err, store.ErrConflict) {
-			log.Fatal(err)
+			return err
 		}
-		revision, err = database.GetActionListRevision(ctx, listID, revisionNumber)
-		if err != nil || revision.Status != "candidate" {
-			log.Fatalf("load existing demo candidate: %v", err)
+		revision, err = database.GetActionListRevision(ctx, item.listID, item.revision)
+		if err != nil {
+			return fmt.Errorf("load existing demo candidate: %w", err)
+		}
+		if revision.Status != "candidate" {
+			return fmt.Errorf("existing demo revision has status %q", revision.Status)
 		}
 	}
 
 	suffix := time.Now().UTC().Format("20060102_150405_000000000")
-	policyID := "policy_owned_demo_" + suffix
-	replayID := "replay_owned_demo_" + suffix
+	policyID := "policy_" + item.listID + "_" + suffix
+	replayID := "replay_" + item.listID + "_" + suffix
 	checkedAt := time.Now().UTC()
 	if err := database.SavePolicyDecision(ctx, store.PolicyRecord{
-		ID: policyID, ListID: listID, Revision: revisionNumber, CandidateDigest: revision.CandidateDigest,
+		ID: policyID, ListID: item.listID, Revision: item.revision, CandidateDigest: revision.CandidateDigest,
 		Decision: "allowed", Scopes: []string{"learn", "inject", "read", "write"}, CheckedAt: checkedAt,
 	}); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	report, _ := json.Marshal(map[string]any{
 		"schemaVersion": "candidate-replay/1", "status": "passed",
 		"actions": []map[string]any{{
-			"actionId": "add_field_h1_to_basket", "actionVersion": 2,
-			"stepsExecuted": 1, "postconditionsVerified": 1,
+			"actionId": item.actionID, "actionVersion": item.actionVersion,
+			"stepsExecuted": item.steps, "postconditionsVerified": item.steps,
 		}},
 	})
 	if err := database.SaveReplayReport(ctx, store.ReplayReport{
-		ID: replayID, ListID: listID, Revision: revisionNumber, CandidateDigest: revision.CandidateDigest,
+		ID: replayID, ListID: item.listID, Revision: item.revision, CandidateDigest: revision.CandidateDigest,
 		Status: "passed", Report: report,
 	}); err != nil {
-		log.Fatal(err)
+		return err
 	}
-	published, err := database.PublishActionList(ctx, listID, revisionNumber, store.PublishActionListRequest{
+	published, err := database.PublishActionList(ctx, item.listID, item.revision, store.PublishActionListRequest{
 		ExpectedDigest: revision.CandidateDigest, ReviewDecision: "approve", Reviewer: "local-user",
 		PolicyDecisionID: policyID, ReplayReportID: replayID,
 	})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	fmt.Printf("published demo action list: %s revision %d %s\n", published.ListID, published.Revision, published.Digest)
+	return nil
 }

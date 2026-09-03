@@ -1,8 +1,10 @@
 # Action Mapper
 
-Action Mapper learns a website's state-conditioned actions from a demonstrated
-browser workflow. A Chrome extension records semantic page evidence and a Go
-service validates, sanitizes, stores, and classifies the resulting trace.
+Action Mapper automatically learns a website's state-conditioned actions from
+eligible browsing. A Chrome extension emits privacy-sanitized semantic layers
+and causal observations; a Go service validates each layer, uses AI to revise
+the visible action map, and projects reviewed actions into deterministic WebMCP
+tools.
 
 ## Repository
 
@@ -25,7 +27,7 @@ Requirements:
 - a Neon PostgreSQL connection URL;
 - a Cerebras or OpenRouter API key when AI synthesis is needed.
 
-Node.js and npm are not required.
+Node.js is required for deterministic integration tests; npm is not required.
 
 Put one provider key in `server/.env`, then start the project:
 
@@ -58,7 +60,9 @@ Or run one boundary:
 
 ```bash
 make test-server
+make test-node
 make test-extension
+make test-actor
 make test-documentation
 ```
 

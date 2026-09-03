@@ -66,7 +66,7 @@ const policyReview = WebMcpPolicyReview.createController({
       decision,
     }),
     startCandidateReplay: () => sendMessage({ type: 'START_CANDIDATE_REPLAY' }),
-    submitRunConfirmation: (decision) => sendMessage({
+    submitConfirmation: (decision) => sendMessage({
       type: 'SUBMIT_RUN_CONFIRMATION',
       decision,
     }),

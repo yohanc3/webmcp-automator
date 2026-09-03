@@ -14,6 +14,7 @@ const {
   DurableRunCoordinator,
   MESSAGE_TYPES,
   PORT_NAMES,
+  validateInboundMessage,
 } = require('../run-coordinator.js');
 
 const DIGEST = `sha256:${'a'.repeat(64)}`;
@@ -181,6 +182,8 @@ const runRequest = (overrides = {}) => ({
     actionVersion: 1,
     arguments: { query: 'headphones' },
     listId: 'owned_storefront',
+    listDigest: DIGEST,
+    listRevision: 1,
     sourceUrl: SOURCE_URL,
   },
   ...overrides,
@@ -190,6 +193,9 @@ const pageReady = ({
   run,
   documentId,
   navigationSequence,
+  pageRevision = 0,
+  pendingStepSatisfied = null,
+  preconditionSatisfied = true,
   sequence,
   stateId,
   url,
@@ -207,13 +213,16 @@ const pageReady = ({
   },
   payload: {
     navigationSequence,
+    pageRevision,
+    pendingStepSatisfied,
+    preconditionSatisfied,
     stateId,
     title: 'Instrument Supply',
     url,
   },
 });
 
-const completed = ({ run, command, documentId, sequence, result = null }) => ({
+const completed = ({ run, command, documentId, sequence, result = null, effect = {} }) => ({
   protocol: 'webmcp-run/1',
   type: MESSAGE_TYPES.stepCompleted,
   requestId: run.requestId,
@@ -230,17 +239,34 @@ const completed = ({ run, command, documentId, sequence, result = null }) => ({
     effect: {
       navigationExpected: false,
       navigationObserved: false,
+      pageRevisionAfter: run.execution.pageRevision ?? 0,
       postconditionSatisfied: true,
       stateAfter: run.execution.stateId,
       stateBefore: run.execution.stateId,
       urlAfter: run.execution.url,
       urlBefore: run.execution.url,
       urlChanged: false,
+      ...effect,
     },
     result,
     stepId: command.payload.step.id,
     stepIndex: command.payload.stepIndex,
   },
+});
+
+const terminalAck = ({ run, sequence = 20 }) => ({
+  protocol: 'webmcp-run/1',
+  type: MESSAGE_TYPES.runAck,
+  requestId: run.requestId,
+  runId: run.runId,
+  sequence,
+  sentAt: START_TIME,
+  sender: {
+    context: 'source_content',
+    documentId: run.source.documentId,
+    tabId: run.source.tabId,
+  },
+  payload: { terminalSequence: run.terminal.envelope.sequence },
 });
 
 const createHarness = ({
@@ -264,7 +290,7 @@ const createHarness = ({
     registry: {
       async resolveExact(request) {
         registryCalls.push(clone(request));
-        return { digest: DIGEST, list: clone(list) };
+        return { digest: list.publication.contentDigest, list: clone(list) };
       },
     },
     setTimer: clock.setTimer,
@@ -334,6 +360,33 @@ test('the persisted record reducer permits only declared transitions', () => {
   );
 });
 
+test('production inbound validation rejects malformed or extended actor payloads', () => {
+  const run = createRunRecord({
+    deadlineAt: null,
+    now: START_TIME,
+    request: runRequest(),
+    runId: 'run_test_validation',
+    source: { documentId: 'source_document_1', tabId: 10, url: SOURCE_URL },
+  });
+  run.execution.tabId = 101;
+  const valid = pageReady({
+    documentId: 'execution_document_1',
+    navigationSequence: 0,
+    run,
+    sequence: 1,
+    stateId: 'catalog',
+    url: SOURCE_URL,
+  });
+  assert.equal(validateInboundMessage(valid), true);
+  const missingCondition = clone(valid);
+  delete missingCondition.payload.pendingStepSatisfied;
+  assert.equal(validateInboundMessage(missingCondition), false);
+  assert.equal(validateInboundMessage({
+    ...valid,
+    payload: { ...valid.payload, rawDom: '<body>private</body>' },
+  }), false);
+});
+
 test('accepts a bound source request, pins the exact digest, and opens an inactive tab', async () => {
   const harness = createHarness();
   const { port, run } = await bindAndSendRequest(harness);
@@ -341,7 +394,10 @@ test('accepts a bound source request, pins the exact digest, and opens an inacti
   assert.deepEqual(harness.registryCalls, [{
     actionId: 'search_products',
     actionVersion: 1,
+    expectedDigest: DIGEST,
     listId: 'owned_storefront',
+    revision: 1,
+    sourceUrl: SOURCE_URL,
   }]);
   assert.equal(run.listDigest, DIGEST);
   assert.equal(run.status, RUN_STATUSES.waitingForPage);
@@ -352,17 +408,31 @@ test('accepts a bound source request, pins the exact digest, and opens an inacti
   assert.equal(port.sent[0].payload.planDigest, DIGEST);
 });
 
-test('uses the bound source identity instead of page-supplied tab and document IDs', async () => {
+test('uses the current same-origin SPA URL instead of the port connection URL', async () => {
+  const currentUrl = 'http://127.0.0.1:4317/new';
+  const list = publishedList();
+  list.site.routePatterns = ['^/new$'];
+  list.actions[0].precondition.urlPatterns = ['^http://127\\.0\\.0\\.1:4317/new$'];
+  const harness = createHarness({ list });
+  const { run } = await bindAndSendRequest(harness, runRequest({
+    payload: { ...runRequest().payload, sourceUrl: currentUrl },
+  }));
+
+  assert.equal(run.source.url, currentUrl);
+  assert.equal(harness.registryCalls[0].sourceUrl, currentUrl);
+  assert.equal(harness.tabs.created[0].url, currentUrl);
+});
+
+test('rejects a source request whose claimed sender differs from the bound port', async () => {
   const harness = createHarness();
   const port = sourcePort();
   const binding = harness.coordinator.bindPort(port);
   await harness.coordinator.receive(port, binding, runRequest({
-    sender: { context: 'source_content', documentId: null, tabId: null },
+    sender: { context: 'source_content', documentId: 'forged', tabId: 10 },
   }));
 
-  const [run] = await harness.storage.list();
-  assert.deepEqual(run.source, binding);
-  assert.equal(harness.tabs.created.length, 1);
+  assert.equal((await harness.storage.list()).length, 0);
+  assert.equal(harness.tabs.created.length, 0);
 });
 
 test('a forged actor document cannot terminate or advance a real run', async () => {
@@ -506,6 +576,35 @@ test('recovers after a persisted click and advances on a new document without re
   assert.deepEqual(recovered.completedSteps, ['fill_query', 'submit_search']);
 });
 
+test('reconciles a lost same-document SPA completion from page readiness', async () => {
+  const harness = createHarness();
+  const { run: acceptedRun } = await bindAndSendRequest(harness);
+  let { binding, port: actor, run } = await bindActorAndReady(harness, acceptedRun);
+  const fillCommand = actor.sent.at(-1);
+  await harness.coordinator.receive(actor, binding, completed({
+    command: fillCommand,
+    documentId: 'execution_document_1',
+    run,
+    sequence: 2,
+  }));
+  run = await harness.storage.load(run.runId);
+  assert.equal(run.status, RUN_STATUSES.waitingForNavigation);
+
+  await harness.coordinator.receive(actor, binding, pageReady({
+    documentId: 'execution_document_1',
+    navigationSequence: 0,
+    pendingStepSatisfied: true,
+    run,
+    sequence: 3,
+    stateId: 'search_results',
+    url: RESULTS_URL,
+  }));
+
+  const reconciled = await harness.storage.load(run.runId);
+  assert.deepEqual(reconciled.completedSteps, ['fill_query', 'submit_search']);
+  assert.equal(actor.sent.at(-1).payload.step.id, 'wait_for_results');
+});
+
 test('deduplicates requests and actor events and emits one terminal result', async () => {
   const harness = createHarness();
   const { port: source, run: acceptedRun } = await bindAndSendRequest(harness);
@@ -526,6 +625,22 @@ test('deduplicates requests and actor events and emits one terminal result', asy
   run = await harness.storage.load(run.runId);
   assert.equal(run.stepIndex, 1);
   assert.equal(actor.sent.filter(({ payload }) => payload.step?.op === 'click').length, 1);
+});
+
+test('serializes simultaneous duplicate source requests before creating a run', async () => {
+  const harness = createHarness();
+  const port = sourcePort();
+  const binding = harness.coordinator.bindPort(port);
+  const request = runRequest();
+
+  await Promise.all([
+    harness.coordinator.receive(port, binding, clone(request)),
+    harness.coordinator.receive(port, binding, clone(request)),
+  ]);
+
+  assert.equal((await harness.storage.list()).length, 1);
+  assert.equal(harness.registryCalls.length, 1);
+  assert.equal(harness.tabs.created.length, 1);
 });
 
 test('blocks invalid arguments and revoked policy before opening a tab', async () => {
@@ -645,12 +760,14 @@ test('confirmation masks arguments, approves the exact step, and ignores stale i
   await harness.coordinator.receive(actor, binding, completed({
     command: fillCommand,
     documentId: 'execution_document_1',
+    effect: { pageRevisionAfter: 4 },
     run,
     sequence: 2,
   }));
   run = await harness.storage.load(run.runId);
   assert.equal(run.status, RUN_STATUSES.awaitingConfirmation);
   assert.deepEqual(run.confirmation.argumentPreview, { query: '[redacted]' });
+  assert.equal(run.confirmation.binding.pageRevision, 4);
 
   const review = reviewPort();
   const reviewBinding = harness.coordinator.bindPort(review);
@@ -670,6 +787,18 @@ test('confirmation masks arguments, approves the exact step, and ignores stale i
     stepId: 'submit_search',
   });
   run = await harness.storage.load(run.runId);
+  assert.equal(run.status, RUN_STATUSES.waitingForPage);
+  assert.equal(actor.sent.at(-1).type, 'execution.binding');
+  await harness.coordinator.receive(actor, binding, pageReady({
+    documentId: 'execution_document_1',
+    navigationSequence: run.execution.navigationSequence,
+    pageRevision: run.execution.pageRevision,
+    run,
+    sequence: 3,
+    stateId: run.execution.stateId,
+    url: run.execution.url,
+  }));
+  run = await harness.storage.load(run.runId);
   assert.equal(run.status, RUN_STATUSES.waitingForNavigation);
   assert.equal(actor.sent.at(-1).payload.step.id, 'submit_search');
 
@@ -678,6 +807,55 @@ test('confirmation masks arguments, approves the exact step, and ignores stale i
   run = await harness.storage.load(run.runId);
   assert.equal(run.status, RUN_STATUSES.waitingForNavigation);
   assert.equal(actor.sent.filter(({ payload }) => payload.step?.id === 'submit_search').length, 1);
+});
+
+test('approval requires a fresh unchanged page attestation before dispatch', async () => {
+  const list = publishedList();
+  const action = list.actions[0];
+  action.safety.class = 'write';
+  action.safety.writesExternalState = true;
+  action.safety.confirmation = 'before_step';
+  action.safety.confirmationStepId = 'submit_search';
+  action.safety.idempotency = 'conditional';
+  action.tool.annotations.readOnlyHint = false;
+  const harness = createHarness({ list });
+  const { run: acceptedRun } = await bindAndSendRequest(harness);
+  const ready = await bindActorAndReady(harness, acceptedRun);
+  const fillCommand = ready.port.sent.at(-1);
+  await harness.coordinator.receive(ready.port, ready.binding, completed({
+    command: fillCommand,
+    documentId: 'execution_document_1',
+    run: ready.run,
+    sequence: 2,
+  }));
+  let run = await harness.storage.load(ready.run.runId);
+  const review = reviewPort();
+  const reviewBinding = harness.coordinator.bindPort(review);
+  await harness.coordinator.receive(review, reviewBinding, {
+    protocol: 'webmcp-run/1',
+    type: MESSAGE_TYPES.runConfirm,
+    requestId: run.requestId,
+    runId: run.runId,
+    sequence: 1,
+    sentAt: START_TIME,
+    sender: { context: 'review_ui', documentId: null, tabId: null },
+    payload: { approved: true, stepId: 'submit_search' },
+  });
+  run = await harness.storage.load(run.runId);
+  assert.equal(run.status, RUN_STATUSES.waitingForPage);
+
+  await harness.coordinator.receive(ready.port, ready.binding, pageReady({
+    documentId: 'execution_document_1',
+    navigationSequence: run.execution.navigationSequence,
+    run,
+    sequence: 3,
+    stateId: 'unexpected_state',
+    url: run.execution.url,
+  }));
+  run = await harness.storage.load(run.runId);
+  assert.equal(run.status, RUN_STATUSES.failed);
+  assert.equal(run.error.code, 'PRECONDITION_FAILED');
+  assert.equal(ready.port.sent.some(({ payload }) => payload.step?.id === 'submit_search'), false);
 });
 
 test('a denied confirmation terminates without dispatching the guarded step', async () => {
@@ -716,6 +894,110 @@ test('a denied confirmation terminates without dispatching the guarded step', as
   const denied = await harness.storage.load(run.runId);
   assert.equal(denied.error.code, 'CONFIRMATION_DENIED');
   assert.equal(actor.sent.some(({ payload }) => payload.step?.id === 'submit_search'), false);
+});
+
+test('an approval fails closed after the confirmation-bound document changes', async () => {
+  const list = publishedList();
+  const action = list.actions[0];
+  action.safety.class = 'write';
+  action.safety.writesExternalState = true;
+  action.safety.confirmation = 'before_step';
+  action.safety.confirmationStepId = 'submit_search';
+  action.safety.idempotency = 'conditional';
+  action.tool.annotations.readOnlyHint = false;
+  const harness = createHarness({ list });
+  const { run: acceptedRun } = await bindAndSendRequest(harness);
+  const ready = await bindActorAndReady(harness, acceptedRun);
+  const fillCommand = ready.port.sent.at(-1);
+  await harness.coordinator.receive(ready.port, ready.binding, completed({
+    command: fillCommand,
+    documentId: 'execution_document_1',
+    run: ready.run,
+    sequence: 2,
+  }));
+  let run = await harness.storage.load(ready.run.runId);
+  assert.equal(run.status, RUN_STATUSES.awaitingConfirmation);
+
+  const changedActor = actorPort(run.execution.tabId, 'execution_document_2', SOURCE_URL);
+  const changedBinding = harness.coordinator.bindPort(changedActor);
+  await harness.coordinator.receive(changedActor, changedBinding, pageReady({
+    documentId: 'execution_document_2',
+    navigationSequence: 1,
+    run,
+    sequence: 1,
+    stateId: 'catalog',
+    url: SOURCE_URL,
+  }));
+  run = await harness.storage.load(run.runId);
+
+  const review = reviewPort();
+  const reviewBinding = harness.coordinator.bindPort(review);
+  await harness.coordinator.receive(review, reviewBinding, {
+    protocol: 'webmcp-run/1',
+    type: MESSAGE_TYPES.runConfirm,
+    requestId: run.requestId,
+    runId: run.runId,
+    sequence: 1,
+    sentAt: START_TIME,
+    sender: { context: 'review_ui', documentId: null, tabId: null },
+    payload: { approved: true, stepId: 'submit_search' },
+  });
+
+  const failed = await harness.storage.load(run.runId);
+  assert.equal(failed.error.code, 'PRECONDITION_FAILED');
+  assert.equal(changedActor.sent.some(({ payload }) => payload.step?.id === 'submit_search'), false);
+});
+
+test('an approval fails closed when the immutable policy binding changes', async () => {
+  const list = publishedList();
+  const action = list.actions[0];
+  action.safety.class = 'write';
+  action.safety.writesExternalState = true;
+  action.safety.confirmation = 'before_run';
+  action.safety.idempotency = 'conditional';
+  action.tool.annotations.readOnlyHint = false;
+  const harness = createHarness({ list });
+  const { run } = await bindAndSendRequest(harness);
+  assert.equal(run.status, RUN_STATUSES.awaitingConfirmation);
+  list.policy.checkedAt = '2026-09-03T12:00:01.000Z';
+
+  const review = reviewPort();
+  const reviewBinding = harness.coordinator.bindPort(review);
+  await harness.coordinator.receive(review, reviewBinding, {
+    protocol: 'webmcp-run/1',
+    type: MESSAGE_TYPES.runConfirm,
+    requestId: run.requestId,
+    runId: run.runId,
+    sequence: 1,
+    sentAt: START_TIME,
+    sender: { context: 'review_ui', documentId: null, tabId: null },
+    payload: { approved: true, stepId: 'fill_query' },
+  });
+
+  const failed = await harness.storage.load(run.runId);
+  assert.equal(failed.error.code, 'PLAN_VERSION_MISMATCH');
+  assert.equal(harness.tabs.created.length, 0);
+});
+
+test('terminal delivery and tab cleanup do not wait for diagnostic telemetry', async () => {
+  const observations = { save: () => new Promise(() => {}) };
+  const harness = createHarness({ observations });
+  const { port, run } = await bindAndSendRequest(harness);
+
+  const settled = await Promise.race([
+    harness.coordinator.fail(run.runId, {
+      code: 'INTERNAL_ERROR',
+      message: 'Synthetic terminal failure',
+      observed: {},
+      retryable: false,
+      stepId: null,
+    }).then(() => true),
+    new Promise((resolve) => { setTimeout(() => resolve(false), 100); }),
+  ]);
+
+  assert.equal(settled, true);
+  assert.equal(port.sent.at(-1).type, MESSAGE_TYPES.runError);
+  assert.equal(harness.tabs.removed.length, 1);
 });
 
 test('cancellation, timeout, tab closure, and source closure terminate once with typed errors', async () => {
@@ -768,7 +1050,8 @@ test('cancellation, timeout, tab closure, and source closure terminate once with
   port.disconnect();
   await new Promise((resolve) => { setImmediate(resolve); });
   const disconnected = await disconnectedHarness.storage.load(run.runId);
-  assert.equal(disconnected.error.code, 'TRANSPORT_DISCONNECTED');
+  assert.equal(disconnected.status, RUN_STATUSES.waitingForPage);
+  assert.equal(disconnected.error, null);
 });
 
 test('recovery resumes records suspended after each nonterminal persistence boundary', async () => {
@@ -877,8 +1160,9 @@ test('restart recovery reconciles waiting page, prepared dispatch, and pending e
   const effectActor = actorPort(effectAccepted.execution.tabId, 'execution_document_1');
   effectRestart.coordinator.bindPort(effectActor);
   await new Promise((resolve) => { setImmediate(resolve); });
-  assert.equal(effectActor.sent.filter(({ type }) => type === MESSAGE_TYPES.stepCommand).length, 1);
-  assert.equal(effectActor.sent.at(-1).payload.commandId, originalCommand.payload.commandId);
+  const effectCommands = effectActor.sent.filter(({ type }) => type === MESSAGE_TYPES.stepCommand);
+  assert.equal(effectCommands.length, 1);
+  assert.equal(effectCommands[0].payload.commandId, originalCommand.payload.commandId);
 });
 
 test('restart recovery replays confirmation and extraction without creating new commands', async () => {
@@ -938,8 +1222,11 @@ test('restart recovery replays confirmation and extraction without creating new 
   const extractionActor = actorPort(extractionAccepted.execution.tabId, 'execution_document_1');
   extractionRestart.coordinator.bindPort(extractionActor);
   await new Promise((resolve) => { setImmediate(resolve); });
-  assert.equal(extractionActor.sent.filter(({ type }) => type === MESSAGE_TYPES.stepCommand).length, 1);
-  assert.equal(extractionActor.sent.at(-1).payload.commandId, extractCommand.payload.commandId);
+  const extractionCommands = extractionActor.sent.filter(
+    ({ type }) => type === MESSAGE_TYPES.stepCommand,
+  );
+  assert.equal(extractionCommands.length, 1);
+  assert.equal(extractionCommands[0].payload.commandId, extractCommand.payload.commandId);
 });
 
 test('source tab closure produces one transport failure', async () => {
@@ -950,6 +1237,28 @@ test('source tab closure produces one transport failure', async () => {
   const failed = await harness.storage.load(run.runId);
   assert.equal(failed.error.code, 'TRANSPORT_DISCONNECTED');
   assert.equal(harness.observations.values.length, 1);
+});
+
+test('source transport grace preserves a replacement port and expires an orphaned document', async () => {
+  const harness = createHarness();
+  const { port: first, run } = await bindAndSendRequest(harness);
+  first.disconnect();
+
+  const replacement = sourcePort();
+  harness.coordinator.bindPort(replacement);
+  await harness.coordinator.expireSourceDisconnect(run.source);
+  let current = await harness.storage.load(run.runId);
+  assert.equal(current.status, RUN_STATUSES.waitingForPage);
+
+  first.disconnect();
+  await harness.coordinator.expireSourceDisconnect(run.source);
+  current = await harness.storage.load(run.runId);
+  assert.equal(current.status, RUN_STATUSES.waitingForPage);
+
+  replacement.disconnect();
+  await harness.coordinator.expireSourceDisconnect(run.source);
+  current = await harness.storage.load(run.runId);
+  assert.equal(current.error.code, 'TRANSPORT_DISCONNECTED');
 });
 
 test('terminal recovery stores one observation and waits for the source before dispatch', async () => {
@@ -977,11 +1286,14 @@ test('terminal recovery stores one observation and waits for the source before d
   assert.equal(observations.values.length, 1);
 
   const port = sourcePort();
-  restarted.coordinator.bindPort(port);
+  const binding = restarted.coordinator.bindPort(port);
   await new Promise((resolve) => { setImmediate(resolve); });
   terminal = await storage.load(run.runId);
-  assert.equal(terminal.terminal.dispatched, true);
+  assert.equal(terminal.terminal.dispatched, false);
   assert.equal(port.sent.filter(({ type }) => type === MESSAGE_TYPES.runError).length, 1);
+  await restarted.coordinator.receive(port, binding, terminalAck({ run: terminal }));
+  terminal = await storage.load(run.runId);
+  assert.equal(terminal.terminal.dispatched, true);
 });
 
 test('a disconnected terminal port leaves the immutable result eligible for retry', async () => {
@@ -999,10 +1311,13 @@ test('a disconnected terminal port leaves the immutable result eligible for retr
   assert.equal(terminal.terminal.dispatched, false);
 
   const replacement = sourcePort();
-  harness.coordinator.bindPort(replacement);
+  const binding = harness.coordinator.bindPort(replacement);
   await new Promise((resolve) => { setImmediate(resolve); });
   terminal = await harness.storage.load(run.runId);
-  assert.equal(terminal.terminal.dispatched, true);
+  assert.equal(terminal.terminal.dispatched, false);
   assert.equal(replacement.sent.length, 1);
   assert.deepEqual(replacement.sent[0], terminal.terminal.envelope);
+  await harness.coordinator.receive(replacement, binding, terminalAck({ run: terminal }));
+  terminal = await harness.storage.load(run.runId);
+  assert.equal(terminal.terminal.dispatched, true);
 });

@@ -79,7 +79,14 @@ test('Chrome tab adapter reuses only coordinator-owned inactive tabs not already
   const created = await tabs.create({ active: true, url: 'https://example.com/start' });
 
   assert.equal(created.active, false);
-  assert.equal((await tabs.findReusable({ origin: 'https://example.com' })).id, created.id);
+  assert.equal((await tabs.findReusable({
+    origin: 'https://example.com',
+    url: 'https://example.com/start',
+  })).id, created.id);
+  assert.equal(await tabs.findReusable({
+    origin: 'https://example.com',
+    url: 'https://example.com/different-route',
+  }), null);
   assert.equal(await tabs.findReusable({
     excludeTabIds: [created.id],
     origin: 'https://example.com',
