@@ -18,9 +18,6 @@ func CompileAmbientCandidate(scopeID string, snapshot actionmap.Map, mapRevision
 	if err := snapshot.Validate(); err != nil {
 		return nil, fmt.Errorf("validate source action map: %w", err)
 	}
-	if diagnostics := compilerDiagnostics(snapshot); len(diagnostics) > 0 {
-		return nil, fmt.Errorf("action map is not review-projectable: %s", diagnostics[0].Code)
-	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -61,7 +58,7 @@ func CompileAmbientCandidate(scopeID string, snapshot actionmap.Map, mapRevision
 				"inputSchema": map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false},
 				"annotations": map[string]any{"readOnlyHint": readOnly, "untrustedContentHint": true}},
 			"precondition": map[string]any{"allowedStateIds": []string{action.FromState}, "urlPatterns": []string{stateByID(snapshot.States, action.FromState).URLPattern}, "checks": map[string]any{"mode": "all", "checks": []any{map[string]any{"kind": "state", "stateId": action.FromState}}}},
-			"steps":        steps, "output": compileOutput(action.Output), "safety": compileSafety(action, steps),
+			"steps":        steps, "output": ambientOutput(action.Output), "safety": compileSafety(action, steps),
 			"runtime":    map[string]any{"executionSurface": "inactive_tab", "allowedOrigins": []string{snapshot.Site.Origin}, "maxDurationMs": boundedDuration(action.Steps), "maxNavigations": ambientNavigations(action), "closeExecutionTab": true},
 			"provenance": map[string]any{"source": "imported", "observationCount": ambientObservationCount(action), "traceIds": ambientTraceIDs(action, traceID), "compiler": "ambient action-map projection; source revision " + fmt.Sprint(mapRevision) + "; source digest " + mapDigest + "; evidence bindings retained in action-map revision", "compiledAt": now.UTC().Format(time.RFC3339), "reviewedAt": nil, "reviewedBy": nil},
 		})
@@ -78,6 +75,24 @@ func CompileAmbientCandidate(scopeID string, snapshot actionmap.Map, mapRevision
 }
 
 func AmbientCandidateListID(scopeID string) string { return boundedIdentifier(scopeID + "_actions") }
+
+func ambientOutput(output actionmap.Output) any {
+	if output.Mode == "none" {
+		return map[string]any{"mode": "none"}
+	}
+	compiled := compileOutput(output).(map[string]any)
+	if output.Mode == "collection" {
+		if item, valid := compiled["item"].(map[string]any); valid && item != nil {
+			return compiled
+		}
+		role := "*"
+		if output.Item.Role != nil {
+			role = "[role='" + *output.Item.Role + "']"
+		}
+		compiled["item"] = map[string]any{"cardinality": "many", "visible": true, "enabled": false, "strategies": []any{map[string]any{"kind": "css", "selector": role}}}
+	}
+	return compiled
+}
 
 func ambientObservationCount(action actionmap.Action) int {
 	for _, handle := range action.Evidence {
