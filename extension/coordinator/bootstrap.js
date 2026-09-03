@@ -1,9 +1,17 @@
 (function initializeCoordinatorBootstrap(root, factory) {
+  if (!root.WebMcpCoordinatorCompatibility && typeof root.importScripts === 'function') {
+    root.importScripts('coordinator/compatibility-adapter.js');
+  }
   root.WebMcpCoordinatorBootstrap = factory(
     root.WebMcpProtocol,
     root.WebMcpErrors,
+    root.WebMcpCoordinatorCompatibility,
   );
-}(typeof globalThis === 'undefined' ? this : globalThis, (protocol, publicErrors) => {
+}(typeof globalThis === 'undefined' ? this : globalThis, (
+  protocol,
+  publicErrors,
+  compatibility,
+) => {
   'use strict';
 
   const { MESSAGE_TYPES, createMessage } = protocol;
@@ -402,6 +410,23 @@ const startJob = async (adapter, args, sourceUrl, sourceTabId) => {
   return job.id;
 };
 
+const legacyPollingAdapter = new compatibility.LegacyPollingCompatibilityAdapter({
+  read: async (jobId) => {
+    const jobs = await getJobs();
+    const job = jobs[jobId];
+    if (job && !['completed', 'failed'].includes(job.status)) {
+      setTimeout(() => { void advanceJob(job.id); }, 0);
+    }
+    return job || null;
+  },
+  start: ({ adapter, args, sourceTabId, sourceUrl }) => startJob(
+    adapter,
+    args,
+    sourceUrl,
+    sourceTabId,
+  ),
+});
+
 const pageReady = async (sender, state) => {
   const tabId = sender.tab?.id;
   if (!Number.isInteger(tabId)) return { recordingActive: false };
@@ -481,15 +506,16 @@ const handleMessage = async (message, sender) => {
     case MESSAGE_TYPES.startJob:
       return {
         ok: true,
-        jobId: await startJob(message.adapter, message.args, message.sourceUrl, sender.tab?.id),
+        jobId: await legacyPollingAdapter.startJob({
+          adapter: message.adapter,
+          args: message.args,
+          sourceTabId: sender.tab?.id,
+          sourceUrl: message.sourceUrl,
+        }),
       };
     case MESSAGE_TYPES.getJob: {
-      const jobs = await getJobs();
-      const job = jobs[message.jobId];
+      const job = await legacyPollingAdapter.getJob(message.jobId);
       if (!job) return { ok: false, error: 'Job not found' };
-      if (!['completed', 'failed'].includes(job.status)) {
-        setTimeout(() => { void advanceJob(job.id); }, 0);
-      }
       return { ok: true, job };
     }
     default:
