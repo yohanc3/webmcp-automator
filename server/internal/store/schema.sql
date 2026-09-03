@@ -66,6 +66,92 @@ CREATE TABLE IF NOT EXISTS action_maps (
   created_at TIMESTAMPTZ NOT NULL
 );
 
+-- action_lists and their revisions replace the paused learned-adapter tables as
+-- the only publication source of truth. The legacy tables remain readable for
+-- non-destructive database upgrades, but new registry code never writes them.
+CREATE TABLE IF NOT EXISTS action_lists (
+  list_id TEXT PRIMARY KEY,
+  origin TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS action_list_revisions (
+  list_id TEXT NOT NULL REFERENCES action_lists(list_id),
+  revision INTEGER NOT NULL,
+  schema_version TEXT NOT NULL,
+  candidate_digest TEXT NOT NULL,
+  document_json JSONB NOT NULL,
+  source_map_id TEXT,
+  created_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (list_id, revision),
+  UNIQUE (list_id, candidate_digest)
+);
+
+CREATE TABLE IF NOT EXISTS policy_decisions (
+  id TEXT PRIMARY KEY,
+  list_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  candidate_digest TEXT NOT NULL,
+  decision TEXT NOT NULL CHECK (decision IN ('allowed', 'denied', 'unknown')),
+  scopes_json JSONB NOT NULL,
+  checked_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL,
+  FOREIGN KEY (list_id, revision) REFERENCES action_list_revisions(list_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS replay_reports (
+  id TEXT PRIMARY KEY,
+  list_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  candidate_digest TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('passed', 'failed')),
+  report_json JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  FOREIGN KEY (list_id, revision) REFERENCES action_list_revisions(list_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS action_list_reviews (
+  id TEXT PRIMARY KEY,
+  list_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  candidate_digest TEXT NOT NULL,
+  decision TEXT NOT NULL CHECK (decision IN ('approve', 'reject')),
+  reviewer TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  FOREIGN KEY (list_id, revision) REFERENCES action_list_revisions(list_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS action_list_publications (
+  id TEXT NOT NULL UNIQUE,
+  list_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  candidate_digest TEXT NOT NULL,
+  published_digest TEXT NOT NULL UNIQUE,
+  published_json JSONB NOT NULL,
+  policy_decision_id TEXT NOT NULL REFERENCES policy_decisions(id),
+  replay_report_id TEXT NOT NULL REFERENCES replay_reports(id),
+  review_id TEXT NOT NULL REFERENCES action_list_reviews(id),
+  published_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (list_id, revision),
+  UNIQUE (list_id, published_digest),
+  FOREIGN KEY (list_id, revision) REFERENCES action_list_revisions(list_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS run_observations (
+  run_id TEXT PRIMARY KEY,
+  list_id TEXT NOT NULL,
+  list_digest TEXT NOT NULL,
+  action_id TEXT NOT NULL,
+  action_version INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('completed', 'failed', 'cancelled')),
+  observation_json JSONB NOT NULL,
+  started_at TIMESTAMPTZ NOT NULL,
+  finished_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  FOREIGN KEY (list_id, list_digest) REFERENCES action_list_publications(list_id, published_digest)
+);
+
 CREATE INDEX IF NOT EXISTS learning_sessions_created_at_idx
   ON learning_sessions(created_at DESC);
 CREATE INDEX IF NOT EXISTS adapter_versions_adapter_idx
@@ -74,3 +160,9 @@ CREATE INDEX IF NOT EXISTS adapter_runs_version_idx
   ON adapter_runs(adapter_version_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS action_maps_site_idx
   ON action_maps(site_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS action_lists_origin_idx
+  ON action_lists(origin);
+CREATE INDEX IF NOT EXISTS action_list_publications_latest_idx
+  ON action_list_publications(list_id, revision DESC);
+CREATE INDEX IF NOT EXISTS run_observations_digest_idx
+  ON run_observations(list_digest, action_id, created_at DESC);

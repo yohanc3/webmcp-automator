@@ -271,126 +271,25 @@ func (store *Store) GetDiscovery(ctx context.Context, sessionID string) (Discove
 }
 
 func (store *Store) Publish(ctx context.Context, adapterID, versionID string) error {
-	now := time.Now().UTC()
-	transaction, err := store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin publish transaction: %w", err)
-	}
-	defer transaction.Rollback()
-
-	var count int
-	if err := transaction.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM adapter_versions WHERE id = $1 AND adapter_id = $2 AND status = 'candidate'",
-		versionID, adapterID,
-	).Scan(&count); err != nil || count != 1 {
-		return errors.New("candidate adapter version was not found")
-	}
-	if _, err := transaction.ExecContext(ctx,
-		"UPDATE adapter_versions SET status = 'superseded' WHERE adapter_id = $1 AND status = 'active'", adapterID,
-	); err != nil {
-		return fmt.Errorf("supersede active version: %w", err)
-	}
-	if _, err := transaction.ExecContext(ctx,
-		"UPDATE adapter_versions SET status = 'active', consecutive_failures = 0 WHERE id = $1", versionID,
-	); err != nil {
-		return fmt.Errorf("activate adapter version: %w", err)
-	}
-	if _, err := transaction.ExecContext(ctx, `
-		UPDATE adapters SET status = 'active', active_version_id = $1, updated_at = $2 WHERE id = $3`,
-		versionID, now, adapterID,
-	); err != nil {
-		return fmt.Errorf("activate adapter: %w", err)
-	}
-	if err := transaction.Commit(); err != nil {
-		return fmt.Errorf("commit adapter publication: %w", err)
-	}
-	return nil
+	return fmt.Errorf(
+		"%w: /api/adapters/publish cannot bypass digest, policy, replay, and review checks; use the v1 publication route",
+		ErrGate,
+	)
 }
 
 func (store *Store) ListActive(ctx context.Context, origin string) ([]PublishedAdapter, error) {
-	query := `
-		SELECT a.id, v.id, v.version, a.status, v.manifest_json, v.created_at
-		FROM adapters a
-		JOIN sites s ON s.id = a.site_id
-		JOIN adapter_versions v ON v.id = a.active_version_id
-		WHERE a.status IN ('active', 'degraded')`
-	arguments := []any{}
-	if origin != "" {
-		query += " AND s.origin = $1"
-		arguments = append(arguments, origin)
+	if origin == "" {
+		return nil, errors.New("origin is required for legacy adapter discovery")
 	}
-	query += " ORDER BY s.origin, a.tool_name"
-	rows, err := store.db.QueryContext(ctx, query, arguments...)
+	revisions, err := store.DiscoverActionLists(ctx, origin, "")
 	if err != nil {
-		return nil, fmt.Errorf("list active adapters: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-
-	adapters := []PublishedAdapter{}
-	for rows.Next() {
-		var adapter PublishedAdapter
-		var manifestJSON string
-		if err := rows.Scan(
-			&adapter.AdapterID, &adapter.VersionID, &adapter.Version, &adapter.Status, &manifestJSON, &adapter.CreatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan active adapter: %w", err)
-		}
-		if err := json.Unmarshal([]byte(manifestJSON), &adapter.Manifest); err != nil {
-			return nil, fmt.Errorf("decode stored adapter: %w", err)
-		}
-		adapters = append(adapters, adapter)
-	}
-	return adapters, rows.Err()
+	return legacyAdapters(revisions)
 }
 
 func (store *Store) RecordRun(ctx context.Context, run Run) error {
-	if run.Outcome != "success" && run.Outcome != "failure" {
-		return errors.New("outcome must be success or failure")
-	}
-	if len(run.Observed) > 0 && !json.Valid(run.Observed) {
-		return errors.New("observed must be valid JSON")
-	}
-	now := time.Now().UTC()
-	transaction, err := store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin run transaction: %w", err)
-	}
-	defer transaction.Rollback()
-	var observed any
-	if len(run.Observed) > 0 {
-		observed = string(run.Observed)
-	}
-	if _, err := transaction.ExecContext(ctx, `
-		INSERT INTO adapter_runs
-		  (id, adapter_version_id, outcome, failed_step, url, error, observed_json, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		newID("run"), run.VersionID, run.Outcome, run.FailedStep, run.URL, run.Error, observed, now,
-	); err != nil {
-		return fmt.Errorf("record adapter run: %w", err)
-	}
-	if run.Outcome == "success" {
-		if _, err := transaction.ExecContext(ctx,
-			"UPDATE adapter_versions SET consecutive_failures = 0 WHERE id = $1", run.VersionID,
-		); err != nil {
-			return fmt.Errorf("reset adapter failures: %w", err)
-		}
-	} else {
-		if _, err := transaction.ExecContext(ctx,
-			"UPDATE adapter_versions SET consecutive_failures = consecutive_failures + 1 WHERE id = $1", run.VersionID,
-		); err != nil {
-			return fmt.Errorf("increment adapter failures: %w", err)
-		}
-		if _, err := transaction.ExecContext(ctx, `
-			UPDATE adapters SET status = 'degraded', updated_at = $1
-			WHERE active_version_id = $2`, now, run.VersionID,
-		); err != nil {
-			return fmt.Errorf("mark adapter degraded: %w", err)
-		}
-	}
-	if err := transaction.Commit(); err != nil {
-		return fmt.Errorf("commit adapter run: %w", err)
-	}
-	return nil
+	return store.recordLegacyRun(ctx, run)
 }
 
 func (store *Store) updateSession(ctx context.Context, sessionID, status string, message *string, model, responseID string) error {
