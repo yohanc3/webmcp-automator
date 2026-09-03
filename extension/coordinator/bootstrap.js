@@ -1,538 +1,242 @@
 (function initializeCoordinatorBootstrap(root, factory) {
-  root.WebMcpCoordinatorBootstrap = factory(
-    root.WebMcpProtocol,
+  const api = factory(
+    root.WebMcpAmbientRetrySpool,
     root.WebMcpErrors,
+    root.WebMcpProtocol || (typeof module === 'object' && module.exports ? require('../shared/protocol.js') : null),
   );
-}(typeof globalThis === 'undefined' ? this : globalThis, (protocol, publicErrors) => {
+  root.WebMcpCoordinatorBootstrap = api;
+  if (typeof module === 'object' && module.exports) module.exports = api;
+}(typeof globalThis === 'undefined' ? this : globalThis, (retrySpool, publicErrors, protocol) => {
   'use strict';
 
-  const { MESSAGE_TYPES, createMessage } = protocol;
+  const POLICY_PREFIX = 'ambientPolicy:';
+  const LIFECYCLE_PREFIX = 'ambientLifecycle:';
+  const RECORD_KEY = 'ambientRetryRecords';
+  const KEY_NAME = 'ambientRetryKey';
 
-const BACKEND = 'http://127.0.0.1:4317';
-const RECORDING_KEY = 'activeRecording';
-const CANDIDATE_KEY = 'candidate';
-const DISCOVERY_KEY = 'discoveryMap';
-const DISCOVERY_SESSION_KEY = 'discoverySessionId';
-const JOBS_KEY = 'jobs';
-const WEBMCP_STATUS_KEY = 'webMcpStatus';
-const ADAPTER_CACHE_KEY = 'adapterCache';
-const AMBIENT_POLICY_PREFIX = 'ambientPolicy:';
-const advancingJobs = new Set();
-let mutationQueue = Promise.resolve();
-let started = false;
-
-const storageGet = async (area, key, fallback) => {
-  const values = await chrome.storage[area].get(key);
-  return values[key] ?? fallback;
-};
-
-const storageSet = (area, key, value) => chrome.storage[area].set({ [key]: value });
-
-const ambientPolicyKey = (origin) => `${AMBIENT_POLICY_PREFIX}${origin}`;
-
-const policyFromDecision = (decision) => {
-  const origin = new URL(decision.origin).origin;
-  const revision = 1;
-  return {
-    decisionId: `policy_${Date.now()}`,
-    status: decision.decision || 'allowed',
-    origin,
-    revision,
-    scopes: [decision.scope || decision.requestedScope || 'ambient_learn'],
-    checkedAt: new Date().toISOString(),
-    source: 'local_policy_review',
-  };
-};
-
-const mutateSessionValue = (key, fallback, mutate) => {
-  const run = mutationQueue.then(async () => {
-    const current = await storageGet('session', key, fallback);
-    const result = await mutate(current);
-    await storageSet('session', key, current);
-    return result;
-  });
-  mutationQueue = run.catch(() => {});
-  return run;
-};
-
-const tabMessage = (tabId, message) => chrome.tabs.sendMessage(tabId, message);
-
-const requestBackend = async (path, options = {}) => {
-  const response = await fetch(`${BACKEND}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(body.error || `Backend request failed with status ${response.status}`);
-  }
-  return body;
-};
-
-const summarizeRecording = (recording) => {
-  if (!recording) return null;
-  const initialState = ActionMapperRecorder.stateFor(recording, recording.initialStateFingerprint);
-  const finalState = ActionMapperRecorder.stateFor(recording, recording.finalStateFingerprint);
-  return {
-    id: recording.id,
-    tabId: recording.tabId,
-    status: recording.status,
-    startedAt: recording.startedAt,
-    stoppedAt: recording.stoppedAt || null,
-    startUrl: initialState?.url || null,
-    currentUrl: finalState?.url || initialState?.url || null,
-    stateCount: recording.stateOrder.length,
-    eventCount: recording.steps.length,
-    events: recording.steps.slice(-8).map(({ event, delta }) => ({
-      id: event.id,
-      kind: event.kind,
-      target: event.target?.name || event.target?.text || event.target?.css || 'page element',
-      urlChanged: delta?.urlChanged === true,
-      addedCount: delta?.added?.length || 0,
-      removedCount: delta?.removed?.length || 0,
-    })),
-  };
-};
-
-const sanitizedTrace = (recording) => ActionMapperRecorder.toTrace(recording);
-
-const waitForDiscovery = async (sessionId) => {
-  const deadline = Date.now() + 180000;
-  while (Date.now() < deadline) {
-    const result = await requestBackend(`/api/discover/${encodeURIComponent(sessionId)}`);
-    if (result.status === 'candidate') return result;
-    if (result.status === 'failed') throw new Error(result.error || 'Action discovery failed');
-    await new Promise((resolve) => { setTimeout(resolve, 500); });
-  }
-  throw new Error('Action discovery is still running; retry to read the completed result');
-};
-
-const startRecording = async (tabId) => {
-  if (!Number.isInteger(tabId)) throw new Error('A browser tab is required');
-  const page = await tabMessage(tabId, createMessage(MESSAGE_TYPES.getPageState));
-  if (!page?.ok) throw new Error(page?.error || 'Could not read the page');
-  const recording = ActionMapperRecorder.createRecording({
-    id: crypto.randomUUID(),
-    tabId,
-    startedAt: new Date().toISOString(),
-    state: page.state,
-  });
-  await storageSet('session', RECORDING_KEY, recording);
-  await chrome.storage.session.remove([CANDIDATE_KEY, DISCOVERY_KEY]);
-  await tabMessage(tabId, createMessage(MESSAGE_TYPES.recordingStart, {
-    recordingId: recording.id,
-  }));
-  return summarizeRecording(recording);
-};
-
-const stopRecording = async () => {
-  let recording = await storageGet('session', RECORDING_KEY, null);
-  if (!recording || recording.status !== 'recording') {
-    throw new Error('There is no active recording');
-  }
-  let finalState = ActionMapperRecorder.stateFor(recording, recording.finalStateFingerprint);
-  try {
-    const response = await tabMessage(
-      recording.tabId,
-      createMessage(MESSAGE_TYPES.recordingStop),
-    );
-    finalState = response?.finalState || finalState;
-  } catch (error) {
-    // Preserve the most recent navigation snapshot when the page is closing.
-  }
-  recording = await storageGet('session', RECORDING_KEY, recording);
-  const finished = ActionMapperRecorder.finishRecording(
-    recording,
-    finalState,
-    new Date().toISOString(),
-  );
-  await storageSet('session', RECORDING_KEY, finished);
-  return summarizeRecording(finished);
-};
-
-const traceEventStarted = async (message, sender) => {
-  await mutateSessionValue(RECORDING_KEY, null, (recording) => {
-    if (!recording || recording.status !== 'recording'
-      || recording.id !== message.recordingId || recording.tabId !== sender.tab?.id) {
-      return;
-    }
-    Object.assign(
-      recording,
-      ActionMapperRecorder.beginEvent(recording, message.event, message.beforeState),
-    );
-  });
-};
-
-const traceEventCompleted = async (message, sender) => {
-  await mutateSessionValue(RECORDING_KEY, null, (recording) => {
-    if (!recording || recording.id !== message.recordingId || recording.tabId !== sender.tab?.id) {
-      return;
-    }
-    Object.assign(
-      recording,
-      ActionMapperRecorder.completeEvent(
-        recording,
-        message.eventId,
-        message.afterState,
-        message.delta,
-      ),
-    );
-  });
-};
-
-const finishNavigationEvents = async (tabId, state) => mutateSessionValue(
-  RECORDING_KEY,
-  null,
-  (recording) => {
-    if (!recording || recording.status !== 'recording' || recording.tabId !== tabId) {
+  const explicitOrigin = (value) => {
+    try {
+      const origin = new URL(value).origin;
+      return origin === value ? origin : null;
+    } catch (error) {
       return null;
     }
-    Object.assign(
-      recording,
-      ActionMapperRecorder.completeNavigation(recording, state, WebMcpSemantic.diffStates),
-    );
-    return { recordingId: recording.id };
-  },
-);
-
-const discover = async () => {
-  const recording = await storageGet('session', RECORDING_KEY, null);
-  if (!recording || recording.status !== 'ready') {
-    throw new Error('Stop a recording before discovering its action map');
-  }
-  if (recording.steps.length === 0) {
-    throw new Error('The recording has no actions to discover from');
-  }
-  const accepted = await requestBackend('/api/discover', {
-    method: 'POST',
-    body: JSON.stringify({ trace: sanitizedTrace(recording) }),
-  });
-  await storageSet('session', DISCOVERY_SESSION_KEY, accepted.sessionId);
-  const response = await waitForDiscovery(accepted.sessionId);
-  const discovery = {
-    ...response.discovery,
-    privacy: response.privacy,
   };
-  await storageSet('session', DISCOVERY_KEY, discovery);
-  return discovery;
-};
+  const originFromUrl = (value) => {
+    try { return new URL(value).origin; } catch (error) { return null; }
+  };
 
-const refreshTabs = async (origin) => {
-  const tabs = await chrome.tabs.query({});
-  await Promise.allSettled(tabs
-    .filter((tab) => {
-      try {
-        return new URL(tab.url).origin === origin;
-      } catch (error) {
-        return false;
-      }
-    })
-    .map((tab) => tabMessage(tab.id, createMessage(MESSAGE_TYPES.refreshAdapters))));
-};
-
-const publishCandidate = async (adapterId, versionId, origin) => {
-  await requestBackend('/api/adapters/publish', {
-    method: 'POST',
-    body: JSON.stringify({ adapterId, versionId }),
-  });
-  const cache = await storageGet('local', ADAPTER_CACHE_KEY, {});
-  delete cache[origin];
-  await storageSet('local', ADAPTER_CACHE_KEY, cache);
-  await mutateSessionValue(CANDIDATE_KEY, null, (candidate) => {
-    if (candidate?.adapterId === adapterId && candidate?.versionId === versionId) {
-      candidate.status = 'active';
-    }
-  });
-  await refreshTabs(origin);
-};
-
-const getAdapters = async (origin) => {
-  const cache = await storageGet('local', ADAPTER_CACHE_KEY, {});
-  try {
-    const body = await requestBackend(`/api/adapters?origin=${encodeURIComponent(origin)}`);
-    cache[origin] = {
-      adapters: body.adapters,
-      fetchedAt: new Date().toISOString(),
+  const createCoordinator = ({
+    chromeApi = chrome,
+    fetchApi = fetch,
+    manifest = globalThis.WebMcpManifest,
+    now = () => new Date().toISOString(),
+    retrySpoolApi = retrySpool,
+  } = {}) => {
+    let queue = Promise.resolve();
+    let storage = null;
+    const serial = (work) => {
+      const result = queue.then(work, work);
+      queue = result.catch(() => {});
+      return result;
     };
-    await storageSet('local', ADAPTER_CACHE_KEY, cache);
-    return { adapters: body.adapters, stale: false };
-  } catch (error) {
-    if (cache[origin]) {
-      return { adapters: cache[origin].adapters, stale: true, error: error.message };
-    }
-    throw error;
-  }
-};
+    const get = async (area, key, fallback = null) => {
+      const values = await chromeApi.storage[area].get(key);
+      return values[key] ?? fallback;
+    };
+    const set = (area, key, value) => chromeApi.storage[area].set({ [key]: value });
+    const policyKey = (origin) => `${POLICY_PREFIX}${origin}`;
+    const lifecycleKey = (scopeId) => `${LIFECYCLE_PREFIX}${scopeId}`;
 
-const getJobs = () => storageGet('session', JOBS_KEY, {});
+    const currentPolicy = async ({ origin, scope, revision = null }) => {
+      const normalized = explicitOrigin(origin);
+      const policy = normalized ? await get('local', policyKey(normalized)) : null;
+      const valid = policy?.status === 'allowed'
+        && policy.origin === normalized
+        && Array.isArray(policy.scopes)
+        && policy.scopes.includes(scope)
+        && typeof policy.checkedAt === 'string'
+        && !Number.isNaN(Date.parse(policy.checkedAt))
+        && policy.revision !== undefined
+        && (!policy.expiresAt || Date.parse(policy.expiresAt) > Date.now())
+        && (revision === null || policy.revision === revision);
+      return valid ? policy : { origin: normalized, revision: policy?.revision ?? null, scopes: [], status: 'denied' };
+    };
 
-const changeJob = (jobId, mutate) => mutateSessionValue(JOBS_KEY, {}, (jobs) => {
-  const job = jobs[jobId];
-  if (!job) return null;
-  mutate(job);
-  job.updatedAt = new Date().toISOString();
-  return job;
-});
-
-const reportRun = async (job, outcome, details = {}) => {
-  const payload = {
-    versionId: job.adapter.versionId,
-    outcome,
-    failedStep: details.failedStep ?? null,
-    url: details.url || job.sourceUrl,
-    error: details.error || null,
-    observed: details.observed || null,
-  };
-  await requestBackend('/api/runs', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  }).catch(() => {});
-};
-
-const finishJob = async (jobId, status, details) => {
-  const job = await changeJob(jobId, (current) => {
-    current.status = status;
-    current.finishedAt = new Date().toISOString();
-    if (status === 'completed') current.result = details.result;
-    if (status === 'failed') {
-      current.error = details.error;
-      current.failedStep = details.failedStep;
-    }
-  });
-  if (!job) return;
-  await reportRun(job, status === 'completed' ? 'success' : 'failure', details);
-  await chrome.tabs.remove(job.tabId).catch(() => {});
-};
-
-const advanceJob = async (jobId) => {
-  if (advancingJobs.has(jobId)) return;
-  advancingJobs.add(jobId);
-  try {
-    while (true) {
-      const jobs = await getJobs();
-      const job = jobs[jobId];
-      if (!job || ['completed', 'failed'].includes(job.status)) return;
-      const steps = job.adapter.manifest.tool.steps;
-      if (job.stepIndex >= steps.length) {
-        if (job.result === null) {
-          const extraction = await tabMessage(job.tabId, {
-            type: 'EXECUTE_STEP',
-            step: {
-              op: 'extract',
-              target: {},
-              valueFrom: null,
-              literalValue: null,
-              key: null,
-              expectNavigation: false,
-              timeoutMs: 5000,
-            },
-            args: job.args,
-            tool: job.adapter.manifest.tool,
-          }).catch((error) => ({ ok: false, error: error.message }));
-          if (!extraction?.ok) {
-            await finishJob(jobId, 'failed', {
-              error: extraction?.error || 'Could not extract adapter output',
-              failedStep: job.stepIndex,
-            });
-            return;
-          }
-          await changeJob(jobId, (current) => { current.result = extraction.result; });
-          continue;
-        }
-        await finishJob(jobId, 'completed', { result: job.result });
-        return;
-      }
-
-      const step = steps[job.stepIndex];
-      await changeJob(jobId, (current) => { current.status = 'running'; });
-      let response;
-      try {
-        response = await tabMessage(job.tabId, {
-          type: 'EXECUTE_STEP',
-          step,
-          args: job.args,
-          tool: job.adapter.manifest.tool,
-        });
-      } catch (error) {
-        const attempts = (job.transportAttempts || 0) + 1;
-        if (attempts <= 20) {
-          await changeJob(jobId, (current) => {
-            current.status = 'starting';
-            current.transportAttempts = attempts;
-          });
-          setTimeout(() => { void advanceJob(jobId); }, 250);
-          return;
-        }
-        response = { ok: false, error: `Execution page did not become ready: ${error.message}` };
-      }
-      if (!response?.ok) {
-        await finishJob(jobId, 'failed', {
-          error: response?.error || 'Adapter step failed',
-          failedStep: job.stepIndex,
-        });
-        return;
-      }
-      await changeJob(jobId, (current) => {
-        current.stepIndex += 1;
-        current.result = response.result ?? current.result;
-        current.transportAttempts = 0;
-        current.status = response.navigating ? 'waiting-navigation' : 'running';
-      });
-      if (response.navigating) {
-        setTimeout(() => { void advanceJob(jobId); }, 1500);
-        return;
-      }
-    }
-  } finally {
-    advancingJobs.delete(jobId);
-  }
-};
-
-const startJob = async (adapter, args, sourceUrl, sourceTabId) => {
-  const validation = WebMcpManifest.validateManifest(adapter.manifest);
-  if (!validation.valid) {
-    throw new Error(`Stored adapter is invalid: ${validation.errors.join('; ')}`);
-  }
-  if (!WebMcpManifest.manifestMatchesLocation(validation.manifest, sourceUrl)) {
-    throw new Error('This adapter is not valid for the current page');
-  }
-  const tab = await chrome.tabs.create({ url: sourceUrl, active: false });
-  const job = {
-    id: crypto.randomUUID(),
-    tabId: tab.id,
-    sourceTabId,
-    sourceUrl,
-    adapter: { ...adapter, manifest: validation.manifest },
-    args,
-    stepIndex: 0,
-    status: 'starting',
-    result: null,
-    error: null,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  await mutateSessionValue(JOBS_KEY, {}, (jobs) => { jobs[job.id] = job; });
-  setTimeout(() => { void advanceJob(job.id); }, 300);
-  return job.id;
-};
-
-const pageReady = async (sender, state) => {
-  const tabId = sender.tab?.id;
-  if (!Number.isInteger(tabId)) return { recordingActive: false };
-  const recording = await finishNavigationEvents(tabId, state);
-  const jobs = await getJobs();
-  const job = Object.values(jobs).find((candidate) => (
-    candidate.tabId === tabId && !['completed', 'failed'].includes(candidate.status)
-  ));
-  if (job) {
-    setTimeout(() => { void advanceJob(job.id); }, 0);
-  }
-  return {
-    recordingActive: Boolean(recording),
-    recordingId: recording?.recordingId || null,
-  };
-};
-
-const popupState = async () => {
-  const [recording, discovery, webMcpStatus] = await Promise.all([
-    storageGet('session', RECORDING_KEY, null),
-    storageGet('session', DISCOVERY_KEY, null),
-    storageGet('session', WEBMCP_STATUS_KEY, null),
-  ]);
-  return {
-    recording: summarizeRecording(recording),
-    discovery,
-    webMcpStatus,
-  };
-};
-
-const handleMessage = async (message, sender) => {
-  switch (message.type) {
-    case 'GET_POLICY_REVIEW_STATE': {
-      const activeTabs = sender.tab ? [sender.tab] : await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-      const origin = activeTabs[0]?.url ? new URL(activeTabs[0].url).origin : 'http://127.0.0.1:4317';
-      const policy = await storageGet('local', ambientPolicyKey(origin), null);
-      return { ok: true, state: { policy, context: { origin, policyRevision: policy?.revision || null }, retrySpool: [] } };
-    }
-    case 'SET_OWNED_DEMO_OVERRIDE':
-    case 'SUBMIT_POLICY_DECISION': {
-      const incoming = message.override || message.decision;
-      const existing = await storageGet('local', ambientPolicyKey(new URL(incoming.origin).origin), null);
-      const policy = { ...policyFromDecision(incoming), revision: (existing?.revision || 0) + 1 };
-      await storageSet('local', ambientPolicyKey(policy.origin), policy);
-      return { ok: true, policy };
-    }
-    case MESSAGE_TYPES.pageReady:
-      return pageReady(sender, message.state);
-    case MESSAGE_TYPES.getPopupState:
-      return { ok: true, ...(await popupState()) };
-    case MESSAGE_TYPES.publishCandidate:
-      await publishCandidate(message.adapterId, message.versionId, message.origin);
-      return { ok: true };
-    case MESSAGE_TYPES.getBackendHealth:
-      return { ok: true, health: await requestBackend('/health') };
-    case MESSAGE_TYPES.getAdapters:
-      return { ok: true, ...(await getAdapters(message.origin)) };
-    case MESSAGE_TYPES.webMcpStatus:
-      await storageSet('session', WEBMCP_STATUS_KEY, {
-        available: message.available,
-        registered: message.registered || 0,
-        tabId: sender.tab?.id || null,
-        updatedAt: new Date().toISOString(),
-      });
-      return { ok: true };
-    case MESSAGE_TYPES.startJob:
-      return {
-        ok: true,
-        jobId: await startJob(message.adapter, message.args, message.sourceUrl, sender.tab?.id),
+    const savePolicy = (incoming, activeOrigin = null) => serial(async () => {
+      const origin = originFromUrl(activeOrigin) || explicitOrigin(incoming?.origin);
+      if (!origin) throw new Error('An explicit origin is required');
+      const existing = await get('local', policyKey(origin));
+      const policy = {
+        checkedAt: now(),
+        decisionId: incoming.decisionId || `policy_${Date.now()}`,
+        expiresAt: incoming.expiresAt || null,
+        origin,
+        revision: (Number.isInteger(existing?.revision) ? existing.revision : 0) + 1,
+        scopes: Array.isArray(incoming.scopes) ? incoming.scopes : [incoming.scope || 'ambient_learn'],
+        source: incoming.source || 'local_policy_review',
+        status: incoming.enabled === false ? 'revoked' : (incoming.decision || incoming.status || 'allowed'),
       };
-    case MESSAGE_TYPES.getJob: {
-      const jobs = await getJobs();
-      const job = jobs[message.jobId];
-      if (!job) return { ok: false, error: 'Job not found' };
-      if (!['completed', 'failed'].includes(job.status)) {
-        setTimeout(() => { void advanceJob(job.id); }, 0);
-      }
-      return { ok: true, job };
-    }
-    default:
-      return { ok: false, error: 'Unknown extension message' };
-  }
-};
+      await set('local', policyKey(origin), policy);
+      return policy;
+    });
 
-const onMessage = (message, sender, sendResponse) => {
-  handleMessage(message, sender)
-    .then(sendResponse)
-    .catch((error) => sendResponse(publicErrors.legacyResponseFor(error)));
-  return true;
-};
+    const lifecycle = (scopeId, mutate) => serial(async () => {
+      const key = lifecycleKey(scopeId);
+      const state = await get('session', key, { nextLayerSequence: 0, pending: {} });
+      const result = mutate(state);
+      await set('session', key, state);
+      return result;
+    });
 
-const onTabRemoved = (tabId) => {
-  void getJobs().then((jobs) => {
-    const job = Object.values(jobs).find((candidate) => (
-      candidate.tabId === tabId && !['completed', 'failed'].includes(candidate.status)
-    ));
-    if (job) {
-      void finishJob(job.id, 'failed', {
-        error: 'The background execution tab was closed',
-        failedStep: job.stepIndex,
+    const requestBackend = async (path, options = {}) => {
+      const response = await fetchApi(`http://127.0.0.1:4317${path}`, {
+        ...options,
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
       });
-    }
-  });
-};
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `Backend request failed with status ${response.status}`);
+      return body;
+    };
+    const deliverAmbientLayer = async (completedLayer) => {
+      const response = await fetchApi('http://127.0.0.1:4317/v1/ambient/layers', {
+        body: JSON.stringify(completedLayer),
+        headers: { 'Content-Type': 'application/json', 'X-WebMCP-Internal': 'ambient-v1' },
+        method: 'POST',
+      });
+      const body = await response.json().catch(() => null);
+      if (response.status === 409) return { outcome: 'conflict', receiptId: body?.requestId || null };
+      if (!response.ok || !body || typeof body.outcome !== 'string') throw new Error(`Ambient delivery retryable: ${response.status}`);
+      if (!['applied', 'duplicate', 'no_change', 'rejected'].includes(body.outcome)) throw new Error('Ambient delivery returned an invalid receipt');
+      return { outcome: body.outcome, receiptId: body.requestId || null };
+    };
+    const tabMessage = (tabId, value) => chromeApi.tabs.sendMessage(tabId, value);
+    const getJobs = () => get('session', 'jobs', {});
+    const changeJob = (id, mutate) => serial(async () => {
+      const jobs = await getJobs();
+      if (!jobs[id]) return null;
+      mutate(jobs[id]);
+      jobs[id].updatedAt = now();
+      await set('session', 'jobs', jobs);
+      return jobs[id];
+    });
+    const advanceJob = async (id) => {
+      const job = (await getJobs())[id];
+      if (!job || ['completed', 'failed'].includes(job.status)) return;
+      const step = job.adapter.manifest.tool.steps[job.stepIndex];
+      if (!step) {
+        await changeJob(id, (current) => { current.status = 'completed'; });
+        return;
+      }
+      const response = await tabMessage(job.tabId, { type: 'EXECUTE_STEP', step, args: job.args, tool: job.adapter.manifest.tool });
+      if (!response?.ok) {
+        await changeJob(id, (current) => { current.error = response?.error || 'Adapter step failed'; current.status = 'failed'; });
+        return;
+      }
+      await changeJob(id, (current) => { current.stepIndex += 1; current.status = response.navigating ? 'waiting-navigation' : 'running'; });
+    };
+    const getAdapters = async (origin) => {
+      const cache = await get('local', 'adapterCache', {});
+      try {
+        const body = await requestBackend(`/api/adapters?origin=${encodeURIComponent(origin)}`);
+        cache[origin] = { adapters: body.adapters, fetchedAt: now() };
+        await set('local', 'adapterCache', cache);
+        return { adapters: body.adapters, stale: false };
+      } catch (error) {
+        if (cache[origin]) return { adapters: cache[origin].adapters, error: error.message, stale: true };
+        throw error;
+      }
+    };
+    const startJob = async (adapter, args, sourceUrl, sourceTabId) => {
+      const validation = manifest.validateManifest(adapter.manifest);
+      if (!validation.valid || !manifest.manifestMatchesLocation(validation.manifest, sourceUrl)) throw new Error('This adapter is not valid for the current page');
+      const tab = await chromeApi.tabs.create({ active: false, url: sourceUrl });
+      const job = { adapter: { ...adapter, manifest: validation.manifest }, args, createdAt: now(), error: null, id: crypto.randomUUID(), result: null, sourceTabId, sourceUrl, status: 'starting', stepIndex: 0, tabId: tab.id, updatedAt: now() };
+      await serial(async () => { const jobs = await getJobs(); jobs[job.id] = job; await set('session', 'jobs', jobs); });
+      return job.id;
+    };
+    const pageReady = async (sender) => {
+      const tabId = sender.tab?.id;
+      const job = Object.values(await getJobs()).find((candidate) => candidate.tabId === tabId && !['completed', 'failed'].includes(candidate.status));
+      if (job) await advanceJob(job.id);
+      return { recordingActive: false, recordingId: null };
+    };
 
-const start = () => {
-  if (started) return;
-  started = true;
-  chrome.runtime.onMessage.addListener(onMessage);
-  chrome.tabs.onRemoved.addListener(onTabRemoved);
-};
+    const ownedSpool = async () => {
+      if (!retrySpoolApi) throw new Error('Ambient retry spool was unavailable during coordinator initialization');
+      if (!storage) storage = await retrySpoolApi.createChromeEncryptedStorage({ chromeApi, keyName: KEY_NAME, recordKey: RECORD_KEY });
+      return retrySpoolApi.createRetrySpool({ storage });
+    };
+    const spool = (operation, payload = {}) => serial(async () => {
+      const instance = await ownedSpool();
+      switch (operation) {
+        case 'enqueue': return instance.enqueue(payload.completedLayer);
+        case 'next': return instance.next();
+        case 'markAttempt': return instance.markAttempt(payload.id);
+        case 'handleReceipt': return instance.handleReceipt(payload.id, payload.receipt);
+        case 'list': return instance.list();
+        case 'remove': return instance.remove(payload.id);
+        default: throw new Error('Unknown ambient spool operation');
+      }
+    });
+    const retryMetadata = async () => {
+      const records = await spool('list');
+      const oldest = [...records].sort((a, b) => a.enqueuedAt - b.enqueuedAt)[0];
+      return { count: records.length, expiresAt: oldest ? new Date(oldest.expiresAt).toISOString() : null, oldestAt: oldest ? new Date(oldest.enqueuedAt).toISOString() : null };
+    };
 
-return {
-  handleMessage,
-  start,
-};
+    const handleMessage = async (message, sender = {}) => {
+      switch (message?.type) {
+        case 'AMBIENT_POLICY_CURRENT': return { ok: true, policy: await currentPolicy(message) };
+        case 'AMBIENT_NEXT_LAYER_SEQUENCE': return { ok: true, sequence: await lifecycle(message.scopeId, (state) => { state.nextLayerSequence += 1; return state.nextLayerSequence; }) };
+        case 'AMBIENT_PUT_PENDING': return { ok: true, pending: await lifecycle(message.scopeId, (state) => { const key = String(sender.tab?.id ?? message.documentId); state.pending[key] = message.pending; return state.pending[key]; }) };
+        case 'AMBIENT_CLEAR_PENDING': return { ok: true, cleared: await lifecycle(message.scopeId, (state) => { const key = String(sender.tab?.id ?? message.documentId); if (state.pending[key]?.observationId !== message.observationId) return false; delete state.pending[key]; return true; }) };
+        case 'AMBIENT_CONSUME_PENDING': return { ok: true, pending: await lifecycle(message.scopeId, (state) => { const key = String(sender.tab?.id ?? message.documentId); const pending = state.pending[key] || null; delete state.pending[key]; return pending; }) };
+        case 'AMBIENT_SPOOL_OPERATION': return { ok: true, result: await spool(message.operation, message.payload) };
+        case 'AMBIENT_DELIVER_LAYER': return { ok: true, receipt: await deliverAmbientLayer(message.completedLayer) };
+        case 'GET_POLICY_REVIEW_STATE': {
+          const tabs = sender.tab ? [sender.tab] : await chromeApi.tabs.query({ active: true, lastFocusedWindow: true });
+          const origin = originFromUrl(tabs[0]?.url) || 'http://127.0.0.1:4317';
+          const policy = await get('local', policyKey(origin));
+          return { ok: true, state: { context: { origin, policyRevision: policy?.revision ?? null }, policy, retrySpool: await retryMetadata() } };
+        }
+        case 'SET_OWNED_DEMO_OVERRIDE':
+        case 'SUBMIT_POLICY_DECISION': {
+          const tabs = sender.tab ? [sender.tab] : await chromeApi.tabs.query({ active: true, lastFocusedWindow: true });
+          return { ok: true, policy: await savePolicy(message.override || message.decision, tabs[0]?.url) };
+        }
+        case 'REQUEST_RETRY_SPOOL_DELETION': await serial(() => chromeApi.storage.local.remove([RECORD_KEY])); return { ok: true };
+        case protocol.MESSAGE_TYPES.pageReady:
+          return pageReady(sender);
+        case protocol.MESSAGE_TYPES.getBackendHealth:
+          return { ok: true, health: await requestBackend('/health') };
+        case protocol.MESSAGE_TYPES.getAdapters:
+          return { ok: true, ...(await getAdapters(message.origin)) };
+        case protocol.MESSAGE_TYPES.startJob:
+          return { ok: true, jobId: await startJob(message.adapter, message.args, message.sourceUrl, sender.tab?.id) };
+        case protocol.MESSAGE_TYPES.getJob: {
+          const job = (await getJobs())[message.jobId];
+          if (!job) return { ok: false, error: 'Job not found' };
+          return { ok: true, job };
+        }
+        case protocol.MESSAGE_TYPES.webMcpStatus:
+          await set('session', 'webMcpStatus', { available: message.available, registered: message.registered || 0, tabId: sender.tab?.id || null, updatedAt: now() });
+          return { ok: true };
+        default: return { ok: false, error: 'Unknown extension message' };
+      }
+    };
+    return Object.freeze({ handleMessage, retryMetadata, retrySpoolReady: Boolean(retrySpoolApi) });
+  };
+
+  let started = false;
+  const start = () => {
+    if (started) return;
+    started = true;
+    const coordinator = createCoordinator();
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      coordinator.handleMessage(message, sender).then(sendResponse).catch((error) => sendResponse(publicErrors?.legacyResponseFor?.(error) || { ok: false, error: error.message }));
+      return true;
+    });
+  };
+  return Object.freeze({ createCoordinator, start });
 }));

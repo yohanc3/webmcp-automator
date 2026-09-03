@@ -60,17 +60,26 @@
 
   const normalizePolicy = (decision) => ({
     decisionId: decision.decisionId,
+    expiresAt: decision.expiresAt || null,
+    origin: decision.origin,
+    revision: decision.revision,
     status: decision.status,
     scope: AMBIENT_SCOPE,
     checkedAt: decision.checkedAt,
   });
 
-  const allowedDecision = (decision) => (
+  const allowedDecision = (decision, expectedOrigin = null) => (
     decision?.status === 'allowed'
-    && decision?.scope === AMBIENT_SCOPE
+    && Array.isArray(decision?.scopes)
+    && decision.scopes.includes(AMBIENT_SCOPE)
     && EVIDENCE_ID.test(decision?.decisionId || '')
+    && typeof decision?.origin === 'string'
+    && decision.origin === expectedOrigin
+    && (typeof decision?.revision === 'string' || Number.isInteger(decision?.revision))
     && typeof decision.checkedAt === 'string'
     && !Number.isNaN(Date.parse(decision.checkedAt))
+    && (!decision.expiresAt || (!Number.isNaN(Date.parse(decision.expiresAt))
+      && Date.parse(decision.expiresAt) > Date.now()))
   );
 
   const normalizeSiteScope = (siteScope) => {
@@ -230,6 +239,8 @@
     incompleteLayerTtlMs = INCOMPLETE_LAYER_TTL_MS,
     backgroundAllowed = false,
     onCompletedLayer = () => {},
+    onNavigationPending = () => {},
+    onNavigationSettled = () => {},
   } = {}) => {
     if (typeof eligibility?.current !== 'function') {
       throw new TypeError('Ambient capture requires an eligibility.current port');
@@ -258,6 +269,7 @@
 
     const policyContext = (current) => ({
       origin: current.siteScope.origin,
+      ...(current.policy?.revision === undefined ? {} : { revision: current.policy.revision }),
       route: current.route,
       scope: AMBIENT_SCOPE,
     });
@@ -289,11 +301,12 @@
           const record = await spool.next();
           if (!record) return;
           const context = {
+            policy: record.completedLayer.policy,
             siteScope: record.completedLayer.siteScope,
             route: new URL(record.completedLayer.layer.url).pathname,
           };
           const decision = await currentDecision(context);
-          if (!allowedDecision(decision)) {
+          if (!allowedDecision(decision, context.siteScope.origin)) {
             revoke(decision);
             return;
           }
@@ -374,6 +387,7 @@
           const [observationId, pending] = entry;
           current.pending.delete(observationId);
           clearTimer(pending.timer);
+          onNavigationSettled(observationId);
           const observation = {
             ...pending.observation,
             fromLayerId: current.lastLayerId,
@@ -408,6 +422,7 @@
       const timer = setTimer(() => {
         if (active !== current) return;
         current.pending.delete(observationId);
+        onNavigationSettled(observationId);
         current.discardedSequences.add(observation.eventSequence);
         current.connection?.discard?.(observationId, 'incomplete_layer_ttl');
         void flushCompletedObservations(current);
@@ -418,6 +433,9 @@
         timer,
         boundary: null,
       });
+      if (candidate.navigation === true) {
+        onNavigationPending({ ...observation, fromLayerId: current.lastLayerId });
+      }
       return observationId;
     };
 
@@ -439,7 +457,7 @@
       const normalizedSiteScope = normalizeSiteScope(siteScope);
       const context = { siteScope: normalizedSiteScope, route };
       const decision = await currentDecision(context);
-      if (!allowedDecision(decision)) {
+      if (!allowedDecision(decision, normalizedSiteScope.origin)) {
         return { attached: false, reason: 'policy_denied' };
       }
       const current = {

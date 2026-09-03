@@ -23,14 +23,18 @@
   });
   const ALLOWED = Object.freeze({
     decisionId: 'policy_shop_ambient',
+    origin: 'https://shop.test',
+    revision: 1,
+    scopes: ['ambient_learn'],
     status: 'allowed',
-    scope: 'ambient_learn',
     checkedAt: '2026-09-03T12:00:00.000Z',
   });
   const DENIED = Object.freeze({
     decisionId: 'policy_shop_revoked',
+    origin: 'https://shop.test',
+    revision: 2,
+    scopes: ['ambient_learn'],
     status: 'denied',
-    scope: 'ambient_learn',
     checkedAt: '2026-09-03T12:00:01.000Z',
   });
   const SECRET = 'canary-ambient-secret-7f31c9';
@@ -186,6 +190,15 @@
     match(initial.layer.semanticXmlDigest, /^sha256:[a-f0-9]{64}$/);
     deepEqual(initial.layer.evidenceIds, ['node_catalog', 'node_orders_link']);
     equal(initial.privacy.rawPersisted, false);
+    await fixture.capture.whenIdle();
+  });
+
+  test('carries the projection redaction ledger into completed-layer privacy metadata', async () => {
+    const fixture = createFixture({ initialProjection: projection({ marker: '[redacted]' }) });
+    const { initialLayer } = await start(fixture);
+    equal(initialLayer.privacy.redactionCount, 1);
+    deepEqual(initialLayer.privacy.categories, ['credential']);
+    equal(initialLayer.privacy.rawPersisted, false);
     await fixture.capture.whenIdle();
   });
 
