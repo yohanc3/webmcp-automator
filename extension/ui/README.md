@@ -17,13 +17,11 @@ const controller = WebMcpPolicyReview.createController({
   coordinator: {
     getPolicyReviewState: async () => state,
     setOwnedDemoOverride: async (override) => response,
-    submitConfirmation: async (decision) => response,
+    submitCandidateReview: async (decision) => response,
+    submitRunConfirmation: async (decision) => response,
     submitPolicyDecision: async (decision) => response,
   },
-  registry: {
-    openEvidence: async (reference) => response,
-    submitCandidateDecision: async (decision) => response,
-  },
+  registry: { openEvidence: async (reference) => response },
   retrySpool: {
     requestDeletion: async (request) => response,
   },
@@ -105,10 +103,32 @@ learning lifecycle controls. Consequential ready-path confirmation remains a
 separate section bound to its run, step, document, policy revision, and list
 digest.
 
-Candidate approval and rejection remain disabled until both the action-map and
-action-list digests are present and match any current digest supplied by the
-integration context. Compact evidence rendering accepts identifier strings only
-and never renders raw observations, semantic XML, URLs, or private history.
+Candidate approval requires exact current action-map and action-list
+digest/revision bindings, a passed replay, an eligible current policy, and both
+authoritative `policyDecisionId` and `replayReportId` values. Rejection stays
+available and never publishes on its own. The exact candidate payload is:
+
+```json
+{
+  "decision": "approve | reject",
+  "reviewer": "local-user",
+  "listId": "owned-storefront",
+  "listRevision": 3,
+  "listDigest": "sha256:...",
+  "actionMapRevision": 2,
+  "actionMapDigest": "sha256:...",
+  "policyDecisionId": "policy_...",
+  "replayReportId": "replay_..."
+}
+```
+
+Run approval requires an exact current `runId`, `stepId`, `listDigest`,
+`origin`, `documentId`, and `policyRevision`; denial stays available. G10 must
+supply those current context fields (including `listRevision`,
+`actionMapRevision`, and `runId`) alongside the pending candidate/confirmation,
+and must re-check them authoritatively before publishing or executing. Compact
+evidence rendering accepts identifier strings only and never renders raw
+observations, semantic XML, URLs, or private history.
 
 Retry-spool deletion sends the displayed count, normalized origin, scope ID, and
 request time to the injected port. The authoritative adapter owns deletion and

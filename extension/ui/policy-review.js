@@ -13,6 +13,7 @@
   const AMBIENT_LEARN_SCOPE = 'ambient_learn';
   const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
   const BINDING_FIELDS = Object.freeze([
+    ['runId', 'Run'],
     ['listDigest', 'Action-list digest'],
     ['stepId', 'Step'],
     ['origin', 'Origin'],
@@ -21,6 +22,7 @@
   ]);
 
   const asArray = (value) => (Array.isArray(value) ? value : []);
+  const hasValue = (value) => value !== null && value !== undefined;
 
   const createElement = (tag, className, text) => {
     const element = document.createElement(tag);
@@ -210,7 +212,9 @@
   const staleReviewReasons = (candidate, context = {}) => {
     const binding = reviewBinding(candidate);
     const currentMapDigest = context.actionMapDigest || context.actionMap?.digest || null;
+    const currentMapRevision = context.actionMapRevision ?? actionMapBinding(context.actionMap).revision ?? null;
     const currentListDigest = context.listDigest || context.actionList?.digest || null;
+    const currentListRevision = context.listRevision ?? context.actionList?.revision ?? null;
     const reasons = [];
     const actionMapDigestIsValid = DIGEST_PATTERN.test(binding.actionMapDigest || '');
     const listDigestIsValid = DIGEST_PATTERN.test(binding.listDigest || '');
@@ -223,6 +227,12 @@
       reasons.push('Action-list digest binding is missing.');
     } else if (!listDigestIsValid) {
       reasons.push('Action-list digest binding is invalid.');
+    }
+    if (!Number.isInteger(binding.actionMapRevision)) {
+      reasons.push('Action-map revision binding is missing or invalid.');
+    }
+    if (!Number.isInteger(binding.listRevision)) {
+      reasons.push('Action-list revision binding is missing or invalid.');
     }
     if (currentMapDigest && !DIGEST_PATTERN.test(currentMapDigest)) {
       reasons.push('Current action-map digest is invalid.');
@@ -242,10 +252,30 @@
     ) {
       reasons.push('Action-list digest changed.');
     }
+    if (hasValue(currentMapRevision) && !Number.isInteger(currentMapRevision)) {
+      reasons.push('Current action-map revision is invalid.');
+    } else if (
+      hasValue(currentMapRevision)
+      &&
+      Number.isInteger(binding.actionMapRevision)
+      && binding.actionMapRevision !== currentMapRevision
+    ) {
+      reasons.push('Action-map revision changed.');
+    }
+    if (hasValue(currentListRevision) && !Number.isInteger(currentListRevision)) {
+      reasons.push('Current action-list revision is invalid.');
+    } else if (
+      hasValue(currentListRevision)
+      && Number.isInteger(binding.listRevision)
+      && binding.listRevision !== currentListRevision
+    ) {
+      reasons.push('Action-list revision changed.');
+    }
     return reasons;
   };
 
   const confirmationBinding = (confirmation = {}) => ({
+    runId: confirmation.runId || confirmation.binding?.runId || null,
     listDigest: confirmation.listDigest || confirmation.binding?.listDigest || null,
     stepId: confirmation.stepId || confirmation.binding?.stepId || null,
     origin: normalizedOrigin(confirmation.origin || confirmation.binding?.origin),
@@ -253,11 +283,39 @@
     policyRevision: confirmation.policyRevision || confirmation.binding?.policyRevision || null,
   });
 
+  const candidateDecision = ({ candidate = {}, decision, reviewer, policyDecisionId } = {}) => {
+    const binding = reviewBinding(candidate);
+    return {
+      decision,
+      reviewer,
+      listId: candidate.listId || null,
+      listRevision: binding.listRevision,
+      listDigest: binding.listDigest,
+      actionMapRevision: binding.actionMapRevision,
+      actionMapDigest: binding.actionMapDigest,
+      policyDecisionId: policyDecisionId || candidate.policyDecisionId || null,
+      replayReportId: candidate.replayReportId || candidate.replay?.reportId || null,
+    };
+  };
+
+  const reviewRevisionsAreCurrent = (candidate, context = {}) => {
+    const binding = reviewBinding(candidate);
+    const actionMapRevision = context.actionMapRevision ?? actionMapBinding(context.actionMap).revision;
+    const listRevision = context.listRevision ?? context.actionList?.revision;
+    return Number.isInteger(actionMapRevision)
+      && Number.isInteger(listRevision)
+      && binding.actionMapRevision === actionMapRevision
+      && binding.listRevision === listRevision;
+  };
+
   const staleConfirmationReasons = (confirmation, context = {}) => {
     if (!confirmation) return ['No confirmation request is pending.'];
     const expected = confirmationBinding(confirmation);
     const current = confirmationBinding(context);
-    return BINDING_FIELDS.reduce((reasons, [field, label]) => {
+    const fields = BINDING_FIELDS.filter(([field]) => (
+      field !== 'runId' || expected.runId || current.runId
+    ));
+    return fields.reduce((reasons, [field, label]) => {
       if (!expected[field] || !current[field]) {
         return [...reasons, `${label} binding is missing.`];
       }
@@ -546,13 +604,30 @@
     return section;
   };
 
-  const renderCandidate = ({ state, registry, now }) => {
+  const renderCandidate = ({ state, registry, coordinator, refresh, failClosed, now }) => {
     if (!state.candidate) return null;
     const { candidate } = state;
     const replay = replayState(candidate);
     const bindingValue = reviewBinding(candidate);
     const staleReasons = staleReviewReasons(candidate, state.context);
     const reviewIsExact = staleReasons.length === 0;
+    const revisionsAreCurrent = reviewRevisionsAreCurrent(candidate, state.context);
+    const policyDecision = evaluatePolicy({
+      policy: state.policy,
+      context: {
+        ...state.context,
+        requestedScope: candidate.requestedScope || state.context?.requestedScope || AMBIENT_LEARN_SCOPE,
+      },
+      now: now(),
+    });
+    const policyDecisionId = state.policyDecisionId || state.policy?.policyDecisionId || candidate.policyDecisionId;
+    const replayReportId = candidate.replayReportId || candidate.replay?.reportId;
+    const mayApprove = reviewIsExact
+      && replay === 'passed'
+      && revisionsAreCurrent
+      && policyDecision.eligible
+      && Boolean(policyDecisionId)
+      && Boolean(replayReportId);
     const section = createElement('section', 'trust-section candidate-review');
     section.setAttribute('aria-label', 'Candidate review');
     section.append(sectionHeading(
@@ -621,6 +696,51 @@
       section.append(warning);
     }
 
+    if (!policyDecision.eligible) {
+      section.append(createElement(
+        'p',
+        'policy-blocked-note',
+        `Approval is blocked by ${policyDecision.state} policy: ${policyDecision.reason}`,
+      ));
+    }
+    if (!policyDecisionId || !replayReportId) {
+      section.append(createElement(
+        'p',
+        'policy-blocked-note',
+        'Approval is blocked until authoritative policy and replay report IDs are present.',
+      ));
+    }
+    if (!revisionsAreCurrent) {
+      section.append(createElement(
+        'p',
+        'policy-blocked-note',
+        'Approval is blocked until current action-map and action-list revisions are supplied.',
+      ));
+    }
+
+    if (coordinator?.submitCandidateReview) {
+      const controls = createElement('div', 'decision-controls');
+      const reject = createElement('button', 'button button-stop', 'Reject candidate');
+      const approve = createElement('button', 'button button-verified', 'Approve candidate');
+      reject.type = 'button';
+      approve.type = 'button';
+      approve.disabled = !mayApprove;
+      const submit = (decision, button) => {
+        button.disabled = true;
+        const payload = candidateDecision({
+          candidate,
+          decision,
+          policyDecisionId,
+          reviewer: state.reviewer || candidate.reviewer || 'local-user',
+        });
+        void coordinator.submitCandidateReview(payload).then(refresh).catch(failClosed);
+      };
+      reject.addEventListener('click', () => submit('reject', reject));
+      approve.addEventListener('click', () => submit('approve', approve));
+      controls.append(reject, approve);
+      section.append(controls);
+    }
+
     return section;
   };
 
@@ -682,7 +802,7 @@
     return section;
   };
 
-  const renderConfirmation = ({ state, coordinator, refresh, now }) => {
+  const renderConfirmation = ({ state, coordinator, refresh, now, failClosed }) => {
     if (!state.confirmation) return null;
     const { confirmation } = state;
     const staleReasons = staleConfirmationReasons(confirmation, state.context);
@@ -730,21 +850,19 @@
       ));
     }
 
-    if (coordinator?.submitConfirmation) {
+    if (coordinator?.submitRunConfirmation) {
       const controls = createElement('div', 'decision-controls');
       const deny = createElement('button', 'button button-stop', 'Deny run');
       const approve = createElement('button', 'button button-verified', 'Approve exact step');
       deny.type = 'button';
       approve.type = 'button';
-      approve.disabled = stale || !policyDecision.eligible;
+      approve.disabled = stale || !binding.runId || !policyDecision.eligible;
       const submit = (approved, button) => {
         button.disabled = true;
-        void coordinator.submitConfirmation({
+        void coordinator.submitRunConfirmation({
           approved,
-          binding,
-          runId: confirmation.runId,
-          stepId: binding.stepId,
-        }).then(refresh).catch(() => refresh());
+          ...binding,
+        }).then(refresh).catch(failClosed);
       };
       deny.addEventListener('click', () => submit(false, deny));
       approve.addEventListener('click', () => submit(true, approve));
@@ -775,6 +893,7 @@
     registry,
     retrySpool,
     now = () => new Date(),
+    onError = () => {},
   }) => {
     if (!rootElement) throw new Error('A policy review root element is required');
     let currentState = null;
@@ -783,9 +902,22 @@
       currentState = nextState || {};
       const parts = [renderPolicy({ state: currentState, coordinator, refresh, now })];
       const actionMap = renderActionMap({ state: currentState, registry });
-      const candidate = renderCandidate({ state: currentState, registry, now });
+      const candidate = renderCandidate({
+        state: currentState,
+        registry,
+        coordinator,
+        refresh,
+        failClosed,
+        now,
+      });
       const spool = renderRetrySpool({ state: currentState, retrySpool, refresh, now });
-      const confirmation = renderConfirmation({ state: currentState, coordinator, refresh, now });
+      const confirmation = renderConfirmation({
+        state: currentState,
+        coordinator,
+        refresh,
+        now,
+        failClosed,
+      });
       if (actionMap) parts.push(actionMap);
       if (candidate) parts.push(candidate);
       if (spool) parts.push(spool);
@@ -803,6 +935,12 @@
       }
     }
 
+    function failClosed(error) {
+      currentState = null;
+      onError(error);
+      renderUnavailable(rootElement, error);
+    }
+
     return {
       currentState: () => currentState,
       refresh,
@@ -815,6 +953,7 @@
     OWNED_DEMO_ORIGIN,
     actionMapBinding,
     compactEvidenceHandles,
+    candidateDecision,
     confirmationBinding,
     createController,
     evaluatePolicy,
@@ -824,6 +963,7 @@
     observationEligibility,
     readableStep,
     reviewBinding,
+    reviewRevisionsAreCurrent,
     staleConfirmationReasons,
     staleReviewReasons,
   });
