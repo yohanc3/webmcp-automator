@@ -173,56 +173,29 @@
   });
 
   test('keeps registration paused until an explicit refresh', async () => {
-    const before = chrome.__test.sentMessages.length;
-    equal(WebMcpSourceBootstrap.handleMessage({
-      type: WebMcpProtocol.MESSAGE_TYPES.refreshAdapters,
-    }, {}, () => {}), true);
-    await Promise.resolve();
-    await Promise.resolve();
-    deepEqual(chrome.__test.sentMessages.slice(before), [{
-      type: 'WEBMCP_STATUS',
-      available: false,
-    }]);
-    equal(WebMcpSourceBootstrap.handleMessage({ type: 'UNKNOWN' }, {}, () => {}), undefined);
+    const descriptor = Object.getOwnPropertyDescriptor(document, 'modelContext');
+    Object.defineProperty(document, 'modelContext', { configurable: true, value: undefined });
+    try {
+      const before = chrome.__test.sentMessages.length;
+      equal(WebMcpSourceBootstrap.handleMessage({
+        type: WebMcpProtocol.MESSAGE_TYPES.refreshAdapters,
+      }, {}, () => {}), true);
+      await Promise.resolve();
+      await Promise.resolve();
+      deepEqual(chrome.__test.sentMessages.slice(before), [{
+        type: 'WEBMCP_STATUS',
+        available: false,
+      }]);
+      equal(WebMcpSourceBootstrap.handleMessage({ type: 'UNKNOWN' }, {}, () => {}), undefined);
+    } finally {
+      if (descriptor) Object.defineProperty(document, 'modelContext', descriptor);
+      else delete document.modelContext;
+    }
   });
 
-  test('preserves positive registration and completed job polling', async () => {
-    const registered = [];
-    let jobReads = 0;
-    document.modelContext = {
-      async registerTool(tool, options) {
-        registered.push({ tool, options });
-      },
-    };
-    chrome.__test.setRuntimeResponder((message) => {
-      if (message.type === 'GET_ADAPTERS') {
-        const matching = adapter();
-        matching.site.origin = window.location.origin;
-        matching.site.routePatterns = ['/tests/index.html'];
-        return {
-          ok: true,
-          adapters: [{ versionId: 'version_1', manifest: matching }],
-        };
-      }
-      if (message.type === 'START_JOB') return { ok: true, jobId: 'job_1' };
-      if (message.type === 'GET_JOB') {
-        jobReads += 1;
-        if (jobReads === 1) return { ok: true, job: { status: 'running' } };
-        return { ok: true, job: { status: 'completed', result: { count: 1 } } };
-      }
-      return { ok: true };
-    });
-
-    await WebMcpSourceBootstrap.registerAdapters();
-    equal(registered.length, 1);
-    equal(registered[0].tool.name, 'search_products');
-    deepEqual(await registered[0].tool.execute({ query: 'headphones' }), { count: 1 });
-    const recentTypes = chrome.__test.sentMessages.map(({ type }) => type);
-    equal(recentTypes.includes('GET_ADAPTERS'), true);
-    equal(recentTypes.includes('START_JOB'), true);
-    equal(recentTypes.filter((type) => type === 'GET_JOB').length, 2);
-    delete document.modelContext;
-    chrome.__test.setRuntimeResponder(() => ({ ok: true }));
+  test('legacy job polling is absent from the source bridge', () => {
+    equal('waitForJob' in WebMcpSourceBootstrap, false);
+    equal(/getJob|START_JOB|200/.test(WebMcpSourceBootstrap.createSourceBridge.toString()), false);
   });
 
   test('preserves execution-step delegation', async () => {
