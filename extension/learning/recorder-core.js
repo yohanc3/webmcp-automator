@@ -1,6 +1,7 @@
 (function initializeLearningRecorder(root, factory) {
   const recorder = factory(root.WebMcpLearningPrivacy);
   root.WebMcpLearningRecorder = recorder;
+  root.ActionMapperRecorder = recorder;
   if (typeof module === 'object' && module.exports) {
     module.exports = recorder;
   }

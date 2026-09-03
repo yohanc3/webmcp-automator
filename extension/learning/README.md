@@ -16,8 +16,13 @@ Learning-capable content contexts load these files in order:
 
 `extension/manifest.json`, the service-worker import list, and shared test
 indexes are integration-owned. This branch intentionally does not edit them.
-Until integration adds the first four scripts, `learning/bootstrap.js` retains
-the prior semantic-capture compatibility path.
+For content capture, integration adds privacy and learning semantic before the
+existing bootstrap. For the service worker, it replaces the root semantic and
+recorder imports with privacy, learning semantic, and learning recorder in that
+order. The learning modules expose the frozen `WebMcpSemantic` and
+`ActionMapperRecorder` compatibility globals, so the coordinator does not need
+to change. Until that wiring lands, `learning/bootstrap.js` retains the prior
+semantic-capture compatibility path.
 
 ## Privacy invariants
 

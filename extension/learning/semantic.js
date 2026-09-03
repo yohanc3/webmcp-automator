@@ -1,6 +1,7 @@
 (function initializeLearningSemantic(root, factory) {
   const semantic = factory(root.WebMcpLearningPrivacy);
   root.WebMcpLearningSemantic = semantic;
+  root.WebMcpSemantic = semantic;
   if (typeof module === 'object' && module.exports) {
     module.exports = semantic;
   }

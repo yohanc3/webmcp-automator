@@ -76,6 +76,8 @@
   };
 
   test('allowlists semantic evidence and redacts every seeded secret surface', () => {
+    equal(globalThis.WebMcpSemantic, semantic);
+    equal(globalThis.ActionMapperRecorder, recorder);
     fixture.innerHTML = `
       <h2>${secrets.visible}</h2>
       <p>${secrets.mutation}</p>

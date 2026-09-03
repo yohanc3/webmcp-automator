@@ -120,8 +120,11 @@
     return traceEvent;
   };
 
-  const completeEvent = async (traceEvent, beforeState) => {
+  const completeEvent = async (traceEvent, beforeState, deferMs = 0) => {
     if (!traceEvent) return;
+    if (deferMs > 0) {
+      await new Promise((resolve) => { setTimeout(resolve, deferMs); });
+    }
     const afterState = await quietState();
     await sendMessage(createMessage(MESSAGE_TYPES.traceEventCompleted, {
       recordingId,
@@ -131,10 +134,18 @@
     }));
   };
 
-  const trackCompletion = (traceEvent, beforeState) => {
-    const completion = completeEvent(traceEvent, beforeState).catch(() => {});
+  const trackCompletion = (traceEvent, beforeState, deferMs = 0) => {
+    const completion = completeEvent(traceEvent, beforeState, deferMs).catch(() => {});
     pendingCompletions.add(completion);
     completion.finally(() => pendingCompletions.delete(completion));
+  };
+
+  const expectsNavigation = (target) => {
+    if (target.localName === 'a' && target.hasAttribute('href')) return true;
+    if (target.localName === 'button' && (target.type || 'submit') === 'submit') {
+      return Boolean(target.form);
+    }
+    return Boolean(target.form && target.localName === 'input');
   };
 
   const flushInput = async () => {
@@ -191,7 +202,7 @@
     if (!target) return;
     const beforeState = capturePageState();
     const traceEvent = beginEvent('click', target, { redacted: false, value: null }, beforeState);
-    trackCompletion(traceEvent, beforeState);
+    trackCompletion(traceEvent, beforeState, expectsNavigation(target) ? 350 : 0);
   };
 
   const onKeyDown = (event) => {
@@ -204,7 +215,7 @@
       redacted: false,
       value: 'Enter',
     }, beforeState);
-    trackCompletion(traceEvent, beforeState);
+    trackCompletion(traceEvent, beforeState, expectsNavigation(target) ? 350 : 0);
   };
 
   const handleMessage = (message, _sender, sendResponse) => {
