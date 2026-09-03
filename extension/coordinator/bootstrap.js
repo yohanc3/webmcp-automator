@@ -196,6 +196,7 @@
         while (true) {
           const job = (await getJobs())[id];
           if (!job || ['completed', 'failed'].includes(job.status)) return;
+          if (job.status === 'waiting-navigation') return;
           const steps = job.adapter.manifest.tool.steps;
           if (job.stepIndex >= steps.length) {
             if (job.result === null) {
@@ -269,16 +270,25 @@
     const startJob = async (adapter, args, sourceUrl, sourceTabId) => {
       const validation = manifest.validateManifest(adapter.manifest);
       if (!validation.valid || !manifest.manifestMatchesLocation(validation.manifest, sourceUrl)) throw new Error('This adapter is not valid for the current page');
-      const tab = await chromeApi.tabs.create({ active: false, url: sourceUrl });
+      const tab = await chromeApi.tabs.create({ active: false, url: 'about:blank' });
       const job = { adapter: { ...adapter, manifest: validation.manifest }, args, createdAt: now(), error: null, id: crypto.randomUUID(), result: null, sourceTabId, sourceUrl, status: 'starting', stepIndex: 0, tabId: tab.id, updatedAt: now() };
       await serial(async () => { const jobs = await getJobs(); jobs[job.id] = job; await set('session', 'jobs', jobs); });
+      try {
+        await chromeApi.tabs.update(tab.id, { url: sourceUrl });
+      } catch (error) {
+        await finishJob(job.id, 'failed', { error: `Could not navigate execution tab: ${error.message}`, failedStep: 0 });
+        throw error;
+      }
       setTimeout(() => { void advanceJob(job.id); }, 300);
       return job.id;
     };
     const pageReady = async (sender) => {
       const tabId = sender.tab?.id;
       const job = Object.values(await getJobs()).find((candidate) => candidate.tabId === tabId && !['completed', 'failed'].includes(candidate.status));
-      if (job) setTimeout(() => { void advanceJob(job.id); }, 0);
+      if (job) {
+        if (job.status === 'waiting-navigation') await changeJob(job.id, (current) => { current.status = 'running'; });
+        setTimeout(() => { void advanceJob(job.id); }, 0);
+      }
       return { recordingActive: false, recordingId: null };
     };
 

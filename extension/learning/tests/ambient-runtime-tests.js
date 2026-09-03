@@ -286,6 +286,7 @@ test('coordinator preserves backend, adapter, job, page-ready, and status dispat
     }])),
     tabs: {
       async create() { return { id: 9 }; },
+      async update() {},
       async query() { return [{ url: 'https://shop.test/catalog' }]; },
       async sendMessage() { return { ok: true }; },
     },
@@ -319,6 +320,7 @@ test('coordinator executes fill then navigation click, resumes on PAGE_READY, ex
     }])),
     tabs: {
       async create() { return { id: 17 }; },
+      async update() {},
       async remove(tabId) { removed.push(tabId); },
       async sendMessage(tabId, message) {
         commands.push({ tabId, op: message.step.op });
@@ -366,6 +368,7 @@ test('coordinator retries startup transport failures and GET_JOB nudges a nonter
     }])),
     tabs: {
       async create() { return { id: 18 }; },
+      async update() {},
       async remove() {},
       async sendMessage() {
         attempts += 1;
@@ -395,6 +398,7 @@ test('coordinator serializes concurrent advances and fails a nonterminal job whe
     }])),
     tabs: {
       async create() { return { id: 19 }; },
+      async update() {},
       async remove() {},
       async sendMessage() { sends += 1; await delay(5); return { navigating: true, ok: true }; },
     },
