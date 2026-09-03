@@ -434,7 +434,7 @@
       return flushCompletedObservations(current);
     };
 
-    const start = async ({ siteScope, route = '/', documentContext = null } = {}) => {
+    const start = async ({ siteScope, route = '/', documentContext = null, initialObservation = null } = {}) => {
       if (active) stop('document_replaced');
       const normalizedSiteScope = normalizeSiteScope(siteScope);
       const context = { siteScope: normalizedSiteScope, route };
@@ -464,7 +464,11 @@
         onRevoked: revoke,
       });
       const initialProjection = await observer.captureInitial({ documentContext });
-      const completedLayer = await appendLayer(current, initialProjection, null);
+      const carriedObservation = initialObservation ? {
+        ...initialObservation,
+        outcome: { kind: 'navigation', evidenceIds: safeEvidenceIds(initialProjection.evidenceIds) },
+      } : null;
+      const completedLayer = await appendLayer(current, initialProjection, carriedObservation);
       if (!completedLayer) return { attached: false, reason: 'stopped_during_start' };
       current.initialReady = true;
       void flushCompletedObservations(current);
@@ -476,6 +480,7 @@
       scopeId: active.siteScope.scopeId,
       layerSequence: active.sequence,
       eventSequence: active.eventSequence,
+      lastLayerId: active.lastLayerId,
       pendingLayers: active.pending.size,
     } : { attached: false };
 

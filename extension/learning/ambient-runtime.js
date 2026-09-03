@@ -11,6 +11,8 @@
   const POLICY_SCOPE = 'ambient_learn';
 
   const policyKey = (origin) => `ambientPolicy:${origin}`;
+  const lifecycleKey = (scopeId) => `ambientLifecycle:${scopeId}`;
+  const scopeFor = (origin) => `site_${origin.replace(/[^a-z0-9]/gi, '_').toLowerCase().slice(-80)}`;
 
   const projection = () => {
     const page = semantic.capturePageState({ document });
@@ -25,6 +27,14 @@
   const observer = {
     attach({ onObservation, onSettled }) {
       const pending = new Map();
+      let quietTimer = null;
+      const settlePending = (kind = 'semantic_update') => {
+        clearTimeout(quietTimer);
+        quietTimer = setTimeout(() => pending.forEach((entry, observationId) => {
+          pending.delete(observationId);
+          const page = projection(); onSettled(observationId, { projection: page, outcome: { kind, evidenceIds: page.evidenceIds } });
+        }), 180);
+      };
       const settle = (observationId, kind) => {
         const timer = setTimeout(() => {
           pending.delete(observationId);
@@ -36,17 +46,26 @@
         }, 80);
         pending.set(observationId, timer);
       };
-      const onClick = (event) => {
+      const observe = (event, kind) => {
         if (!event.isTrusted || globalThis.__webMcpRunnerActive) return;
         const target = event.target instanceof Element ? semantic.describeElement(event.target, {
           argumentsByValue: new Map(), ledger: WebMcpLearningPrivacy.createLedger(),
         }) : null;
-        const observationId = onObservation({ kind: 'click', targetEvidenceId: target?.id, trusted: event.isTrusted });
+        const observationId = onObservation({ kind, targetEvidenceId: target?.id, trusted: event.isTrusted });
         if (observationId) settle(observationId, 'semantic_update');
       };
-      document.addEventListener('click', onClick, true);
+      const onClick = (event) => observe(event, 'click');
+      const onInput = (event) => observe(event, 'fill');
+      const onFocus = (event) => observe(event, 'other');
+      const onSubmit = (event) => observe(event, 'submit');
+      const onKeydown = (event) => { if (event.key === 'Enter') observe(event, 'press'); };
+      const mutations = new MutationObserver(() => settlePending());
+      mutations.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+      document.addEventListener('click', onClick, true); document.addEventListener('input', onInput, true);
+      document.addEventListener('focusin', onFocus, true); document.addEventListener('submit', onSubmit, true);
+      document.addEventListener('keydown', onKeydown, true); window.addEventListener('popstate', settlePending);
       return {
-        disconnect() { document.removeEventListener('click', onClick, true); pending.forEach(clearTimeout); },
+        disconnect() { document.removeEventListener('click', onClick, true); document.removeEventListener('input', onInput, true); document.removeEventListener('focusin', onFocus, true); document.removeEventListener('submit', onSubmit, true); document.removeEventListener('keydown', onKeydown, true); window.removeEventListener('popstate', settlePending); mutations.disconnect(); clearTimeout(quietTimer); pending.forEach((timer) => clearTimeout(timer)); },
         discard(observationId) { clearTimeout(pending.get(observationId)); pending.delete(observationId); },
       };
     },
@@ -62,6 +81,9 @@
       status: storedPolicy.status || storedPolicy.decision,
       scope: POLICY_SCOPE,
     };
+    const scopeId = scopeFor(origin);
+    const lifecycle = await chrome.storage.session.get(lifecycleKey(scopeId));
+    const prior = lifecycle[lifecycleKey(scopeId)] || { sequence: 0, pending: null };
     const storage = await retrySpool.createChromeEncryptedStorage({ chromeApi: chrome });
     const controller = capture.createAmbientCapture({
       eligibility: {
@@ -72,6 +94,7 @@
         },
       },
       observer,
+      layerSequence: { async next() { prior.sequence += 1; await chrome.storage.session.set({ [lifecycleKey(scopeId)]: prior }); return prior.sequence; } },
       spool: retrySpool.createRetrySpool({ storage }),
       delivery: {
         async deliver(completedLayer) {
@@ -84,9 +107,19 @@
       },
     });
     const attached = await controller.start({
-      siteScope: { scopeId: `site_${origin.replace(/[^a-z0-9]/gi, '_').toLowerCase().slice(-80)}`, origin, routePatterns: ['^/.*$'] },
+      siteScope: { scopeId, origin, routePatterns: ['^/.*$'] },
       route: window.location.pathname,
+      initialObservation: prior.pending,
     });
+    prior.pending = null;
+    await chrome.storage.session.set({ [lifecycleKey(scopeId)]: prior });
+    window.addEventListener('pagehide', () => {
+      const status = controller.status();
+      const target = document.activeElement;
+      const targetNode = target instanceof Element ? semantic.describeElement(target, { argumentsByValue: new Map(), ledger: WebMcpLearningPrivacy.createLedger() }) : null;
+      prior.pending = status.lastLayerId ? { observationId: `obs_${scopeId}_${status.eventSequence + 1}`, eventSequence: status.eventSequence + 1, fromLayerId: status.lastLayerId, kind: 'navigate', targetEvidenceId: targetNode?.id || null, argumentTokens: [] } : null;
+      void chrome.storage.session.set({ [lifecycleKey(scopeId)]: prior });
+    }, { once: true });
     chrome.storage.onChanged?.addListener((changes, areaName) => {
       if (areaName !== 'local' || !changes[policyKey(origin)]) return;
       const next = changes[policyKey(origin)].newValue;
