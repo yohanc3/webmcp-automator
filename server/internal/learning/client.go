@@ -15,7 +15,12 @@ import (
 )
 
 const (
-	defaultModel  = "openai/gpt-oss-20b:nitro"
+	CerebrasProvider   = "cerebras"
+	OpenRouterProvider = "openrouter"
+	CerebrasModel      = "gemma-4-31b"
+	OpenRouterModel    = "google/gemma-4-31b-it"
+
+	cerebrasURL   = "https://api.cerebras.ai/v1/chat/completions"
 	openRouterURL = "https://openrouter.ai/api/v1/chat/completions"
 	DiscoveryGoal = "Discover the website states, available actions, and deterministic steps supported by this recording."
 )
@@ -59,10 +64,43 @@ The input is a sanitized recording of page states, visible semantic elements, us
 Return only the strict action-map JSON object.`
 
 type Client struct {
-	APIKey     string
-	Model      string
+	apiKey     string
+	provider   string
+	model      string
 	HTTPClient *http.Client
 	Endpoint   string
+}
+
+type Configuration struct {
+	APIKeyConfigured bool
+	Provider         string
+	Model            string
+}
+
+func NewClient(cerebrasAPIKey string, openRouterAPIKey string) Client {
+	if apiKey := strings.TrimSpace(cerebrasAPIKey); apiKey != "" {
+		return Client{
+			apiKey: apiKey, provider: CerebrasProvider, model: CerebrasModel,
+		}
+	}
+	if apiKey := strings.TrimSpace(openRouterAPIKey); apiKey != "" {
+		return Client{
+			apiKey: apiKey, provider: OpenRouterProvider, model: OpenRouterModel,
+		}
+	}
+	return Client{}
+}
+
+func (client Client) Configuration() Configuration {
+	provider := client.provider
+	if provider == "" {
+		provider = "none"
+	}
+	return Configuration{
+		APIKeyConfigured: client.apiKey != "",
+		Provider:         provider,
+		Model:            client.model,
+	}
 }
 
 type Result struct {
@@ -95,8 +133,8 @@ type chatChoice struct {
 }
 
 func (client Client) Discover(ctx context.Context, trace json.RawMessage) (Result, error) {
-	if strings.TrimSpace(client.APIKey) == "" {
-		return Result{}, errors.New("OPENROUTER_API_KEY is not configured")
+	if client.apiKey == "" {
+		return Result{}, errors.New("no AI provider is configured; set CEREBRAS_API_KEY or OPENROUTER_API_KEY")
 	}
 	if !json.Valid(trace) {
 		return Result{}, errors.New("trace must be valid JSON")
@@ -118,49 +156,52 @@ func (client Client) Discover(ctx context.Context, trace json.RawMessage) (Resul
 		return Result{}, fmt.Errorf("encode learning input: %w", err)
 	}
 
-	model := client.Model
-	if model == "" {
-		model = defaultModel
-	}
 	payload := map[string]any{
-		"model": model,
+		"model": client.model,
 		"messages": []map[string]any{
 			{"role": "system", "content": systemInstructions},
 			{"role": "user", "content": string(input)},
 		},
 		"max_completion_tokens": 8000,
-		"reasoning": map[string]any{
-			"effort": "low",
-		},
 		"response_format": map[string]any{
 			"type": "json_schema",
 			"json_schema": map[string]any{
 				"name":   "website_action_map",
-				"schema": schema,
+				"schema": providerSchema(client.provider, schema),
 				"strict": true,
 			},
 		},
-		"provider": map[string]any{
+	}
+	if client.provider == OpenRouterProvider {
+		payload["reasoning"] = map[string]any{
+			"effort": "low",
+		}
+		payload["provider"] = map[string]any{
 			"require_parameters": true,
-		},
+		}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return Result{}, fmt.Errorf("encode OpenRouter request: %w", err)
+		return Result{}, fmt.Errorf("encode %s request: %w", client.provider, err)
 	}
 
 	endpoint := client.Endpoint
 	if endpoint == "" {
-		endpoint = openRouterURL
+		endpoint = providerEndpoint(client.provider)
+	}
+	if endpoint == "" {
+		return Result{}, fmt.Errorf("unsupported AI provider %q", client.provider)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return Result{}, fmt.Errorf("create OpenRouter request: %w", err)
+		return Result{}, fmt.Errorf("create %s request: %w", client.provider, err)
 	}
-	request.Header.Set("Authorization", "Bearer "+client.APIKey)
+	request.Header.Set("Authorization", "Bearer "+client.apiKey)
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("HTTP-Referer", "http://127.0.0.1:4317")
-	request.Header.Set("X-OpenRouter-Title", "WebMCP Automator")
+	if client.provider == OpenRouterProvider {
+		request.Header.Set("HTTP-Referer", "http://127.0.0.1:4317")
+		request.Header.Set("X-OpenRouter-Title", "WebMCP Automator")
+	}
 
 	httpClient := client.HTTPClient
 	if httpClient == nil {
@@ -168,23 +209,23 @@ func (client Client) Discover(ctx context.Context, trace json.RawMessage) (Resul
 	}
 	response, err := httpClient.Do(request)
 	if err != nil {
-		return Result{}, fmt.Errorf("call OpenRouter: %w", err)
+		return Result{}, fmt.Errorf("call %s: %w", client.provider, err)
 	}
 	defer response.Body.Close()
 
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
 	if err != nil {
-		return Result{}, fmt.Errorf("read OpenRouter response: %w", err)
+		return Result{}, fmt.Errorf("read %s response: %w", client.provider, err)
 	}
 	var envelope chatEnvelope
 	if err := json.Unmarshal(responseBody, &envelope); err != nil {
-		return Result{}, fmt.Errorf("decode OpenRouter response: %w", err)
+		return Result{}, fmt.Errorf("decode %s response: %w", client.provider, err)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		if envelope.Error != nil && envelope.Error.Message != "" {
 			return Result{}, errors.New(envelope.Error.Message)
 		}
-		return Result{}, fmt.Errorf("OpenRouter request failed with status %d", response.StatusCode)
+		return Result{}, fmt.Errorf("%s request failed with status %d", client.provider, response.StatusCode)
 	}
 
 	outputText := ""
@@ -200,24 +241,65 @@ func (client Client) Discover(ctx context.Context, trace json.RawMessage) (Resul
 	}
 	if outputText == "" {
 		return Result{}, fmt.Errorf(
-			"OpenRouter returned no action map (model=%s provider=%s finish_reason=%s reasoning_chars=%d)",
-			envelope.Model, envelope.Provider, finishReason, reasoningCharacters,
+			"%s returned no action map (model=%s finish_reason=%s reasoning_chars=%d)",
+			client.provider, envelope.Model, finishReason, reasoningCharacters,
 		)
 	}
 
 	var discovered actionmap.Map
 	if err := json.Unmarshal([]byte(outputText), &discovered); err != nil {
-		return Result{}, errors.New("OpenRouter returned an action map that was not valid JSON")
+		return Result{}, fmt.Errorf("%s returned an action map that was not valid JSON", client.provider)
+	}
+	responseProvider := strings.TrimSpace(envelope.Provider)
+	if responseProvider == "" {
+		responseProvider = client.provider
 	}
 	if err := discovered.Validate(); err != nil {
 		return Result{
 			ActionMap: discovered, Model: envelope.Model,
-			ResponseID: envelope.ID, Provider: envelope.Provider,
+			ResponseID: envelope.ID, Provider: responseProvider,
 			Finish: finishReason, Usage: envelope.Usage,
 		}, err
 	}
 	return Result{
 		ActionMap: discovered, Model: envelope.Model, ResponseID: envelope.ID,
-		Provider: envelope.Provider, Finish: finishReason, Usage: envelope.Usage,
+		Provider: responseProvider, Finish: finishReason, Usage: envelope.Usage,
 	}, nil
+}
+
+func providerEndpoint(provider string) string {
+	switch provider {
+	case CerebrasProvider:
+		return cerebrasURL
+	case OpenRouterProvider:
+		return openRouterURL
+	default:
+		return ""
+	}
+}
+
+func providerSchema(provider string, schema any) any {
+	if provider != CerebrasProvider {
+		return schema
+	}
+	// Cerebras strict schemas exclude regex patterns and array-size constraints.
+	// The returned action map still passes through the server's Go validator.
+	stripUnsupportedCerebrasSchemaKeywords(schema)
+	return schema
+}
+
+func stripUnsupportedCerebrasSchemaKeywords(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		delete(typed, "pattern")
+		delete(typed, "minItems")
+		delete(typed, "maxItems")
+		for _, child := range typed {
+			stripUnsupportedCerebrasSchemaKeywords(child)
+		}
+	case []any:
+		for _, child := range typed {
+			stripUnsupportedCerebrasSchemaKeywords(child)
+		}
+	}
 }

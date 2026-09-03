@@ -39,7 +39,7 @@ user starts recording
   -> server removes typed values, URL parameters, duplicate XML, and identifiers
   -> sanitized evidence is stored in PostgreSQL
   -> API returns while discovery continues asynchronously
-  -> OpenRouter groups deterministic evidence into meaningful actions
+  -> the configured Cerebras or OpenRouter model groups evidence into meaningful actions
   -> server validates and stores the action-map/1 result
   -> extension renders states, actions, steps, evidence, and missing evidence
 ```

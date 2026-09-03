@@ -23,14 +23,15 @@ Requirements:
 - Go 1.25 or newer;
 - Chrome or Chromium;
 - a Neon PostgreSQL connection URL;
-- an OpenRouter API key when AI synthesis is needed.
+- a Cerebras or OpenRouter API key when AI synthesis is needed.
 
 Node.js and npm are not required.
 
-Put the key in `server/.env`, then start the project:
+Put one provider key in `server/.env`, then start the project:
 
 ```dotenv
-OPENROUTER_API_KEY="your-key"
+CEREBRAS_API_KEY="your-key"
+# OPENROUTER_API_KEY="your-key"
 DB_URL="postgresql://user:password@host/database?sslmode=require"
 ```
 
@@ -40,6 +41,10 @@ make run
 
 The service starts at `http://127.0.0.1:4317`. Its owned demo is available at
 `http://127.0.0.1:4317/demo/`.
+
+When both keys are present, Cerebras is selected. Cerebras uses
+`gemma-4-31b`; OpenRouter uses `google/gemma-4-31b-it`. The models are fixed in
+the server rather than configurable through environment variables.
 
 ## Test
 

@@ -1,7 +1,7 @@
 # Privacy boundary
 
-The raw browser trace is not stored in PostgreSQL or sent to OpenRouter unchanged.
-Before either boundary, the server:
+The raw browser trace is not stored in PostgreSQL or sent to Cerebras or
+OpenRouter unchanged. Before either boundary, the server:
 
 - removes duplicate semantic XML snapshots;
 - replaces demonstrated typed strings and numbers with a user-input marker;

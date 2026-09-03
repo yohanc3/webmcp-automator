@@ -2,8 +2,8 @@
 
 The server is the trusted boundary for recorded browser traces. It validates
 frame order, strips sensitive evidence, stores the sanitized trace in PostgreSQL,
-asks OpenRouter to compile an action map, validates the model output, and stores
-the result.
+asks the selected AI provider to compile an action map, validates the model
+output, and stores the result.
 
 ## Packages
 
@@ -12,7 +12,7 @@ cmd/server/          Process entry point
 internal/api/        HTTP routes and asynchronous discovery lifecycle
 internal/trace/      learning-trace/3 validation and graph reconstruction
 internal/privacy/    Pre-storage and pre-model sanitization
-internal/learning/   OpenRouter discovery client and prompt
+internal/learning/   Provider selection, discovery client, and prompt
 internal/actionmap/  action-map/1 types, schema, and validation
 internal/store/      PostgreSQL schema and persistence
 internal/manifest/   Paused adapter-manifest contract
@@ -23,10 +23,11 @@ tests/               Server tests and fixtures
 
 From the repository root:
 
-Set the key in the local `server/.env` file:
+Set one provider key in the local `server/.env` file:
 
 ```dotenv
-OPENROUTER_API_KEY="your-key"
+CEREBRAS_API_KEY="your-key"
+# OPENROUTER_API_KEY="your-key"
 DB_URL="postgresql://user:password@host/database?sslmode=require"
 ```
 
@@ -44,12 +45,17 @@ Configuration:
 | `WEBMCP_LEARN_PORT` | `4317` | Listen port |
 | `DB_URL` | required | Neon PostgreSQL connection URL |
 | `WEBMCP_DEMO_DIR` | `../workspace/demo` | Demo storefront files |
-| `OPENROUTER_MODEL` | `openai/gpt-oss-20b:nitro` | Discovery model |
-| `OPENROUTER_API_KEY` | unset | Enables AI synthesis |
+| `CEREBRAS_API_KEY` | unset | Enables Cerebras synthesis with `gemma-4-31b` |
+| `OPENROUTER_API_KEY` | unset | Enables OpenRouter synthesis with `google/gemma-4-31b-it` |
 
 `server/.env` is ignored by Git; `.env.example` documents the expected variable
-without storing a secret. Without an API key, recording and persistence remain
-available but synthesis cannot complete.
+without storing a secret. A non-empty `CEREBRAS_API_KEY` takes precedence;
+otherwise the service uses `OPENROUTER_API_KEY`. Without either key, recording
+and persistence remain available but synthesis cannot complete.
+
+The Go process reads `.env` directly. Unquoted URL characters such as `&` are
+treated literally, and variables already present in the process environment
+take precedence over the file.
 
 ## HTTP API
 
