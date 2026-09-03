@@ -3,6 +3,7 @@ package learning
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -33,7 +34,7 @@ func CompileAmbientCandidate(scopeID string, snapshot actionmap.Map, mapRevision
 			"id": state.ID, "label": state.Label, "description": "Ambient semantic state: " + state.Label,
 			"match": map[string]any{"mode": "all", "checks": []any{map[string]any{"kind": "url", "pattern": state.URLPattern}}},
 		})
-		routes = append(routes, state.URLPattern)
+		routes = append(routes, ambientRoutePattern(snapshot.Site.Origin, state.URLPattern))
 	}
 	actions := make([]any, 0, len(snapshot.Actions))
 	for _, action := range snapshot.Actions {
@@ -127,4 +128,15 @@ func uniqueRoutes(values []string) []string {
 		return []string{"^/$"}
 	}
 	return result
+}
+
+// action-map states use full URL patterns, while action-list discovery matches
+// an already origin-checked path plus query. Keep that boundary explicit so a
+// published ambient candidate remains discoverable only at its declared route.
+func ambientRoutePattern(origin, pattern string) string {
+	prefix := "^" + regexp.QuoteMeta(origin)
+	if strings.HasPrefix(pattern, prefix) {
+		return "^" + strings.TrimPrefix(pattern, prefix)
+	}
+	return pattern
 }

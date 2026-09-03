@@ -128,6 +128,21 @@ CREATE TABLE IF NOT EXISTS action_list_revisions (
   UNIQUE (list_id, candidate_digest)
 );
 
+-- Ambient candidates are bound to the exact immutable action-map revision
+-- that produced them. This is deliberately separate from the action-list JSON:
+-- clients must not be able to assert an evidence binding by editing a document.
+CREATE TABLE IF NOT EXISTS action_list_candidate_bindings (
+  list_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  candidate_digest TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  action_map_revision INTEGER NOT NULL,
+  action_map_digest TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (list_id, revision),
+  FOREIGN KEY (list_id, revision) REFERENCES action_list_revisions(list_id, revision)
+);
+
 CREATE TABLE IF NOT EXISTS policy_decisions (
   id TEXT PRIMARY KEY,
   list_id TEXT NOT NULL,

@@ -10,6 +10,8 @@
 - [`contracts/ambient-learning.md`](contracts/ambient-learning.md) defines the
   automatic per-semantic-layer parser, incremental action-map revisions,
   privacy retention, and parallel-owner handoffs.
+- [`g10-candidate-publication.md`](g10-candidate-publication.md) defines the
+  authoritative candidate replay, review, and explicit publication lifecycle.
 - [`parallel-worktrees.md`](parallel-worktrees.md) defines which components must
   move together and the dependency-aware branches, ownership, handoffs, and
   integration waves for parallel implementation.

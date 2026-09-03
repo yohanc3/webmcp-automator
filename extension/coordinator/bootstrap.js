@@ -377,7 +377,17 @@
         !result.response.ok || unquotedETag(responseHeader(result.response, 'ETag')) !== pointer.digest
         || !document || document.listId !== pointer.listId
         || document.publication?.revision !== pointer.revision
-        || document.publication?.status !== 'candidate'
+      ) return null;
+      let review;
+      try {
+        review = await requestRegistry(`/v1/action-lists/${encodeURIComponent(pointer.listId)}/revisions/${pointer.revision}/candidate-review`);
+      } catch (error) {
+        return null;
+      }
+      if (
+        !review.response.ok || !review.body || review.body?.binding?.candidateDigest !== pointer.digest
+        || review.body?.binding?.actionMapDigest !== actionMap.digest
+        || review.body?.binding?.actionMapRevision !== actionMap.revision
       ) return null;
       return {
         actionMapDigest: actionMap.digest,
@@ -389,8 +399,20 @@
         listRevision: pointer.revision,
         publication: document.publication,
         revision: pointer.revision,
+        review: review.body,
+        status: review.body.status,
         title: document.title || document.listId,
       };
+    };
+
+    const currentReviewCandidate = async (origin) => {
+      const scopeId = ambientScope.scopeFor(origin);
+      if (!scopeId) throw new Error('The active origin does not have an ambient scope');
+      const mapState = await currentActionMap(scopeId);
+      if (!mapState.actionMap) throw new Error('The exact action-map binding is unavailable');
+      const candidate = await currentCandidate({ actionMap: mapState.actionMap, scopeId });
+      if (!candidate || candidate.status !== 'candidate') throw new Error('No current candidate is available for review');
+      return { candidate, mapState, scopeId };
     };
 
     const handleMessage = async (message, sender = {}) => {
@@ -408,7 +430,7 @@
         case 'AMBIENT_SPOOL_OPERATION': return { ok: true, result: await spool(message.operation, message.payload) };
         case 'AMBIENT_DELIVER_LAYER': return { ok: true, receipt: await deliverAmbientLayer(message.completedLayer) };
         case 'GET_POLICY_REVIEW_STATE': {
-          const tabs = sender.tab ? [sender.tab] : await chromeApi.tabs.query({ active: true, lastFocusedWindow: true });
+          const tabs = sender.tab ? [sender.tab] : (await chromeApi.tabs?.query?.({ active: true, lastFocusedWindow: true }) || []);
           const origin = originFromUrl(tabs[0]?.url);
           if (!origin) return { ok: true, state: { actionMapStatus: { status: 'no_map' }, context: { origin: null, requestedScope: 'ambient_learn' }, policy: { status: 'denied', scopes: [] }, retrySpool: { count: 0 } } };
           const stored = await get('local', policyKey(origin));
@@ -458,10 +480,46 @@
           if (!origin || !scopeId) return { ok: false, error: 'An active HTTP(S) tab is required' };
           return { ok: true, ...(await spool('removeMatching', { origin, scopeId })) };
         }
-        case 'SUBMIT_CANDIDATE_REVIEW':
+        case 'SUBMIT_CANDIDATE_REVIEW': {
+          const decision = message.decision;
+          const reviewer = typeof message.reviewer === 'string' ? message.reviewer.trim() : '';
+          if (!['approve', 'reject'].includes(decision) || !reviewer) return { ok: false, error: 'An explicit decision and reviewer are required' };
+          const tabs = sender.tab ? [sender.tab] : (await chromeApi.tabs?.query?.({ active: true, lastFocusedWindow: true }) || []);
+          const origin = originFromUrl(tabs[0]?.url);
+          if (!origin) return { ok: false, error: 'An active origin is required' };
+          try {
+            const { candidate, scopeId } = await currentReviewCandidate(origin);
+            if (decision === 'reject') {
+              const rejected = await requestBackend(`/v1/action-lists/${encodeURIComponent(candidate.listId)}/revisions/${candidate.listRevision}/candidate-review`, {
+                body: JSON.stringify({ decision, expectedDigest: candidate.listDigest, reviewer }), method: 'POST',
+              });
+              return { ok: true, result: rejected };
+            }
+            const localPolicy = await get('local', policyKey(origin));
+            const policyResult = await requestBackend(`/v1/action-lists/${encodeURIComponent(candidate.listId)}/revisions/${candidate.listRevision}/candidate-review/policy`, {
+              body: JSON.stringify({ expectedDigest: candidate.listDigest, originPolicy: localPolicy }), method: 'POST',
+            });
+            const replayResult = await requestBackend(`/v1/action-lists/${encodeURIComponent(candidate.listId)}/revisions/${candidate.listRevision}/candidate-review/replay`, {
+              body: JSON.stringify({ expectedDigest: candidate.listDigest }), method: 'POST',
+            });
+            const published = await requestBackend(`/v1/action-lists/${encodeURIComponent(candidate.listId)}/revisions/${candidate.listRevision}/candidate-review`, {
+              body: JSON.stringify({
+                decision, expectedDigest: candidate.listDigest, reviewer,
+                policyDecisionId: policyResult.policyDecision?.id,
+                replayReportId: replayResult.replayReport?.id,
+              }), method: 'POST',
+            });
+            if (published.status !== 'published') throw new Error('Candidate review did not produce a published revision');
+            await chromeApi.storage.session.remove(candidateKey(scopeId));
+            return { ok: true, result: published };
+          } catch (error) {
+            return { ok: false, error: `Candidate review was not accepted: ${error.message}` };
+          }
+        }
         case 'OPEN_CANDIDATE_EVIDENCE':
+          return { ok: false, error: 'Candidate evidence is explicitly unavailable without an exact server-bound evidence resolver' };
         case 'SUBMIT_RUN_CONFIRMATION':
-          return { ok: false, error: 'Unsupported: ambient candidates are read-only until an authoritative review resolver exists' };
+          return { ok: false, error: 'Run confirmation remains unavailable without an exact coordinator run and step binding' };
         case protocol.MESSAGE_TYPES.pageReady:
           return pageReady(sender);
         case protocol.MESSAGE_TYPES.getBackendHealth:

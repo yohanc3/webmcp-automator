@@ -135,6 +135,15 @@ func (server *Server) processAmbientLayer(writer http.ResponseWriter, request *h
 			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"outcome": "retryable", "retryable": true, "error": "accepted action map review projection is temporarily unavailable"})
 			return
 		}
+		reviewDatabase, reviewAvailable := server.candidateReviewStore()
+		if !reviewAvailable || head.Digest == nil || stored.CandidateDigest == "" ||
+			reviewDatabase.BindCandidate(request.Context(), store.CandidateBinding{
+				ListID: stored.ListID, Revision: stored.Revision, CandidateDigest: stored.CandidateDigest,
+				ScopeID: layer.SiteScope.ScopeID, ActionMapRevision: head.Revision, ActionMapDigest: *head.Digest,
+			}) != nil {
+			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"outcome": "retryable", "retryable": true, "error": "accepted action map review binding is temporarily unavailable"})
+			return
+		}
 		candidateRevision = map[string]any{"listId": stored.ListID, "revision": stored.Revision, "digest": stored.Digest, "status": stored.Status}
 	}
 	writeJSON(writer, status, map[string]any{
