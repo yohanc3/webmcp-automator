@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Semantic extractor test</title>
+    <style>
+      body { font-family: sans-serif; }
+      nav, .actions { display: flex; gap: 12px; }
+      .pointer { cursor: pointer; }
+      .hidden { display: none; }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+      }
+      dialog { width: 300px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <nav aria-label="Primary">
+        <a href="/home" aria-current="page">Home</a>
+        <button aria-label="Open account menu" aria-haspopup="menu" aria-expanded="false"></button>
+        <button><span class="sr-only">Screen reader action</span></button>
+      </nav>
+    </header>
+    <main>
+      <h1>Home timeline</h1>
+      <article aria-label="Post by Ada">
+        <header>
+          <a href="/ada">Ada Lovelace</a>
+          <time datetime="2026-09-02T10:00:00Z">2h</time>
+        </header>
+        <div>The analytical engine weaves algebraic patterns.</div>
+        <div class="actions">
+          <button aria-label="Reply">11</button>
+          <button aria-label="Like" aria-pressed="true">103</button>
+          <button aria-label="Bookmark"></button>
+        </div>
+      </article>
+      <form aria-label="Preferences">
+        <label for="query">Search posts</label>
+        <input id="query" type="search" placeholder="Search" value="engines">
+        <label for="sort">Sort order</label>
+        <select id="sort">
+          <option value="latest" selected>Latest</option>
+          <option value="top">Top</option>
+        </select>
+      </form>
+      <p>Visible context outside every control.</p>
+      <section aria-label="System status">
+        <p>All systems operational.</p>
+      </section>
+      <iframe title="Embedded help" src="about:blank"></iframe>
+      <p class="hidden">Invisible context.</p>
+      <div class="pointer">Custom surface</div>
+    </main>
+    <dialog open aria-modal="true" aria-label="Confirm deletion">
+      <p>This cannot be undone.</p>
+      <button autofocus>Cancel</button>
+      <button>Delete</button>
+    </dialog>
+  </body>
+</html>

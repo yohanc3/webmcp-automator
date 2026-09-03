@@ -1,0 +1,424 @@
+{
+  "schemaVersion": "learning-trace/3",
+  "recordingId": "storefront-search-smoke",
+  "startedAt": "2026-09-02T12:00:00.000Z",
+  "stoppedAt": "2026-09-02T12:00:12.000Z",
+  "frames": [
+    {
+      "sequence": 1,
+      "type": "page",
+      "page": {
+        "id": "page_1",
+        "fingerprint": "home",
+        "url": "http://127.0.0.1:4317/demo/",
+        "title": "Instrument Supply",
+        "semanticXml": "<page><node>duplicate projection removed by Go</node></page>",
+        "nodes": [
+          {
+            "id": "search",
+            "tag": "input",
+            "role": "searchbox",
+            "name": "Search the catalog",
+            "css": "#catalog-query",
+            "attributes": {
+              "name": "q",
+              "placeholder": "Search instruments",
+              "type": "search"
+            },
+            "interaction": {
+              "kind": "confirmed",
+              "confidence": "high",
+              "source": "semantic"
+            },
+            "rect": {
+              "x": 300,
+              "y": 20,
+              "width": 520,
+              "height": 46
+            }
+          },
+          {
+            "id": "submit",
+            "tag": "button",
+            "role": "button",
+            "name": "Search",
+            "css": "header form button:nth-of-type(1)",
+            "attributes": {
+              "type": "submit"
+            },
+            "interaction": {
+              "kind": "confirmed",
+              "confidence": "high",
+              "source": "semantic"
+            }
+          }
+        ],
+        "collections": [],
+        "truncated": false
+      }
+    },
+    {
+      "sequence": 2,
+      "type": "action",
+      "fromPageId": "page_1",
+      "action": {
+        "id": "action_1",
+        "kind": "fill",
+        "occurredAt": "2026-09-02T12:00:02.000Z",
+        "target": {
+          "id": "search",
+          "role": "searchbox",
+          "name": "Search the catalog",
+          "css": "#catalog-query"
+        },
+        "value": {
+          "redacted": false,
+          "value": "headphones"
+        }
+      }
+    },
+    {
+      "sequence": 3,
+      "type": "update",
+      "actionId": "action_1",
+      "fromPageId": "page_1",
+      "toPageId": "page_2",
+      "update": {
+        "urlChanged": false,
+        "beforeUrl": "http://127.0.0.1:4317/demo/",
+        "afterUrl": "http://127.0.0.1:4317/demo/",
+        "added": [],
+        "removed": [],
+        "changed": [],
+        "collectionsChanged": false,
+        "collections": []
+      }
+    },
+    {
+      "sequence": 4,
+      "type": "page",
+      "page": {
+        "id": "page_2",
+        "fingerprint": "query_entered",
+        "url": "http://127.0.0.1:4317/demo/",
+        "title": "Instrument Supply",
+        "nodes": [
+          {
+            "id": "search",
+            "tag": "input",
+            "role": "searchbox",
+            "name": "Search the catalog",
+            "css": "#catalog-query",
+            "attributes": {
+              "name": "q",
+              "placeholder": "Search instruments",
+              "type": "search"
+            }
+          },
+          {
+            "id": "submit",
+            "tag": "button",
+            "role": "button",
+            "name": "Search",
+            "css": "header form button:nth-of-type(1)",
+            "attributes": {
+              "type": "submit"
+            }
+          }
+        ],
+        "collections": [],
+        "truncated": false
+      }
+    },
+    {
+      "sequence": 5,
+      "type": "action",
+      "fromPageId": "page_2",
+      "action": {
+        "id": "action_2",
+        "kind": "click",
+        "occurredAt": "2026-09-02T12:00:04.000Z",
+        "target": {
+          "id": "submit",
+          "role": "button",
+          "name": "Search",
+          "css": "header form button:nth-of-type(1)"
+        },
+        "value": {
+          "redacted": false,
+          "value": null
+        }
+      }
+    },
+    {
+      "sequence": 6,
+      "type": "update",
+      "actionId": "action_2",
+      "fromPageId": "page_2",
+      "toPageId": "page_3",
+      "update": {
+        "urlChanged": true,
+        "beforeUrl": "http://127.0.0.1:4317/demo/",
+        "afterUrl": "http://127.0.0.1:4317/demo/search?q=headphones",
+        "added": [
+          {
+            "role": "heading",
+            "name": "Search results"
+          }
+        ],
+        "removed": [],
+        "changed": [],
+        "collectionsChanged": true
+      }
+    },
+    {
+      "sequence": 7,
+      "type": "page",
+      "page": {
+        "id": "page_3",
+        "fingerprint": "results",
+        "url": "http://127.0.0.1:4317/demo/search?q=headphones",
+        "title": "Instrument Supply",
+        "nodes": [
+          {
+            "id": "results-heading",
+            "tag": "h1",
+            "role": "heading",
+            "name": "Search results",
+            "css": "main h1:nth-of-type(1)",
+            "attributes": {}
+          },
+          {
+            "id": "product-field-h1",
+            "tag": "article",
+            "role": "article",
+            "name": "Field H1 $129 4.8 / 5",
+            "text": "Closed-back headphones Field H1 $129 4.8 / 5",
+            "css": "article[data-product-card]",
+            "attributes": {
+              "data-product-card": "product",
+              "data-product-id": "field-h1"
+            }
+          },
+          {
+            "id": "product-link",
+            "tag": "a",
+            "role": "link",
+            "name": "Field H1",
+            "css": "article:nth-of-type(1) h2 a",
+            "attributes": {
+              "href": "http://127.0.0.1:4317/demo/product/field-h1"
+            }
+          },
+          {
+            "id": "add",
+            "tag": "button",
+            "role": "button",
+            "name": "Add to basket",
+            "css": "article:nth-of-type(1) button",
+            "attributes": {
+              "type": "button",
+              "data-product-id": "field-h1"
+            }
+          }
+        ],
+        "collections": [
+          {
+            "parentCss": "div[data-product-results]",
+            "itemCss": "article[data-product-card]",
+            "count": 3,
+            "sample": [
+              {
+                "name": "Field H1",
+                "text": "Closed-back headphones Field H1 $129 4.8 / 5",
+                "attributes": {
+                  "data-product-id": "field-h1"
+                }
+              },
+              {
+                "name": "Reference H4",
+                "text": "Open-back headphones Reference H4 $189 4.6 / 5",
+                "attributes": {
+                  "data-product-id": "reference-h4"
+                }
+              },
+              {
+                "name": "Transit Buds",
+                "text": "Wireless earphones Transit Buds $99 4.4 / 5",
+                "attributes": {
+                  "data-product-id": "transit-buds"
+                }
+              }
+            ]
+          }
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "sequence": 8,
+      "type": "action",
+      "fromPageId": "page_3",
+      "action": {
+        "id": "action_3",
+        "kind": "click",
+        "occurredAt": "2026-09-02T12:00:07.000Z",
+        "target": {
+          "id": "product-link",
+          "role": "link",
+          "name": "Field H1",
+          "css": "article:nth-of-type(1) h2 a"
+        },
+        "value": {
+          "redacted": false,
+          "value": null
+        }
+      }
+    },
+    {
+      "sequence": 9,
+      "type": "update",
+      "actionId": "action_3",
+      "fromPageId": "page_3",
+      "toPageId": "page_4",
+      "update": {
+        "urlChanged": true,
+        "beforeUrl": "http://127.0.0.1:4317/demo/search?q=headphones",
+        "afterUrl": "http://127.0.0.1:4317/demo/product/field-h1",
+        "added": [
+          {
+            "role": "heading",
+            "name": "Field H1"
+          }
+        ],
+        "removed": [],
+        "changed": [],
+        "collectionsChanged": true
+      }
+    },
+    {
+      "sequence": 10,
+      "type": "page",
+      "page": {
+        "id": "page_4",
+        "fingerprint": "product",
+        "url": "http://127.0.0.1:4317/demo/product/field-h1",
+        "title": "Instrument Supply",
+        "nodes": [
+          {
+            "id": "product-heading",
+            "tag": "h1",
+            "role": "heading",
+            "name": "Field H1",
+            "css": "main h1:nth-of-type(1)",
+            "attributes": {}
+          },
+          {
+            "id": "add-product",
+            "tag": "button",
+            "role": "button",
+            "name": "Add to basket",
+            "css": "button[data-add-to-basket]",
+            "attributes": {
+              "type": "button",
+              "data-product-id": "field-h1"
+            }
+          }
+        ],
+        "collections": [],
+        "truncated": false
+      }
+    },
+    {
+      "sequence": 11,
+      "type": "action",
+      "fromPageId": "page_4",
+      "action": {
+        "id": "action_4",
+        "kind": "click",
+        "occurredAt": "2026-09-02T12:00:10.000Z",
+        "target": {
+          "id": "add-product",
+          "role": "button",
+          "name": "Add to basket",
+          "css": "button[data-add-to-basket]"
+        },
+        "value": {
+          "redacted": false,
+          "value": null
+        }
+      }
+    },
+    {
+      "sequence": 12,
+      "type": "update",
+      "actionId": "action_4",
+      "fromPageId": "page_4",
+      "toPageId": "page_5",
+      "update": {
+        "urlChanged": false,
+        "beforeUrl": "http://127.0.0.1:4317/demo/product/field-h1",
+        "afterUrl": "http://127.0.0.1:4317/demo/product/field-h1",
+        "added": [
+          {
+            "role": "status",
+            "name": "This instrument is now in your basket."
+          }
+        ],
+        "removed": [],
+        "changed": [
+          {
+            "before": {
+              "name": "Add to basket"
+            },
+            "after": {
+              "name": "Added to basket"
+            }
+          }
+        ],
+        "collectionsChanged": false
+      }
+    },
+    {
+      "sequence": 13,
+      "type": "page",
+      "page": {
+        "id": "page_5",
+        "fingerprint": "product_added",
+        "url": "http://127.0.0.1:4317/demo/product/field-h1",
+        "title": "Instrument Supply",
+        "nodes": [
+          {
+            "id": "product-heading",
+            "tag": "h1",
+            "role": "heading",
+            "name": "Field H1",
+            "css": "main h1:nth-of-type(1)",
+            "attributes": {}
+          },
+          {
+            "id": "add-product",
+            "tag": "button",
+            "role": "button",
+            "name": "Added to basket",
+            "css": "button[data-add-to-basket]",
+            "attributes": {
+              "type": "button",
+              "data-product-id": "field-h1"
+            }
+          },
+          {
+            "id": "basket-status",
+            "tag": "p",
+            "role": "status",
+            "name": "This instrument is now in your basket.",
+            "css": "p[data-basket-status]",
+            "attributes": {}
+          }
+        ],
+        "collections": [],
+        "truncated": false
+      }
+    }
+  ]
+}

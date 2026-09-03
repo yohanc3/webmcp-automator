@@ -1,0 +1,16 @@
+README.md
+Makefile
+server/README.md
+server/.env.example
+server/tests
+extension/README.md
+extension/tests/index.html
+documentation/README.md
+documentation/architecture.md
+documentation/development.md
+documentation/privacy.md
+workspace/demo/index.html
+workspace/scripts/browser-recorder-harness.js
+workspace/scripts/discovery-smoke.js
+workspace/scripts/semantic-ui-extractor.js
+workspace/scripts/yohance_testing_script.js

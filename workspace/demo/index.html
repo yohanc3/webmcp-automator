@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Instrument Supply</title>
+    <link rel="stylesheet" href="/demo/styles.css">
+    <script src="/demo/app.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="wordmark" href="/demo/" aria-label="Instrument Supply home">
+        <span aria-hidden="true">IS</span>
+        <strong>Instrument Supply</strong>
+      </a>
+
+      <form class="global-search" action="/demo/search" method="get" data-catalog-search>
+        <label class="sr-only" for="catalog-query">Search the catalog</label>
+        <input
+          id="catalog-query"
+          name="q"
+          type="search"
+          placeholder="Search instruments"
+          autocomplete="off"
+          required
+        >
+        <button type="submit">Search</button>
+      </form>
+
+      <nav aria-label="Store navigation">
+        <a href="/demo/compare">Compare</a>
+        <a href="/demo/cart" data-cart-link>Basket <span data-cart-count>0</span></a>
+      </nav>
+    </header>
+
+    <main id="storefront" tabindex="-1"></main>
+
+    <footer>
+      <p>Owned test storefront · no purchases or payments are processed.</p>
+    </footer>
+
+    <template id="product-card-template">
+      <article data-product-card>
+        <p class="product-kind" data-product-kind></p>
+        <h2><a data-product-title></a></h2>
+        <p class="product-description" data-product-description></p>
+        <dl class="product-meta">
+          <div><dt>Price</dt><dd data-product-price></dd></div>
+          <div><dt>Rating</dt><dd data-product-rating></dd></div>
+        </dl>
+        <div class="card-actions">
+          <label class="compare-choice">
+            <input type="checkbox" name="product" data-compare-product>
+            Compare
+          </label>
+          <button type="button" data-add-to-basket>Add to basket</button>
+        </div>
+      </article>
+    </template>
+  </body>
+</html>
