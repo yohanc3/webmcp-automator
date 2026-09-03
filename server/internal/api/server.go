@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -127,6 +128,7 @@ func (server *Server) discover(writer http.ResponseWriter, request *http.Request
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	log.Printf("discovery accepted session_id=%s redactions=%d", session.ID, privacySummary.RedactionsApplied)
 	go server.runDiscovery(session.ID, sanitizedTrace, privacySummary)
 	writeJSON(writer, http.StatusAccepted, map[string]any{
 		"sessionId": session.ID,
@@ -140,10 +142,12 @@ func (server *Server) runDiscovery(
 	sanitizedTrace json.RawMessage,
 	privacySummary privacy.Summary,
 ) {
+	log.Printf("discovery started session_id=%s", sessionID)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	result, err := server.discoverer.Discover(ctx, sanitizedTrace)
 	if err != nil {
+		log.Printf("discovery failed session_id=%s stage=model error=%q", sessionID, err)
 		server.markDiscoveryFailed(sessionID, err)
 		return
 	}
@@ -156,14 +160,19 @@ func (server *Server) runDiscovery(
 	_, err = server.store.SaveDiscovery(persistContext, sessionID, result)
 	persistCancel()
 	if err != nil {
+		log.Printf("discovery failed session_id=%s stage=persist error=%q", sessionID, err)
 		server.markDiscoveryFailed(sessionID, err)
+		return
 	}
+	log.Printf("discovery completed session_id=%s model=%s provider=%s", sessionID, result.Model, result.Provider)
 }
 
 func (server *Server) markDiscoveryFailed(sessionID string, cause error) {
 	persistContext, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer persistCancel()
-	_ = server.store.MarkFailed(persistContext, sessionID, cause)
+	if err := server.store.MarkFailed(persistContext, sessionID, cause); err != nil {
+		log.Printf("discovery failure could not be persisted session_id=%s error=%q", sessionID, err)
+	}
 }
 
 func (server *Server) discoveryStatus(writer http.ResponseWriter, request *http.Request) {

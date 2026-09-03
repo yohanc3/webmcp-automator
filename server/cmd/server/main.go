@@ -19,6 +19,10 @@ import (
 )
 
 func main() {
+	if err := loadDotEnv(".env"); err != nil {
+		log.Fatal(err)
+	}
+
 	host := environment("WEBMCP_LEARN_HOST", "127.0.0.1")
 	port := environment("WEBMCP_LEARN_PORT", "4317")
 	model := environment("OPENROUTER_MODEL", "openai/gpt-oss-20b:nitro")
@@ -63,4 +67,37 @@ func environment(name, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func loadDotEnv(path string) error {
+	contents, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+
+	for lineNumber, line := range strings.Split(string(contents), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, found := strings.Cut(line, "=")
+		key = strings.TrimSpace(key)
+		if !found || key == "" {
+			return fmt.Errorf("invalid .env assignment at line %d", lineNumber+1)
+		}
+		value = strings.TrimSpace(value)
+		if len(value) >= 2 {
+			first, last := value[0], value[len(value)-1]
+			if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+				value = value[1 : len(value)-1]
+			}
+		}
+		if err := os.Setenv(key, value); err != nil {
+			return fmt.Errorf("set %s from .env: %w", key, err)
+		}
+	}
+	return nil
 }

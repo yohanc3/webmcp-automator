@@ -142,6 +142,7 @@ func (client Client) Discover(ctx context.Context, trace json.RawMessage) (Resul
 		},
 		"provider": map[string]any{
 			"require_parameters": true,
+			"ignore":             []string{"groq"},
 		},
 	}
 	body, err := json.Marshal(payload)

@@ -6,10 +6,7 @@ GO_CACHE ?= $(CURDIR)/workspace/.cache/go-build
 .PHONY: run test test-server test-extension test-documentation check
 
 run:
-	cd server && { \
-		if test -f .env; then set -a; . ./.env; set +a; fi; \
-		GOCACHE="$(GO_CACHE)" go run ./cmd/server; \
-	}
+	cd server && GOCACHE="$(GO_CACHE)" go run ./cmd/server
 
 test: test-server test-extension test-documentation
 

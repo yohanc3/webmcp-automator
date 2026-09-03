@@ -48,6 +48,10 @@ func TestDiscoverUsesOpenRouterStructuredOutputs(t *testing.T) {
 		if provider["require_parameters"] != true {
 			t.Fatalf("expected provider parameter enforcement: %#v", provider)
 		}
+		ignored := provider["ignore"].([]any)
+		if len(ignored) != 1 || ignored[0] != "groq" {
+			t.Fatalf("expected Groq to be excluded for strict discovery: %#v", provider)
+		}
 		messages := body["messages"].([]any)
 		userMessage := messages[1].(map[string]any)["content"].(string)
 		if !strings.Contains(userMessage, learning.DiscoveryGoal) {
