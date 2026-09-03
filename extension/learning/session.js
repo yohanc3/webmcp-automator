@@ -187,12 +187,15 @@
       completion.finally(() => pendingCompletions.delete(completion));
     };
 
-    const expectsNavigation = (target) => {
+    const expectsNavigation = (target, kind) => {
+      if (kind === 'press') return Boolean(target.form);
       if (target.localName === 'a' && target.hasAttribute('href')) return true;
       if (target.localName === 'button' && (target.type || 'submit') === 'submit') {
         return Boolean(target.form);
       }
-      return Boolean(target.form && target.localName === 'input');
+      return target.localName === 'input'
+        && ['image', 'submit'].includes(target.type)
+        && Boolean(target.form);
     };
 
     const flushInput = () => {
@@ -256,7 +259,7 @@
         value: null,
         valueType: 'null',
       }, beforeState);
-      trackCompletion(observed, beforeState, expectsNavigation(target) ? 350 : 0);
+      trackCompletion(observed, beforeState, expectsNavigation(target, 'click') ? 350 : 0);
     };
 
     const onKeyDown = (event) => {
@@ -270,7 +273,7 @@
         value: 'Enter',
         valueType: 'key',
       }, beforeState);
-      trackCompletion(observed, beforeState, expectsNavigation(target) ? 350 : 0);
+      trackCompletion(observed, beforeState, expectsNavigation(target, 'press') ? 350 : 0);
     };
 
     const installListeners = () => {

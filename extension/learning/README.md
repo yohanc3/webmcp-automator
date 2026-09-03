@@ -28,6 +28,8 @@ semantic-capture compatibility path.
 
 - Semantic evidence uses an explicit element and attribute allowlist.
 - URL query strings, fragments, and embedded credentials are removed.
+- Sensitive URL path segments and stable DOM IDs are replaced or rejected
+  using the same identifier policy before they can become URLs or locators.
 - Demonstrated input values become typed tokens such as `{{arg.query}}` before
   recorder state is saved.
 - When a value becomes an argument, earlier in-memory evidence is tokenized
@@ -35,6 +37,8 @@ semantic-capture compatibility path.
 - Sensitive text shapes are replaced with `[redacted]`.
 - Synthetic/untrusted actor events and events observed while the actor or
   legacy runner marker is active are excluded.
+- Native anchor/form navigation is replayed exactly once only after the
+  coordinator positively acknowledges durable event-start persistence.
 - Debug downloads contain the sanitized trace plus category/count summaries;
   the redaction ledger stores no source values or hashes.
 
@@ -59,4 +63,11 @@ python3 extension/learning/tests/live_storefront.py
 ```
 
 The live script writes sanitized evidence to `/tmp/g6-owned-trace.json` and
-`/tmp/g6-owned-debug.json` for local inspection and Go-validator checks.
+`/tmp/g6-owned-debug.json` for local inspection and Go-validator checks. Its
+sensitive-path regression writes `/tmp/g6-privacy-path-trace.json` and
+`/tmp/g6-privacy-path-debug.json`.
+
+The server remains a defense-in-depth consumer of already-sanitized evidence.
+This branch does not modify `server/**`, so integration should separately make
+the server privacy scanner mirror the client sensitive-path and locator policy
+before recording is expanded beyond owned test sites.

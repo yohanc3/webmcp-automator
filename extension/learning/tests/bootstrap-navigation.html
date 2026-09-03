@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Learning bootstrap navigation acknowledgement test</title>
+  </head>
+  <body>
+    <a id="delayed-navigation" href="#destination">Continue</a>
+    <a href="https://shop.test/users/alice@example.com/session_abcd1234efgh">Account</a>
+    <button id="order-42-secret-c8419a" type="button">Order</button>
+    <button id="user_token_c8419asecret" type="button">User</button>
+    <div id="destination">Destination</div>
+    <script>
+      (() => {
+        const order = [];
+        const messages = [];
+        let pendingStart;
+        let persisted = false;
+        globalThis.chrome = {
+          runtime: {
+            lastError: null,
+            sendMessage(message, callback) {
+              messages.push(message);
+              if (message.type === 'TRACE_EVENT_STARTED') {
+                order.push('start-request');
+                pendingStart = () => {
+                  persisted = true;
+                  order.push('start-persisted');
+                  callback({ ok: true });
+                };
+                return;
+              }
+              callback(message.type === 'PAGE_READY'
+                ? { recordingActive: false }
+                : { ok: true });
+            },
+          },
+        };
+        globalThis.BootstrapNavigationTest = {
+          acknowledgeStart() { pendingStart(); },
+          activationCount: 0,
+          messages,
+          order,
+          pageReadyAttempt() {
+            order.push('page-ready-attempt');
+            return { foundPendingAction: persisted };
+          },
+          stopBeforeAck() {
+            WebMcpLearningBootstrap.handleMessage({
+              type: WebMcpProtocol.MESSAGE_TYPES.recordingStop,
+            }, {}, () => { this.stopResponded = true; });
+          },
+          stopResponded: false,
+        };
+      })();
+    </script>
+    <script src="../../shared/protocol.js"></script>
+    <script src="../../shared/errors.js"></script>
+    <script src="../privacy.js"></script>
+    <script src="../semantic.js"></script>
+    <script src="../bootstrap.js"></script>
+    <script>
+      WebMcpLearningBootstrap.start();
+      WebMcpLearningBootstrap.handleMessage({
+        type: WebMcpProtocol.MESSAGE_TYPES.recordingStart,
+        recordingId: 'delayed-start-recording',
+      }, {}, () => {});
+      document.querySelector('#delayed-navigation').addEventListener('click', () => {
+        BootstrapNavigationTest.activationCount += 1;
+        BootstrapNavigationTest.order.push('activation');
+      });
+    </script>
+  </body>
+</html>

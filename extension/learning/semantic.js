@@ -139,13 +139,14 @@
     .filter(({ name }) => !['class', 'style', 'value'].includes(name))
     .map(({ name, value }) => [name, value]));
 
-  const stableCss = (element) => {
+  const stableCss = (element, ledger) => {
     const id = element.id;
     if (/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(id)
-      && !/(?:auth|card|credential|email|pass|phone|secret|token)/i.test(id)) {
+      && !privacy.sensitiveIdentifier(id)) {
       const escaped = globalThis.CSS?.escape ? globalThis.CSS.escape(id) : id;
       return `#${escaped}`;
     }
+    if (id && privacy.sensitiveIdentifier(id)) ledger?.record('locator');
     if (element.hasAttribute('data-product-card')) return `${element.localName}[data-product-card]`;
     const parts = [];
     let current = element;
@@ -178,7 +179,7 @@
     const name = privacy.sanitizeText(rawAccessibleName(element), context);
     const text = privacy.sanitizeText(element.innerText || element.textContent || '', context);
     const attributes = privacy.sanitizeAttributes(rawAttributes(element), context);
-    const css = stableCss(element);
+    const css = stableCss(element, ledger);
     const parentContext = privacy.sanitizeText(
       element.parentElement ? rawAccessibleName(element.parentElement) : '',
       { ...context, limit: 160 },
@@ -253,7 +254,7 @@
     const elements = boundedElements(document);
     const nodes = elements.map((element) => describeElement(element, context));
     const collections = collectionsFor(elements).map(({ parent, items, count }) => ({
-      parentCss: stableCss(parent),
+      parentCss: stableCss(parent, ledger),
       itemCss: items[0]?.localName || null,
       count,
       sample: items.map((item) => ({

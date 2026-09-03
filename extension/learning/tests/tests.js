@@ -14,7 +14,11 @@
     attribute: 'canary-attribute-secret-a91f27',
     form: 'ordinarytypedvalue-a91f27',
     mutation: 'canary-mutation-secret-a91f27',
+    orderId: 'order-42-secret-a91f27',
+    pathEmail: 'alice@example.com',
     query: 'canary-query-secret-a91f27',
+    sessionId: 'session_abcd1234efgh',
+    userToken: 'user_token_a91f27secret',
     visible: 'canary-visible-secret-a91f27',
   });
   let nextId = 1;
@@ -188,6 +192,29 @@
     equal(trace.actionTree.finalPageId, 'page_2');
   });
 
+  test('preserves pending navigation when coordinator stops with three arguments', () => {
+    const home = state('coordinator-home');
+    const results = state('coordinator-results', 'https://shop.test/demo/results');
+    let recording = recorder.createRecording({
+      id: 'coordinator-stop-navigation',
+      tabId: 9,
+      state: home,
+      startedAt: '2026-09-03T12:00:00.000Z',
+      ledger: privacy.createLedger(),
+    });
+    recording = recorder.beginEvent(recording, event('pending-navigation'), home);
+    recording = recorder.finishRecording(
+      recording,
+      results,
+      '2026-09-03T12:00:03.000Z',
+    );
+    const trace = recorder.toTrace(recording);
+    deepEqual(trace.frames.map(({ type }) => type), ['page', 'action', 'update', 'page']);
+    equal(trace.frames[2].update.urlChanged, true);
+    equal(trace.frames[3].page.fingerprint, 'coordinator-results');
+    equal(trace.actionTree.transitions.length, 1);
+  });
+
   test('excludes synthetic recorder events at the pure state boundary', () => {
     const home = state('home');
     let recording = recorder.createRecording({
@@ -236,6 +263,50 @@
     assertSecretsAbsent(artifact);
     match(artifact, /"redactions"/);
     match(artifact, /"counts"/);
+  });
+
+  test('removes sensitive URL segments and DOM IDs through trace and debug output', async () => {
+    fixture.innerHTML = `
+      <a href="https://shop.test/users/${secrets.pathEmail}/${secrets.sessionId}">Account</a>
+      <button id="${secrets.sessionId}" type="button">Session action</button>
+      <button id="${secrets.orderId}" type="button">Order action</button>
+      <button id="${secrets.userToken}" type="button">User action</button>
+      <button id="safe-action" type="button">Safe action</button>
+    `;
+    const ledger = privacy.createLedger();
+    const sanitizedUrl = privacy.sanitizeUrl(
+      `https://shop.test/users/${secrets.pathEmail}/${secrets.sessionId}/${secrets.orderId}`,
+      ledger,
+    );
+    assertSecretsAbsent(sanitizedUrl);
+    match(sanitizedUrl, /:redacted/);
+
+    const storage = memoryStorage();
+    const session = WebMcpLearningSession.createSession({
+      document,
+      storage,
+      acceptUntrustedEvents: true,
+      quietMs: 5,
+      quietDeadlineMs: 20,
+    });
+    session.initialize();
+    session.start();
+    fixture.querySelector('#safe-action').dispatchEvent(new MouseEvent('click', {
+      bubbles: true,
+      detail: 1,
+    }));
+    const trace = await session.stop();
+    const serialized = JSON.stringify({
+      debug: session.debug(),
+      stored: storage.serialized(),
+      trace,
+    });
+    assertSecretsAbsent(serialized);
+    equal(serialized.includes(`#${secrets.sessionId}`), false);
+    equal(session.debug().redactions.counts.locator > 0, true);
+    session.destroy();
+    session.reset();
+    fixture.replaceChildren();
   });
 
   void run();

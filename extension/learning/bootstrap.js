@@ -17,6 +17,7 @@
   } = semantic;
   const { MESSAGE_TYPES, createMessage, isMessage, sendRuntimeMessage } = protocol;
   const pendingCompletions = new Set();
+  const resumedActivations = new WeakSet();
   let recordingId = null;
   let pendingInput = null;
   let started = false;
@@ -112,40 +113,79 @@
   const beginEvent = (kind, target, value, beforeState) => {
     const traceEvent = createTraceEvent(kind, target, value);
     if (!traceEvent) return null;
-    chrome.runtime.sendMessage(createMessage(MESSAGE_TYPES.traceEventStarted, {
-      recordingId,
+    const activeRecordingId = recordingId;
+    const acknowledgement = sendMessage(createMessage(MESSAGE_TYPES.traceEventStarted, {
+      recordingId: activeRecordingId,
       event: traceEvent,
       beforeState,
     }));
-    return traceEvent;
+    return { acknowledgement, recordingId: activeRecordingId, traceEvent };
   };
 
-  const completeEvent = async (traceEvent, beforeState, deferMs = 0) => {
-    if (!traceEvent) return;
+  const completeEvent = async (observed, beforeState, deferMs = 0) => {
+    if (!observed) return;
+    const acknowledgement = await observed.acknowledgement;
+    if (acknowledgement?.ok !== true) return;
     if (deferMs > 0) {
       await new Promise((resolve) => { setTimeout(resolve, deferMs); });
     }
     const afterState = await quietState();
     await sendMessage(createMessage(MESSAGE_TYPES.traceEventCompleted, {
-      recordingId,
-      eventId: traceEvent.id,
+      recordingId: observed.recordingId,
+      eventId: observed.traceEvent.id,
       delta: diffStates(beforeState, afterState),
       afterState,
     }));
   };
 
-  const trackCompletion = (traceEvent, beforeState, deferMs = 0) => {
-    const completion = completeEvent(traceEvent, beforeState, deferMs).catch(() => {});
+  const trackCompletion = (observed, beforeState, deferMs = 0) => {
+    const completion = completeEvent(observed, beforeState, deferMs).catch(() => {});
     pendingCompletions.add(completion);
     completion.finally(() => pendingCompletions.delete(completion));
   };
 
-  const expectsNavigation = (target) => {
+  const expectsNavigation = (target, kind) => {
+    if (kind === 'press') return Boolean(target.form);
     if (target.localName === 'a' && target.hasAttribute('href')) return true;
     if (target.localName === 'button' && (target.type || 'submit') === 'submit') {
       return Boolean(target.form);
     }
-    return Boolean(target.form && target.localName === 'input');
+    return target.localName === 'input'
+      && ['image', 'submit'].includes(target.type)
+      && Boolean(target.form);
+  };
+
+  const resumeClick = (target) => {
+    resumedActivations.add(target);
+    target.click();
+  };
+
+  const resumeEnter = (target) => {
+    const form = target.form;
+    if (!form) return;
+    const submitter = form.querySelector([
+      'button:not([type])',
+      'button[type="submit"]',
+      'input[type="submit"]',
+      'input[type="image"]',
+    ].join(','));
+    form.requestSubmit(submitter || undefined);
+  };
+
+  const recordBeforeNavigation = async (kind, target, value, resume) => {
+    await flushInput();
+    if (!recordingId) return;
+    const beforeState = capturePageState();
+    const observed = beginEvent(kind, target, value, beforeState);
+    if (!observed) return;
+    const pendingStart = observed.acknowledgement.catch(() => null);
+    pendingCompletions.add(pendingStart);
+    try {
+      const acknowledgement = await pendingStart;
+      if (acknowledgement?.ok === true) resume(target);
+    } finally {
+      pendingCompletions.delete(pendingStart);
+    }
   };
 
   const flushInput = async () => {
@@ -195,27 +235,48 @@
   };
 
   const onClick = (event) => {
+    const target = interactiveTarget(event.target);
+    if (target && resumedActivations.delete(target)) return;
     if (!recordingId || syntheticEvent(event)) return;
     if (event.detail === 0) return;
-    void flushInput();
-    const target = interactiveTarget(event.target);
     if (!target) return;
+    if (expectsNavigation(target, 'click')) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void recordBeforeNavigation(
+        'click',
+        target,
+        { redacted: false, value: null },
+        resumeClick,
+      );
+      return;
+    }
+    void flushInput();
     const beforeState = capturePageState();
-    const traceEvent = beginEvent('click', target, { redacted: false, value: null }, beforeState);
-    trackCompletion(traceEvent, beforeState, expectsNavigation(target) ? 350 : 0);
+    const observed = beginEvent('click', target, { redacted: false, value: null }, beforeState);
+    trackCompletion(observed, beforeState);
   };
 
   const onKeyDown = (event) => {
     if (!recordingId || syntheticEvent(event) || event.key !== 'Enter') return;
-    void flushInput();
     const target = interactiveTarget(event.target) || event.target;
     if (!(target instanceof Element)) return;
+    if (expectsNavigation(target, 'press')) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void recordBeforeNavigation('press', target, {
+        redacted: false,
+        value: 'Enter',
+      }, resumeEnter);
+      return;
+    }
+    void flushInput();
     const beforeState = capturePageState();
-    const traceEvent = beginEvent('press', target, {
+    const observed = beginEvent('press', target, {
       redacted: false,
       value: 'Enter',
     }, beforeState);
-    trackCompletion(traceEvent, beforeState, expectsNavigation(target) ? 350 : 0);
+    trackCompletion(observed, beforeState);
   };
 
   const handleMessage = (message, _sender, sendResponse) => {

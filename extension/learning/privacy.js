@@ -33,6 +33,11 @@
     ['address', /\b\d{1,6}\s+[A-Z0-9][A-Z0-9 .'-]{2,}\s(?:avenue|ave|boulevard|blvd|court|ct|drive|dr|lane|ln|road|rd|street|st|way)\b/gi],
     ['account', /\b(?:account|order|customer|session)[-_ ]?(?:id|number)?[:# -]*[A-Z0-9-]{8,}\b/gi],
   ]);
+  const SENSITIVE_IDENTIFIER_PATTERNS = Object.freeze([
+    /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i,
+    /(?:^|[^a-z0-9])(?:account|auth|credential|customer|key|login|order|password|secret|session|token|user)[-_.:@/][a-z0-9][a-z0-9_.:@/-]{3,}/i,
+    /[a-z0-9][a-z0-9_.:@/-]{3,}[-_.:@/](?:auth|credential|key|order|password|secret|session|token)(?:$|[^a-z0-9])/i,
+  ]);
   const SECRET_MARKER = '[redacted]';
 
   const normalizeText = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -157,6 +162,17 @@
     return truncate(output, limit);
   };
 
+  const sensitiveIdentifier = (value) => {
+    const source = String(value ?? '');
+    let decoded = source;
+    try {
+      decoded = decodeURIComponent(source);
+    } catch (error) {
+      // Test the undecoded source when a site provides malformed escaping.
+    }
+    return SENSITIVE_IDENTIFIER_PATTERNS.some((pattern) => pattern.test(decoded));
+  };
+
   const sanitizeUrl = (value, ledger) => {
     try {
       const url = new URL(value);
@@ -165,11 +181,29 @@
       url.password = '';
       url.search = '';
       url.hash = '';
-      url.pathname = url.pathname
-        .split('/')
-        .map((part) => (/^[a-z0-9_-]{25,}$/i.test(part) ? ':id' : part))
-        .join('/');
-      return `${url.origin}${url.pathname}`;
+      const pathname = url.pathname.split('/').map((part) => {
+        let decoded = part;
+        try {
+          decoded = decodeURIComponent(part);
+        } catch (error) {
+          // The raw segment remains subject to the same identifier checks.
+        }
+        if (sensitiveIdentifier(decoded)) {
+          ledger?.record('url_path');
+          return ':redacted';
+        }
+        const sanitized = sanitizeText(decoded, { ledger, limit: 180 });
+        if (sanitized !== decoded) {
+          ledger?.record('url_path');
+          return ':redacted';
+        }
+        if (/^[a-z0-9_-]{25,}$/i.test(decoded)) {
+          ledger?.record('url_path');
+          return ':id';
+        }
+        return decoded;
+      }).map((part) => encodeURIComponent(part).replace(/%3A/gi, ':')).join('/');
+      return `${url.origin}${pathname}`;
     } catch (error) {
       ledger?.record('url');
       return '';
@@ -182,9 +216,15 @@
         context.ledger?.record('attribute');
         return [];
       }
-      const sanitized = name === 'href'
-        ? sanitizeUrl(value, context.ledger)
-        : sanitizeText(value, { ...context, limit: 180 });
+      let sanitized;
+      if (name === 'href') {
+        sanitized = sanitizeUrl(value, context.ledger);
+      } else if (sensitiveIdentifier(value)) {
+        context.ledger?.record('identifier');
+        sanitized = SECRET_MARKER;
+      } else {
+        sanitized = sanitizeText(value, { ...context, limit: 180 });
+      }
       return sanitized ? [[name, sanitized]] : [];
     }),
   );
@@ -284,6 +324,7 @@
     sanitizeLedgerSummary,
     sanitizeText,
     sanitizeUrl,
+    sensitiveIdentifier,
     serializeDebugArtifact,
     tokenizeInput,
   });

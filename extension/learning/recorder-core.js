@@ -1,11 +1,14 @@
 (function initializeLearningRecorder(root, factory) {
-  const recorder = factory(root.WebMcpLearningPrivacy);
+  const recorder = factory(
+    root.WebMcpLearningPrivacy,
+    root.WebMcpLearningSemantic || root.WebMcpSemantic,
+  );
   root.WebMcpLearningRecorder = recorder;
   root.ActionMapperRecorder = recorder;
   if (typeof module === 'object' && module.exports) {
     module.exports = recorder;
   }
-}(typeof globalThis === 'undefined' ? this : globalThis, (privacy) => {
+}(typeof globalThis === 'undefined' ? this : globalThis, (privacy, semantic) => {
   'use strict';
 
   if (!privacy) throw new Error('WebMcpLearningPrivacy must load before the learning recorder');
@@ -105,7 +108,12 @@
     return completePending(recording, afterState, diffStates);
   };
 
-  const finishRecording = (recording, finalState, stoppedAt, diffStates) => {
+  const finishRecording = (
+    recording,
+    finalState,
+    stoppedAt,
+    diffStates = semantic?.diffStates,
+  ) => {
     if (!recording || recording.status !== 'recording') return recording;
     const completed = diffStates
       ? completePending(recording, finalState, diffStates)
