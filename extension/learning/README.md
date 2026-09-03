@@ -1,10 +1,32 @@
-# Learning capture boundary
+# Ambient learning capture boundary
 
-The learning module records explicit user demonstrations as sanitized
-`learning-trace/3` evidence. Its privacy boundary is before recorder state,
-extension messages, session storage, debug downloads, and server intake.
+`ambient-capture.js` is the automatic capture owner. It accepts injected
+eligibility, document-observer, delivery, and local-spool ports and emits the
+frozen `CompletedLayer { siteScope, layer, observation, policy, privacy }`
+handoff. Attachment and every queued transfer require a current
+`ambient_learn` allowance. The initial layer has no observation; every later
+settled layer has exactly one causal, sanitized user observation. XML equality
+does not suppress a layer.
 
-## Module order
+Integration supplies a site-scope layer-sequence port backed by extension-local
+state so sequences remain monotonic across top-level document replacement. The
+included in-memory implementation is deterministic for focused tests and
+single-process fixtures.
+
+`retry-spool.js` defines the local encrypted-storage boundary. It enforces the
+24-hour maximum retention, removes source after `applied`, `duplicate`, or
+`no_change`, and quarantines a conflict only for explicit reparse. It exposes
+no Universal DB synchronization surface.
+
+The ambient controller's `start` and `stop` methods are internal document and
+policy lifecycle mechanics. It defines no extension message types, goal,
+recording control, indicator, or other user-operated learning-session surface.
+
+The retained compatibility module records explicit user demonstrations as
+sanitized `learning-trace/3` evidence. Its privacy boundary is before recorder
+state, extension messages, session storage, debug downloads, and server intake.
+
+## Integration boundary
 
 Learning-capable content contexts load these files in order:
 
@@ -16,13 +38,13 @@ Learning-capable content contexts load these files in order:
 
 `extension/manifest.json`, the service-worker import list, and shared test
 indexes are integration-owned. This branch intentionally does not edit them.
-For content capture, integration adds privacy and learning semantic before the
-existing bootstrap. For the service worker, it replaces the root semantic and
-recorder imports with privacy, learning semantic, and learning recorder in that
-order. The learning modules expose the frozen `WebMcpSemantic` and
-`ActionMapperRecorder` compatibility globals, so the coordinator does not need
-to change. Until that wiring lands, `learning/bootstrap.js` retains the prior
-semantic-capture compatibility path.
+For content capture, integration adds privacy, learning semantic, retry spool,
+and ambient capture before replacing the existing bootstrap. The learning
+modules expose the frozen `WebMcpSemantic` and `ActionMapperRecorder`
+compatibility globals for the still-separate historical trace path. Until that
+wiring lands, `learning/bootstrap.js` retains the prior semantic-capture
+compatibility path; this owner branch does not put ambient behavior behind its
+recording messages.
 
 ## Privacy invariants
 
@@ -48,8 +70,17 @@ present only while recording and is excluded from semantic capture.
 
 ## Focused validation
 
-Run the browser suite directly because the shared extension test index is
-integration-owned:
+The same ambient contract suite runs in Node and a browser:
+
+```bash
+node --test extension/learning/tests/ambient-contract-tests.js
+
+chrome --headless=new --allow-file-access-from-files \
+  --dump-dom extension/learning/tests/ambient.html
+```
+
+The historical hardened-capture regression remains available directly; its
+shared extension test index is integration-owned:
 
 ```bash
 chrome --headless=new --allow-file-access-from-files \

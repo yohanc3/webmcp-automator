@@ -235,14 +235,14 @@
     .replace(/"/g, '&quot;');
 
   const nodesToXml = (nodes, url, title) => [
-    `<page schema="learning-ui/2" url="${xmlSafe(url)}" title="${xmlSafe(title)}">`,
+    `<semantic-ui schema="semantic-ui/2" url="${xmlSafe(url)}" title="${xmlSafe(title)}">`,
     ...nodes.map((node) => [
       `  <node ref="${xmlSafe(node.id)}" tag="${xmlSafe(node.tag)}"`,
       node.role ? ` role="${xmlSafe(node.role)}"` : '',
       node.name ? ` name="${xmlSafe(node.name)}"` : '',
       ` css="${xmlSafe(node.css)}">${xmlSafe(node.text || '')}</node>`,
     ].join('')),
-    '</page>',
+    '</semantic-ui>',
   ].join('\n');
 
   const capturePageState = ({
