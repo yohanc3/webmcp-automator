@@ -1072,18 +1072,26 @@
       }, this.now()));
       this.clearDeadline(record.runId);
       terminalRecord = await this.storeObservation(terminalRecord);
-      await this.dispatchTerminal(terminalRecord);
-      if (terminalRecord.action?.runtime.closeExecutionTab
-        && Number.isInteger(terminalRecord.execution.tabId)) {
-        await this.tabs.remove(terminalRecord.execution.tabId).catch(() => {});
+      try {
+        await this.dispatchTerminal(terminalRecord);
+      } finally {
+        await this.closeExecutionTab(terminalRecord);
       }
       return this.storage.load(record.runId);
+    }
+
+    async closeExecutionTab(record) {
+      if (record.action?.runtime.closeExecutionTab
+        && Number.isInteger(record.execution.tabId)) {
+        await this.tabs.remove(record.execution.tabId).catch(() => {});
+      }
     }
 
     async dispatchTerminal(inputRecord, providedPort = null) {
       if (!inputRecord.terminal || inputRecord.terminal.dispatched) return inputRecord;
       const port = providedPort || this.sourcePorts.get(this.sourceKey(inputRecord.source));
       if (!port) return inputRecord;
+      port.postMessage(inputRecord.terminal.envelope);
       const record = await this.persist(updateRun(inputRecord, {
         terminal: {
           ...inputRecord.terminal,
@@ -1091,7 +1099,6 @@
           dispatchedAt: this.now(),
         },
       }, this.now()));
-      port.postMessage(record.terminal.envelope);
       return record;
     }
 
@@ -1188,6 +1195,7 @@
           if (current.terminal && !current.terminal.dispatched) {
             await this.dispatchTerminal(current);
           }
+          await this.closeExecutionTab(current);
           continue;
         }
         const actionExpired = run.deadlineAt

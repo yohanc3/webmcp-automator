@@ -978,3 +978,26 @@ test('terminal recovery stores one observation and waits for the source before d
   assert.equal(terminal.terminal.dispatched, true);
   assert.equal(port.sent.filter(({ type }) => type === MESSAGE_TYPES.runError).length, 1);
 });
+
+test('a disconnected terminal port leaves the immutable result eligible for retry', async () => {
+  const harness = createHarness();
+  const { port, run } = await bindAndSendRequest(harness);
+  port.postMessage = () => { throw new Error('disconnected'); };
+  await assert.rejects(harness.coordinator.fail(run.runId, {
+    code: 'INTERNAL_ERROR',
+    message: 'terminal result',
+    observed: {},
+    retryable: false,
+    stepId: null,
+  }), /disconnected/);
+  let terminal = await harness.storage.load(run.runId);
+  assert.equal(terminal.terminal.dispatched, false);
+
+  const replacement = sourcePort();
+  harness.coordinator.bindPort(replacement);
+  await new Promise((resolve) => { setImmediate(resolve); });
+  terminal = await harness.storage.load(run.runId);
+  assert.equal(terminal.terminal.dispatched, true);
+  assert.equal(replacement.sent.length, 1);
+  assert.deepEqual(replacement.sent[0], terminal.terminal.envelope);
+});
