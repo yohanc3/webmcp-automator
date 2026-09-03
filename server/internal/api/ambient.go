@@ -62,7 +62,7 @@ func (sink ambientPatchSink) Apply(ctx context.Context, request learning.ParseRe
 	if err != nil {
 		return learning.PatchApplication{}, err
 	}
-	patchJSON, err := marshalAmbientPatch(materialized.Patch)
+	patchJSON, err := json.Marshal(materialized.Patch)
 	if err != nil {
 		return learning.PatchApplication{}, err
 	}
@@ -79,29 +79,6 @@ func (sink ambientPatchSink) Apply(ctx context.Context, request learning.ParseRe
 		revision = receipt.Application.Result.Revision
 	}
 	return learning.PatchApplication{Status: receipt.Application.Status, ConflictCode: valueOrEmpty(receipt.Application.ConflictCode), Revision: revision}, nil
-}
-
-func marshalAmbientPatch(patch learning.ActionMapPatch) ([]byte, error) {
-	raw, err := json.Marshal(patch)
-	if err != nil {
-		return nil, err
-	}
-	var document map[string]any
-	if err := json.Unmarshal(raw, &document); err != nil {
-		return nil, err
-	}
-	for _, value := range document["operations"].([]any) {
-		operation := value.(map[string]any)
-		if operation["op"] == "upsert_action" {
-			if _, ok := operation["componentActionIds"]; !ok {
-				operation["componentActionIds"] = []any{}
-			}
-			if _, ok := operation["stepEvidence"]; !ok {
-				operation["stepEvidence"] = []any{}
-			}
-		}
-	}
-	return json.Marshal(document)
 }
 
 func valueOrEmpty(value *string) string {
@@ -147,7 +124,7 @@ func (server *Server) processAmbientLayer(writer http.ResponseWriter, request *h
 		}
 		candidate, compileErr := learning.CompileAmbientCandidate(layer.SiteScope.ScopeID, head.ActionMap, head.Revision, digest, time.Now().UTC())
 		if compileErr != nil {
-			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"outcome": "retryable", "retryable": true, "error": "accepted action map could not be projected for review: " + compileErr.Error()})
+			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"outcome": "retryable", "retryable": true, "error": "accepted action map could not be projected for review"})
 			return
 		}
 		stored, storeErr := server.store.GetActionListRevision(request.Context(), learning.AmbientCandidateListID(layer.SiteScope.ScopeID), head.Revision)

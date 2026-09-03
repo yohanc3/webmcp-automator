@@ -192,6 +192,33 @@ type PatchOperation struct {
 	StepEvidence       []StepEvidence    `json:"stepEvidence,omitempty"`
 }
 
+func (operation PatchOperation) MarshalJSON() ([]byte, error) {
+	switch operation.Op {
+	case "upsert_state":
+		return json.Marshal(struct {
+			Op          string           `json:"op"`
+			EntityID    string           `json:"entityId"`
+			State       *actionmap.State `json:"state"`
+			Provenance  string           `json:"provenance"`
+			Reason      string           `json:"reason"`
+			CitationIDs []string         `json:"citationIds"`
+		}{operation.Op, operation.EntityID, operation.State, operation.Provenance, operation.Reason, operation.CitationIDs})
+	case "upsert_action":
+		return json.Marshal(struct {
+			Op                 string            `json:"op"`
+			EntityID           string            `json:"entityId"`
+			Action             *actionmap.Action `json:"action"`
+			Provenance         string            `json:"provenance"`
+			Reason             string            `json:"reason"`
+			ComponentActionIDs []string          `json:"componentActionIds"`
+			CitationIDs        []string          `json:"citationIds"`
+			StepEvidence       []StepEvidence    `json:"stepEvidence"`
+		}{operation.Op, operation.EntityID, operation.Action, operation.Provenance, operation.Reason, operation.ComponentActionIDs, operation.CitationIDs, operation.StepEvidence})
+	default:
+		return nil, fmt.Errorf("unsupported patch operation %q", operation.Op)
+	}
+}
+
 type ActionMapPatch struct {
 	SchemaVersion     string              `json:"schemaVersion"`
 	PatchID           string              `json:"patchId"`
