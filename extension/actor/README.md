@@ -55,7 +55,8 @@ helper functions may throw `ActorError` directly.
   Observers, listeners, and wait timers are cleaned up on every terminal path.
   Postcondition expiry after mutation is `POSTCONDITION_FAILED`; action expiry
   and wait expiry are `TIMEOUT`. No mutation is retried.
-- Effects contain only the frozen URL/state/boolean fields. Failure evidence
+- Effects contain only the frozen URL/state/boolean fields plus the
+  document-local mutation revision observed after the step. Failure evidence
   contains bounded counts or a navigation flag, never DOM dumps or arguments.
 
 ## Navigation and integration responsibilities
@@ -87,10 +88,10 @@ From the repository root:
 python3 extension/actor/tests/serve.py
 ```
 
-Open `http://127.0.0.1:4317/extension/actor/tests/index.html`. Port 4317 is
-required by the unchanged owned-storefront fixture. The local server disables
-script caching. The test page shows results, the extracted fixture product,
-and all protocol outcomes. Tests restore their entry URL after SPA cases.
+Open the URL printed by the server. It defaults to port 4317; automated tests
+select an ephemeral port. The local server disables script caching. The test
+page shows results, the extracted fixture product, and all protocol outcomes.
+Tests restore their entry URL after SPA cases.
 
 The suite includes a real same-origin iframe document replacement, alongside
 positive and negative primitive/condition tests. The storefront fixture is

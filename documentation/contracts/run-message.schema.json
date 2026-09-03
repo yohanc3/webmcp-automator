@@ -8,6 +8,9 @@
       "$ref": "#/$defs/runRequest"
     },
     {
+      "$ref": "#/$defs/runAck"
+    },
+    {
       "$ref": "#/$defs/runAccepted"
     },
     {
@@ -121,6 +124,8 @@
           "additionalProperties": false,
           "required": [
             "listId",
+            "listDigest",
+            "listRevision",
             "actionId",
             "actionVersion",
             "sourceUrl",
@@ -129,6 +134,14 @@
           "properties": {
             "listId": {
               "$ref": "#/$defs/identifier"
+            },
+            "listDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "listRevision": {
+              "type": "integer",
+              "minimum": 1
             },
             "actionId": {
               "$ref": "#/$defs/identifier"
@@ -143,6 +156,27 @@
             },
             "arguments": {
               "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "runAck": {
+      "$ref": "#/$defs/standardMessage",
+      "properties": {
+        "type": {
+          "const": "run.ack"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "terminalSequence"
+          ],
+          "properties": {
+            "terminalSequence": {
+              "type": "integer",
+              "minimum": 1
             }
           }
         }
@@ -210,7 +244,10 @@
             "url",
             "title",
             "stateId",
-            "navigationSequence"
+            "navigationSequence",
+            "pageRevision",
+            "preconditionSatisfied",
+            "pendingStepSatisfied"
           ],
           "properties": {
             "url": {
@@ -234,6 +271,19 @@
             "navigationSequence": {
               "type": "integer",
               "minimum": 0
+            },
+            "pageRevision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "preconditionSatisfied": {
+              "type": "boolean"
+            },
+            "pendingStepSatisfied": {
+              "type": [
+                "boolean",
+                "null"
+              ]
             }
           }
         }
@@ -512,6 +562,7 @@
         "urlChanged",
         "navigationExpected",
         "navigationObserved",
+        "pageRevisionAfter",
         "stateBefore",
         "stateAfter",
         "postconditionSatisfied"
@@ -533,6 +584,10 @@
         },
         "navigationObserved": {
           "type": "boolean"
+        },
+        "pageRevisionAfter": {
+          "type": "integer",
+          "minimum": 0
         },
         "stateBefore": {
           "anyOf": [

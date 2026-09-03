@@ -6,11 +6,13 @@
     root.WebMcpProtocol,
     root.WebMcpErrors,
     root.WebMcpCoordinatorCompatibility,
+    root.WebMcpReadyRuntime,
   );
 }(typeof globalThis === 'undefined' ? this : globalThis, (
   protocol,
   publicErrors,
   compatibility,
+  readyRuntime,
 ) => {
   'use strict';
 
@@ -240,7 +242,11 @@ const publishCandidate = async (adapterId, versionId, origin) => {
   await refreshTabs(origin);
 };
 
-const getAdapters = async (origin) => {
+const getAdapters = async (origin, sourceUrl) => {
+  if (readyRuntime) {
+    const actionLists = await readyRuntime.discoverActionLists({ origin, url: sourceUrl });
+    return { actionLists, stale: false };
+  }
   const cache = await storageGet('local', ADAPTER_CACHE_KEY, {});
   try {
     const body = await requestBackend(`/api/adapters?origin=${encodeURIComponent(origin)}`);
@@ -458,6 +464,9 @@ const popupState = async () => {
 };
 
 const handleMessage = async (message, sender) => {
+  if (readyRuntime?.handlesMessage(message)) {
+    return readyRuntime.handleMessage(message, sender);
+  }
   switch (message.type) {
     case MESSAGE_TYPES.startRecording:
       return { ok: true, recording: await startRecording(message.tabId) };
@@ -494,7 +503,13 @@ const handleMessage = async (message, sender) => {
     case MESSAGE_TYPES.getBackendHealth:
       return { ok: true, health: await requestBackend('/health') };
     case MESSAGE_TYPES.getAdapters:
-      return { ok: true, ...(await getAdapters(message.origin)) };
+      return {
+        ok: true,
+        ...(await getAdapters(
+          message.origin,
+          sender.url || sender.tab?.url || message.sourceUrl,
+        )),
+      };
     case MESSAGE_TYPES.webMcpStatus:
       await storageSet('session', WEBMCP_STATUS_KEY, {
         available: message.available,
@@ -547,6 +562,7 @@ const onTabRemoved = (tabId) => {
 const start = () => {
   if (started) return;
   started = true;
+  readyRuntime?.start();
   chrome.runtime.onMessage.addListener(onMessage);
   chrome.tabs.onRemoved.addListener(onTabRemoved);
 };

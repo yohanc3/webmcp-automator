@@ -25,7 +25,7 @@ Requirements:
 - a Neon PostgreSQL connection URL;
 - a Cerebras or OpenRouter API key when AI synthesis is needed.
 
-Node.js and npm are not required.
+Node.js is required for deterministic integration tests; npm is not required.
 
 Put one provider key in `server/.env`, then start the project:
 
@@ -58,7 +58,9 @@ Or run one boundary:
 
 ```bash
 make test-server
+make test-node
 make test-extension
+make test-actor
 make test-documentation
 ```
 

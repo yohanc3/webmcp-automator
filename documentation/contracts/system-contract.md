@@ -182,6 +182,31 @@ Every message has a protocol, discriminated type, request ID, run ID, monotonic
 sequence, timestamp, sender context, and typed payload. The message log is an
 event ledger; it is not the run's only persistent state.
 
+`run.request` carries the exact registered action-list identity as `listId`,
+`listRevision`, and `listDigest`. The coordinator resolves the immutable
+revision endpoint and verifies all three fields before policy evaluation or tab
+creation. A later publication for the same list cannot replace an accepted
+request's executable plan.
+
+`page.ready` carries actor-evaluated `preconditionSatisfied` and
+`pendingStepSatisfied` values in addition to URL, state identity, and a
+document-local mutation revision. `step.completed` advances that page revision
+alongside its effect. This keeps DOM checks inside the deterministic actor while
+the coordinator retains the authoritative navigation, document, and
+pending-step state machine.
+
+A consequential `before_step` confirmation binds the action-list and policy
+revision plus the execution document, URL, state, navigation sequence, and last
+accepted actor sequence. Approval returns the run to `waiting_for_page`; the
+coordinator requests a fresh actor attestation and dispatches only if that new
+event advances the actor sequence while preserving the bound page identity and
+entry precondition. Approve and deny are a single-use decision in the review UI.
+
+The source replies to `run.result` or `run.error` with `run.ack`. Until that
+acknowledgement names the exact terminal sequence, the durable coordinator
+keeps the terminal envelope eligible for replay after a transient MV3 port or
+service-worker disconnect.
+
 ### 2.5 Run observation: `run-observation/1`
 
 Producer: coordinator after terminal status.
@@ -478,6 +503,8 @@ Persisted record:
   "source": {"tabId": 12, "documentId": "doc-source"},
   "execution": {"tabId": 18, "documentId": "doc-exec"},
   "listId": "owned-storefront",
+  "requestedListRevision": 1,
+  "requestedListDigest": "sha256:...",
   "listDigest": "sha256:...",
   "actionId": "search_products",
   "actionVersion": 1,

@@ -6,6 +6,10 @@ importScripts(
   'recorder-core.js',
   'shared/protocol.js',
   'shared/errors.js',
+  'coordinator/run-state.js',
+  'coordinator/run-coordinator.js',
+  'coordinator/chrome-adapters.js',
+  'coordinator/ready-runtime.js',
   'coordinator/bootstrap.js',
 );
 

@@ -21,7 +21,7 @@
     sendRuntimeMessage,
   } = protocol;
 
-  const PORT_NAME = 'webmcp-source-v1';
+  const PORT_NAME = 'webmcp-run/1:source';
   const ACTION_LIST_VERSION = 'action-list/1';
   const MAX_MESSAGE_BYTES = 64 * 1024;
   const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
@@ -161,6 +161,8 @@
     if (!isPlainObject(list)
       || list.schemaVersion !== ACTION_LIST_VERSION
       || list.publication?.status !== 'published'
+      || !Number.isInteger(list.publication?.revision)
+      || list.publication.revision < 1
       || !DIGEST_PATTERN.test(list.publication?.contentDigest || '')
       || list.policy?.status !== 'allowed'
       || !Array.isArray(list.policy?.scopes)
@@ -215,6 +217,7 @@
     inputSchema: cloneJson(action.tool.inputSchema),
     listDigest: list.publication.contentDigest,
     listId: list.listId,
+    listRevision: list.publication.revision,
     registrationKey: registrationKeyFor(list, action),
   });
 
@@ -238,6 +241,9 @@
     const cancelSchedule = options.cancelSchedule || ((timer) => root.clearTimeout(timer));
     const reconnectDelayMs = options.reconnectDelayMs ?? 25;
     const maxReconnectAttempts = options.maxReconnectAttempts ?? 4;
+    const discoveryRetryDelayMs = options.discoveryRetryDelayMs ?? 250;
+    const maxDiscoveryRetryAttempts = options.maxDiscoveryRetryAttempts ?? 4;
+    const refreshActionLists = options.refreshActionLists || null;
     const modelContext = options.modelContext || documentObject?.modelContext;
     const registrationControllers = new Map();
     const registrationKeysByName = new Map();
@@ -248,9 +254,19 @@
     let port = null;
     let reconnectTimer = null;
     let reconnectAttempts = 0;
+    let discoveryRetryTimer = null;
+    let discoveryRetryAttempts = 0;
+    let pageHidden = false;
     let started = false;
     let stopped = false;
     let refreshGeneration = 0;
+    let registrationQueue = Promise.resolve();
+
+    const staleRegistrationResult = () => ({
+      available: typeof modelContext?.registerTool === 'function',
+      registered: registrationControllers.size,
+      stale: true,
+    });
 
     const outboxKey = (requestId, type) => `${requestId}:${type}`;
 
@@ -268,6 +284,19 @@
         else record.reject(value);
       }
       if (cleanup) cleanupRequest(record);
+    };
+
+    const acknowledgeTerminal = (record, terminalSequence) => {
+      if (!port || !record.runId) return;
+      port.postMessage(createEnvelope({
+        type: RUN_MESSAGE_TYPES.runAck,
+        requestId: record.requestId,
+        runId: record.runId,
+        sequence: terminalSequence + 1,
+        sentAt: now().toISOString(),
+        sender: { context: 'source_content', tabId: null, documentId: null },
+        payload: { terminalSequence },
+      }));
     };
 
     const failTransport = () => {
@@ -320,6 +349,7 @@
         reconnectAttempts = 0;
         record.lastSequence = message.sequence;
         record.runId = message.runId;
+        acknowledgeTerminal(record, message.sequence);
         settleRequest(record, 'resolve', message.payload.data);
         return;
       }
@@ -328,6 +358,7 @@
         reconnectAttempts = 0;
         record.lastSequence = message.sequence;
         record.runId = message.runId;
+        acknowledgeTerminal(record, message.sequence);
         const failure = publicFailure(
           message.payload.code,
           message.payload.message,
@@ -365,7 +396,7 @@
     };
 
     const scheduleReconnect = () => {
-      if (reconnectTimer || stopped || outbox.size === 0) return;
+      if (reconnectTimer || stopped || (outbox.size === 0 && requests.size === 0)) return;
       if (reconnectAttempts >= maxReconnectAttempts) {
         failTransport();
         return;
@@ -467,6 +498,8 @@
           sender: { context: 'source_content', tabId: null, documentId: null },
           payload: {
             listId: action.listId,
+            listDigest: action.listDigest,
+            listRevision: action.listRevision,
             actionId: action.actionId,
             actionVersion: action.actionVersion,
             sourceUrl: locationObject.href,
@@ -498,9 +531,10 @@
       return eligible.filter(({ action }) => nameCounts.get(action.tool.name) === 1);
     };
 
-    const removeRegistration = (key) => {
+    const removeRegistration = (key, expectedController = null) => {
       const registration = registrationControllers.get(key);
-      if (!registration) return;
+      if (!registration
+        || (expectedController && registration.controller !== expectedController)) return;
       registration.controller.abort();
       registrationControllers.delete(key);
       if (registrationKeysByName.get(registration.name) === key) {
@@ -512,7 +546,7 @@
       Array.from(registrationControllers.keys()).forEach(removeRegistration);
     };
 
-    const registerActionLists = async (lists = []) => {
+    const applyActionLists = async (lists = []) => {
       actionLists = Array.isArray(lists) ? lists.slice() : [];
       start();
       const generation = refreshGeneration + 1;
@@ -557,11 +591,11 @@
             { signal: controller.signal },
           );
         } catch (error) {
-          removeRegistration(key);
+          removeRegistration(key, controller);
           throw error;
         }
         if (generation !== refreshGeneration) {
-          removeRegistration(key);
+          removeRegistration(key, controller);
           continue;
         }
       }
@@ -575,12 +609,99 @@
       return { available: true, registered: registrationControllers.size };
     };
 
+    const enqueueRegistration = (task) => {
+      const result = registrationQueue.then(task, task);
+      registrationQueue = result.catch(() => {});
+      return result;
+    };
+
+    const registerActionLists = (lists = []) => (
+      enqueueRegistration(() => applyActionLists(lists))
+    );
+
+    const discoveryToken = () => Object.freeze({
+      generation: refreshGeneration,
+      url: locationObject.href,
+    });
+
+    const registerDiscoveredActionLists = (lists, token) => {
+      if (!token) return Promise.resolve(staleRegistrationResult());
+      return enqueueRegistration(() => {
+        if (stopped
+          || pageHidden
+          || token.generation !== refreshGeneration
+          || token.url !== locationObject.href) {
+          return staleRegistrationResult();
+        }
+        return applyActionLists(lists);
+      });
+    };
+
+    const clearDiscoveryRetry = (resetAttempts = false) => {
+      if (discoveryRetryTimer) cancelSchedule(discoveryRetryTimer);
+      discoveryRetryTimer = null;
+      if (resetAttempts) discoveryRetryAttempts = 0;
+    };
+
+    const scheduleDiscoveryRetry = () => {
+      if (discoveryRetryTimer
+        || stopped
+        || pageHidden
+        || !refreshActionLists
+        || discoveryRetryAttempts >= maxDiscoveryRetryAttempts) return;
+      discoveryRetryAttempts += 1;
+      discoveryRetryTimer = schedule(() => {
+        discoveryRetryTimer = null;
+        void refreshRegistrations().catch(() => {});
+      }, discoveryRetryDelayMs * discoveryRetryAttempts);
+    };
+
+    async function refreshRegistrations() {
+      if (!refreshActionLists || stopped || pageHidden) return staleRegistrationResult();
+      const token = discoveryToken();
+      let origin;
+      try {
+        origin = new URL(token.url).origin;
+      } catch (error) {
+        return staleRegistrationResult();
+      }
+      try {
+        const lists = await refreshActionLists({ origin, url: token.url });
+        const result = await registerDiscoveredActionLists(lists, token);
+        if (!result.stale) clearDiscoveryRetry(true);
+        return result;
+      } catch (error) {
+        if (token.generation === refreshGeneration && token.url === locationObject.href) {
+          scheduleDiscoveryRetry();
+        }
+        throw error;
+      }
+    }
+
     const cancelForNavigation = () => {
       const nextUrl = locationObject.href;
       if (nextUrl === currentUrl) return;
       currentUrl = nextUrl;
       requests.forEach((record) => cancelRequest(record, 'Source page navigated'));
-      void registerActionLists(actionLists);
+      if (!refreshActionLists) {
+        void registerActionLists(actionLists);
+        return;
+      }
+
+      refreshGeneration += 1;
+      actionLists = [];
+      unregisterAll();
+      clearDiscoveryRetry(true);
+      void refreshRegistrations().catch(() => {});
+    };
+
+    const resumeAfterPageShow = () => {
+      pageHidden = false;
+      const previousUrl = currentUrl;
+      cancelForNavigation();
+      if (previousUrl === locationObject.href && refreshActionLists) {
+        void refreshRegistrations().catch(() => {});
+      }
     };
 
     const start = () => {
@@ -589,17 +710,21 @@
       stopped = false;
       connectPort();
       windowObject?.addEventListener?.('pagehide', () => {
+        pageHidden = true;
+        refreshGeneration += 1;
+        clearDiscoveryRetry();
         requests.forEach((record) => cancelRequest(record, 'Source page unloaded'));
       });
       windowObject?.addEventListener?.('popstate', cancelForNavigation);
       windowObject?.addEventListener?.('hashchange', cancelForNavigation);
-      windowObject?.addEventListener?.('pageshow', cancelForNavigation);
+      windowObject?.addEventListener?.('pageshow', resumeAfterPageShow);
       windowObject?.navigation?.addEventListener?.('navigatesuccess', cancelForNavigation);
     };
 
     const stop = () => {
       if (stopped) return;
       stopped = true;
+      refreshGeneration += 1;
       unregisterAll();
       requests.forEach((record) => {
         cancelRequest(record, 'Source bridge stopped');
@@ -608,6 +733,7 @@
       outbox.clear();
       if (reconnectTimer) cancelSchedule(reconnectTimer);
       reconnectTimer = null;
+      clearDiscoveryRetry();
       port?.onMessage?.removeListener?.(handlePortMessage);
       port?.onDisconnect?.removeListener?.(handlePortDisconnect);
       port?.disconnect?.();
@@ -616,7 +742,11 @@
 
     return {
       PORT_NAME,
+      discoveryToken,
+      refreshRegistrations,
+      registerDiscoveredActionLists,
       registerActionLists,
+      retryDiscovery: scheduleDiscoveryRetry,
       start,
       stop,
       __test: {
@@ -630,7 +760,20 @@
 
   let defaultBridge = null;
   const getDefaultBridge = () => {
-    if (!defaultBridge) defaultBridge = createSourceBridge();
+    if (!defaultBridge) {
+      defaultBridge = createSourceBridge({
+        refreshActionLists: async ({ origin, url }) => {
+          const response = await sendLegacyMessage(createMessage(MESSAGE_TYPES.getAdapters, {
+            origin,
+            sourceUrl: url,
+          }));
+          if (!response?.ok) {
+            throw new Error(response?.error || 'Could not discover published actions');
+          }
+          return Array.isArray(response?.actionLists) ? response.actionLists : [];
+        },
+      });
+    }
     return defaultBridge;
   };
 
@@ -656,12 +799,22 @@
       })).catch(() => {});
       return;
     }
-    const response = await sendLegacyMessage(createMessage(MESSAGE_TYPES.getAdapters, {
-      origin: root.location.origin,
-    }));
-    if (!response?.ok) return;
+    const bridge = getDefaultBridge();
+    bridge.start();
+    const token = bridge.discoveryToken();
+    let response;
+    try {
+      response = await sendLegacyMessage(createMessage(MESSAGE_TYPES.getAdapters, {
+        origin: root.location.origin,
+        sourceUrl: token.url,
+      }));
+      if (!response?.ok) throw new Error(response?.error || 'Could not discover actions');
+    } catch (error) {
+      bridge.retryDiscovery();
+      throw error;
+    }
     if (Array.isArray(response.actionLists)) {
-      await getDefaultBridge().registerActionLists(response.actionLists);
+      await bridge.registerDiscoveredActionLists(response.actionLists, token);
       return;
     }
 

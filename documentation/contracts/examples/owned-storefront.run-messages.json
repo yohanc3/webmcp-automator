@@ -13,6 +13,8 @@
     },
     "payload": {
       "listId": "owned_storefront",
+      "listDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "listRevision": 1,
       "actionId": "search_products",
       "actionVersion": 1,
       "sourceUrl": "http://127.0.0.1:4317/demo/",
@@ -54,7 +56,10 @@
       "url": "http://127.0.0.1:4317/demo/",
       "title": "Instrument Supply",
       "stateId": "catalog",
-      "navigationSequence": 0
+      "navigationSequence": 0,
+      "pageRevision": 0,
+      "preconditionSatisfied": true,
+      "pendingStepSatisfied": null
     }
   },
   {
@@ -141,6 +146,7 @@
         "urlChanged": false,
         "navigationExpected": false,
         "navigationObserved": false,
+        "pageRevisionAfter": 1,
         "stateBefore": "catalog",
         "stateAfter": "catalog",
         "postconditionSatisfied": true
@@ -183,6 +189,22 @@
           "extract_results"
         ]
       }
+    }
+  },
+  {
+    "protocol": "webmcp-run/1",
+    "type": "run.ack",
+    "requestId": "req_search_1",
+    "runId": "run_search_1",
+    "sequence": 13,
+    "sentAt": "2026-09-03T00:01:01.510Z",
+    "sender": {
+      "context": "source_content",
+      "tabId": 10,
+      "documentId": "source_document_1"
+    },
+    "payload": {
+      "terminalSequence": 12
     }
   }
 ]

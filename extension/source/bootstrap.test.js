@@ -101,13 +101,14 @@ const publishedList = (digest = DIGEST_A) => {
 
 const createHarness = (overrides = {}) => {
   const runtime = createRuntime();
-  const modelContext = createModelContext();
+  const modelContext = overrides.modelContext || createModelContext();
   const windowObject = createWindow();
   const locationObject = {
     href: 'http://127.0.0.1:4317/demo/',
     origin: 'http://127.0.0.1:4317',
   };
   const scheduled = [];
+  const cancelled = new Set();
   let id = 0;
   const bridge = source.createSourceBridge({
     runtime,
@@ -119,15 +120,17 @@ const createHarness = (overrides = {}) => {
       id += 1;
       return `source-${id}`;
     },
-    schedule: (callback) => {
-      scheduled.push(callback);
-      return scheduled.length;
+    schedule: (callback, delay) => {
+      const timer = { callback, delay };
+      scheduled.push(timer);
+      return timer;
     },
-    cancelSchedule: () => {},
+    cancelSchedule: (timer) => { cancelled.add(timer); },
     ...overrides,
   });
   return {
     bridge,
+    cancelled,
     locationObject,
     modelContext,
     runtime,
@@ -216,6 +219,7 @@ test('two concurrent calls correlate typed results delivered in reverse order', 
   assert.deepEqual(await firstPromise, firstData);
   assert.deepEqual(await secondPromise, secondData);
   assert.equal(harness.bridge.__test.getRequestCount(), 0);
+  assert.equal(port.posted.filter(({ type }) => type === protocol.RUN_MESSAGE_TYPES.runAck).length, 2);
 });
 
 test('forged page messages and mismatched coordinator results cannot settle a call', async () => {
@@ -310,7 +314,7 @@ test('reconnect resends one identical request for coordinator deduplication', as
   const [firstDelivery] = runRequests(firstPort);
   firstPort.disconnectFromWorker();
   assert.equal(harness.scheduled.length, 1);
-  harness.scheduled.shift()();
+  harness.scheduled.shift().callback();
 
   const secondPort = harness.runtime.ports[1];
   const [secondDelivery] = runRequests(secondPort);
@@ -324,6 +328,190 @@ test('reconnect resends one identical request for coordinator deduplication', as
   secondPort.onMessage.emit(accepted(secondDelivery, 'run_deduped'));
   secondPort.onMessage.emit(result(secondDelivery, 'run_deduped', { count: 1, items: [] }));
   assert.deepEqual(await promise, { count: 1, items: [] });
+});
+
+test('reconnects after acceptance so a resumed coordinator can deliver the terminal result', async () => {
+  const harness = createHarness();
+  await harness.bridge.registerActionLists([publishedList()]);
+  const promise = harness.modelContext.currentTool().execute({ query: 'headphones' });
+  const firstPort = harness.runtime.ports[0];
+  const [request] = runRequests(firstPort);
+  firstPort.onMessage.emit(accepted(request, 'run_accepted'));
+  assert.equal(harness.bridge.__test.getOutbox().length, 0);
+
+  firstPort.disconnectFromWorker();
+  assert.equal(harness.scheduled.length, 1);
+  harness.scheduled.shift().callback();
+  const resumedPort = harness.runtime.ports[1];
+  assert.equal(runRequests(resumedPort).length, 0);
+  resumedPort.onMessage.emit(result(request, 'run_accepted', { count: 2, items: [] }));
+
+  assert.deepEqual(await promise, { count: 2, items: [] });
+});
+
+test('client-side navigation replaces route registrations with generation-safe discovery', async () => {
+  const discovered = [];
+  const harness = createHarness({
+    refreshActionLists: async ({ url }) => {
+      discovered.push(url);
+      const list = publishedList(DIGEST_B);
+      list.site.routePatterns = ['^/new-route$'];
+      list.actions[0].precondition.urlPatterns = ['^http://127\\.0\\.0\\.1:4317/new-route$'];
+      list.actions[0].tool.name = 'new_route_search';
+      return [list];
+    },
+  });
+  await harness.bridge.registerActionLists([publishedList()]);
+  const oldRegistration = harness.modelContext.registrations[0];
+  const staleToken = harness.bridge.discoveryToken();
+
+  harness.locationObject.href = 'http://127.0.0.1:4317/new-route';
+  harness.windowObject.dispatch('navigatesuccess');
+  assert.equal(oldRegistration.active, false);
+  await new Promise((resolve) => { setImmediate(resolve); });
+
+  assert.deepEqual(discovered, ['http://127.0.0.1:4317/new-route']);
+  assert.equal(harness.modelContext.currentTool('search_products'), undefined);
+  assert.equal(harness.modelContext.currentTool('new_route_search').name, 'new_route_search');
+  const staleResult = await harness.bridge.registerDiscoveredActionLists(
+    [publishedList()],
+    staleToken,
+  );
+  assert.equal(staleResult.stale, true);
+  assert.equal(harness.modelContext.currentTool('new_route_search').name, 'new_route_search');
+});
+
+test('a delayed stale registration cannot remove the current route registration', async () => {
+  let releaseFirst;
+  let registrationCount = 0;
+  const modelContext = createModelContext();
+  const originalRegister = modelContext.registerTool.bind(modelContext);
+  modelContext.registerTool = async (tool, options) => {
+    registrationCount += 1;
+    await originalRegister(tool, options);
+    if (registrationCount === 1) {
+      await new Promise((resolve) => { releaseFirst = resolve; });
+    }
+  };
+  const list = publishedList();
+  list.site.routePatterns = ['^/demo(?:/.*)?$'];
+  list.actions[0].precondition.urlPatterns = [
+    '^http://127\\.0\\.0\\.1:4317/demo(?:/.*)?$',
+  ];
+  const harness = createHarness({
+    modelContext,
+    refreshActionLists: async () => [list],
+  });
+
+  const initial = harness.bridge.registerActionLists([list]);
+  await new Promise((resolve) => { setImmediate(resolve); });
+  harness.locationObject.href = 'http://127.0.0.1:4317/demo/next';
+  harness.windowObject.dispatch('navigatesuccess');
+  releaseFirst();
+  await initial;
+  await new Promise((resolve) => { setImmediate(resolve); });
+
+  assert.equal(registrationCount, 2);
+  assert.equal(modelContext.registrations[0].active, false);
+  assert.equal(modelContext.currentTool().name, 'search_products');
+});
+
+test('a discovery token is rechecked after earlier registration work completes', async () => {
+  let releaseFirst;
+  const modelContext = createModelContext();
+  const originalRegister = modelContext.registerTool.bind(modelContext);
+  modelContext.registerTool = async (tool, options) => {
+    await originalRegister(tool, options);
+    if (!releaseFirst) {
+      await new Promise((resolve) => { releaseFirst = resolve; });
+    }
+  };
+  const currentList = publishedList();
+  currentList.site.routePatterns = ['^/demo(?:/.*)?$'];
+  currentList.actions[0].precondition.urlPatterns = [
+    '^http://127\\.0\\.0\\.1:4317/demo(?:/.*)?$',
+  ];
+  const nextList = publishedList(DIGEST_B);
+  nextList.site.routePatterns = ['^/next$'];
+  nextList.actions[0].precondition.urlPatterns = ['^http://127\\.0\\.0\\.1:4317/next$'];
+  nextList.actions[0].tool.name = 'next_search';
+  const harness = createHarness({
+    modelContext,
+    refreshActionLists: async () => [nextList],
+  });
+
+  const first = harness.bridge.registerActionLists([currentList]);
+  await new Promise((resolve) => { setImmediate(resolve); });
+  const staleToken = harness.bridge.discoveryToken();
+  const stale = harness.bridge.registerDiscoveredActionLists([currentList], staleToken);
+  harness.locationObject.href = 'http://127.0.0.1:4317/next';
+  harness.windowObject.dispatch('navigatesuccess');
+  releaseFirst();
+  await first;
+  assert.equal((await stale).stale, true);
+  await new Promise((resolve) => { setImmediate(resolve); });
+
+  assert.equal(modelContext.currentTool('search_products'), undefined);
+  assert.equal(modelContext.currentTool('next_search').name, 'next_search');
+});
+
+test('discovery retries with bounded backoff and cancels its timer on pagehide', async () => {
+  let attempts = 0;
+  const harness = createHarness({
+    discoveryRetryDelayMs: 10,
+    maxDiscoveryRetryAttempts: 2,
+    refreshActionLists: async () => {
+      attempts += 1;
+      if (attempts < 3) throw new Error('backend unavailable');
+      return [publishedList()];
+    },
+  });
+
+  await assert.rejects(harness.bridge.refreshRegistrations(), /backend unavailable/);
+  assert.equal(harness.scheduled[0].delay, 10);
+  harness.scheduled.shift().callback();
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.equal(harness.scheduled[0].delay, 20);
+  harness.scheduled.shift().callback();
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.equal(attempts, 3);
+  assert.equal(harness.modelContext.currentTool().name, 'search_products');
+  assert.equal(harness.scheduled.length, 0);
+
+  let unavailableAttempts = 0;
+  const unavailable = createHarness({
+    refreshActionLists: async () => {
+      unavailableAttempts += 1;
+      throw new Error('still unavailable');
+    },
+  });
+  unavailable.bridge.start();
+  await assert.rejects(unavailable.bridge.refreshRegistrations(), /still unavailable/);
+  const [timer] = unavailable.scheduled;
+  unavailable.windowObject.dispatch('pagehide');
+  assert.equal(unavailable.cancelled.has(timer), true);
+  unavailable.windowObject.dispatch('pageshow');
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.equal(unavailableAttempts, 2);
+  assert.equal(unavailable.scheduled.length, 2);
+});
+
+test('in-flight discovery cannot register after pagehide or stop', async () => {
+  for (const lifecycle of ['pagehide', 'stop']) {
+    let releaseDiscovery;
+    const harness = createHarness({
+      refreshActionLists: () => new Promise((resolve) => { releaseDiscovery = resolve; }),
+    });
+    harness.bridge.start();
+    const pending = harness.bridge.refreshRegistrations();
+    await Promise.resolve();
+    if (lifecycle === 'pagehide') harness.windowObject.dispatch('pagehide');
+    else harness.bridge.stop();
+    releaseDiscovery([publishedList()]);
+
+    assert.equal((await pending).stale, true);
+    assert.equal(harness.modelContext.currentTool(), undefined);
+  }
 });
 
 test('URL, policy, and digest changes unregister or refresh tools', async () => {

@@ -24,9 +24,17 @@ The extension expects the local service at `http://127.0.0.1:4317`.
 - `content.js` is the thin content-context composition root.
 - `background.js` is the thin service-worker composition root.
 - `shared/` owns legacy message compatibility and future run-envelope helpers.
-- `source/bootstrap.js` adapts the paused registration and execution path.
+- `source/bootstrap.js` projects published actions as WebMCP tools and carries
+  immutable revision references into each run.
 - `learning/bootstrap.js` captures page interactions and semantic evidence.
-- `coordinator/bootstrap.js` preserves recording, discovery, and job coordination.
+- `coordinator/bootstrap.js` composes legacy learning routes with the durable
+  ready runtime.
+- `coordinator/ready-runtime.js` discovers exact published revisions, owns the
+  durable run coordinator, and bridges exact confirmations.
+- Consequential approvals are single-use and require a fresh unchanged actor
+  page attestation before the approved step is dispatched.
+- `actor/runtime.js` deterministically interprets published action steps.
+- `actor/bootstrap.js` binds execution documents to durable runs without polling.
 - `runner.js` contains the paused deterministic replay path.
 - `manifest-contract.js` validates the paused adapter contract.
 - `popup.*` renders the ambient policy and review console.
@@ -38,6 +46,8 @@ The extension expects the local service at `http://127.0.0.1:4317`.
 
 ```bash
 make test-extension
+make test-node
+make test-actor
 ```
 
 The tests in `extension/tests/` run in headless Chrome or Chromium, the same
@@ -48,4 +58,6 @@ path when needed:
 make test-extension BROWSER="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 ```
 
-No Node.js test runner is used.
+The browser suites exercise extension UI and real DOM actor behavior. The Node
+suite covers the source, coordinator, Chrome adapters, production bootstraps,
+and the composed source-to-actor ready path without provider or network access.

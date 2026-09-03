@@ -654,9 +654,75 @@
     }
   };
 
+  const detectStateId = async ({
+    action,
+    states = [],
+    document,
+    arguments: args = {},
+    timeoutMs = 0,
+  }) => {
+    if (!action || !document) {
+      throw new ActorError('INTERNAL_ERROR', 'State detection requires an action and document');
+    }
+    const observation = createObservation(document);
+    const controller = new AbortController();
+    try {
+      const deadline = Date.now() + timeoutMs;
+      do {
+        const stateId = await detectState(
+          { ...action, states },
+          document,
+          args,
+          observation,
+          controller.signal,
+        );
+        if (stateId || Date.now() >= deadline) return stateId;
+        await delay(Math.min(POLL_INTERVAL_MS, deadline - Date.now()), controller.signal);
+      } while (Date.now() <= deadline);
+      return null;
+    } finally {
+      controller.abort();
+      observation.observer.disconnect();
+    }
+  };
+
+  const evaluateConditionSet = async ({
+    action,
+    states = [],
+    document,
+    arguments: args = {},
+    set,
+    step = null,
+    timeoutMs = 0,
+  }) => {
+    if (!action || !document || !set || !Array.isArray(set.checks)) return false;
+    const observation = createObservation(document);
+    const controller = new AbortController();
+    try {
+      const context = {
+        action: { ...action, states },
+        args,
+        document,
+        excludedStates: new Set(),
+        observation,
+        signal: controller.signal,
+        step,
+      };
+      if (timeoutMs > 0) {
+        return await waitForConditions(set, context, Date.now() + timeoutMs);
+      }
+      return await evaluateSet(set, context);
+    } finally {
+      controller.abort();
+      observation.observer.disconnect();
+    }
+  };
+
   return {
     ActorError,
     accessibleName,
+    detectStateId,
+    evaluateConditionSet,
     executeStep,
     extractOutput,
     isEnabled,

@@ -6,7 +6,12 @@ server/tests
 extension/README.md
 extension/background.js
 extension/content.js
+extension/actor/bootstrap.js
+extension/actor/runtime.js
 extension/coordinator/bootstrap.js
+extension/coordinator/ready-runtime.js
+extension/coordinator/run-coordinator.js
+extension/integration/ready-path.test.cjs
 extension/learning/bootstrap.js
 extension/shared/errors.js
 extension/shared/protocol.js

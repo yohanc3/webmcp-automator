@@ -23,6 +23,9 @@
   });
 
   const context = (overrides = {}) => ({
+    actorSequence: 7,
+    boundary: 'before_step',
+    confirmationId: 'confirmation_run_1_submit_order_2',
     origin: 'https://shop.example',
     requestedScope: 'ambient_learn',
     actionMapDigest: MAP_DIGEST,
@@ -31,10 +34,17 @@
     stepId: 'submit_order',
     documentId: 'document_1',
     policyRevision: 'policy_7',
+    navigationSequence: 0,
+    pageRevision: 4,
+    stateId: 'checkout',
+    url: 'https://shop.example/checkout',
     ...overrides,
   });
 
   const confirmation = (overrides = {}) => ({
+    actorSequence: 7,
+    boundary: 'before_step',
+    confirmationId: 'confirmation_run_1_submit_order_2',
     runId: 'run_1',
     actionTitle: 'Place order',
     summary: 'Submit the reviewed order to the owned demo.',
@@ -48,6 +58,10 @@
     origin: 'https://shop.example',
     documentId: 'document_1',
     policyRevision: 'policy_7',
+    navigationSequence: 0,
+    pageRevision: 4,
+    stateId: 'checkout',
+    url: 'https://shop.example/checkout',
     stepIndex: 2,
     step: {
       id: 'submit_order',
@@ -306,11 +320,18 @@
 
   test('marks confirmation stale when any exact binding changes or is absent', () => {
     const fields = [
+      'actorSequence',
+      'boundary',
+      'confirmationId',
       'listDigest',
       'stepId',
       'origin',
       'documentId',
       'policyRevision',
+      'navigationSequence',
+      'pageRevision',
+      'stateId',
+      'url',
     ];
     deepEqual(policyReview.staleConfirmationReasons(confirmation(), context()), []);
     fields.forEach((field) => {
@@ -632,9 +653,10 @@
     equal(rootElement.querySelector('[aria-label="Local retry spool"]'), null);
     buttonNamed(rootElement, 'Approve exact step').click();
     buttonNamed(rootElement, 'Deny run').click();
-    equal(decisions.length, 2);
+    equal(decisions.length, 1);
     equal(decisions[0].approved, true);
-    equal(decisions[1].approved, false);
+    equal(buttonNamed(rootElement, 'Approve exact step').disabled, true);
+    equal(buttonNamed(rootElement, 'Deny run').disabled, true);
     equal(decisions[0].runId, 'run_1');
     equal(decisions[0].stepId, 'submit_order');
     deepEqual(decisions[0].binding, policyReview.confirmationBinding(confirmation()));

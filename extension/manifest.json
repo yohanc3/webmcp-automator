@@ -30,6 +30,8 @@
         "runner.js",
         "shared/protocol.js",
         "shared/errors.js",
+        "actor/runtime.js",
+        "actor/bootstrap.js",
         "source/bootstrap.js",
         "learning/bootstrap.js",
         "content.js"

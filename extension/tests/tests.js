@@ -143,7 +143,10 @@
     equal(typeof WebMcpLearningBootstrap.handleMessage, 'function');
     equal(typeof WebMcpSourceBootstrap.handleMessage, 'function');
     equal(typeof WebMcpCoordinatorBootstrap.start, 'function');
-    deepEqual(chrome.__test.sentMessages.map(({ type }) => type), ['PAGE_READY']);
+    deepEqual(chrome.__test.sentMessages.map(({ type }) => type), [
+      'WEBMCP_STATUS',
+      'PAGE_READY',
+    ]);
     equal(chrome.__test.runtimeListeners.length, 2);
     equal(chrome.__test.tabRemovedListeners.length, 1);
   });
