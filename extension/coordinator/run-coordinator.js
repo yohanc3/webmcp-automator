@@ -95,7 +95,7 @@
   const parseUrl = (value) => {
     try {
       return new URL(value);
-    } catch (error) {
+    } catch {
       return null;
     }
   };
@@ -373,14 +373,10 @@
             await this.receiveReviewEvent(message);
           }
         });
-      } catch (error) {
-        if (message?.runId) {
-          await this.fail(message.runId, createError(
-            ERROR_CODES.internalError,
-            error.message || 'Coordinator message handling failed',
-          ));
-        }
+      } catch {
+        return false;
       }
+      return true;
     }
 
     async acceptRequest(port, source, request) {
@@ -429,7 +425,7 @@
           actionVersion: record.actionVersion,
           listId: record.listId,
         });
-      } catch (error) {
+      } catch {
         return this.fail(record.runId, createError(
           ERROR_CODES.planNotFound,
           'The exact published action could not be resolved',

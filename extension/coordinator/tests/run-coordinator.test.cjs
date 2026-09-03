@@ -364,6 +364,28 @@ test('rejects a source request whose claimed sender differs from the bound port'
   assert.equal(harness.tabs.created.length, 0);
 });
 
+test('a forged actor document cannot terminate or advance a real run', async () => {
+  const harness = createHarness();
+  const { run: acceptedRun } = await bindAndSendRequest(harness);
+  const ready = await bindActorAndReady(harness, acceptedRun);
+  const command = ready.port.sent.at(-1);
+  const forgedPort = actorPort(acceptedRun.execution.tabId, 'forged_document');
+  const forgedBinding = harness.coordinator.bindPort(forgedPort);
+  const forged = completed({
+    command,
+    documentId: 'forged_document',
+    run: ready.run,
+    sequence: 1,
+  });
+  forged.payload.commandId = command.payload.commandId;
+  await harness.coordinator.receive(forgedPort, forgedBinding, forged);
+
+  const unchanged = await harness.storage.load(acceptedRun.runId);
+  assert.equal(unchanged.status, RUN_STATUSES.waitingForEffect);
+  assert.equal(unchanged.stepIndex, 0);
+  assert.equal(unchanged.terminal, null);
+});
+
 test('persists every command before dispatch and completes an event-driven run', async () => {
   const harness = createHarness();
   const { port: source, run: acceptedRun } = await bindAndSendRequest(harness);
@@ -775,6 +797,154 @@ test('recovery resumes records suspended after each nonterminal persistence boun
     assert.equal(recovered.status, RUN_STATUSES.waitingForPage);
     assert.equal(tabs.created.length, 1);
   }
+});
+
+test('restart recovery reconciles waiting page, prepared dispatch, and pending effect states', async () => {
+  const waitingPageHarness = createHarness();
+  const { run: waitingPage } = await bindAndSendRequest(waitingPageHarness);
+  const waitingPageRestart = createHarness({
+    clock: waitingPageHarness.clock,
+    ids: waitingPageHarness.ids,
+    observations: waitingPageHarness.observations,
+    storage: waitingPageHarness.storage,
+    tabs: waitingPageHarness.tabs,
+  });
+  await waitingPageRestart.coordinator.recover();
+  const readyAfterRestart = await bindActorAndReady(waitingPageRestart, waitingPage);
+  assert.equal(readyAfterRestart.port.sent.at(-1).payload.step.id, 'fill_query');
+
+  const dispatchStorage = new FakeStorage();
+  const dispatchTabs = new FakeTabs();
+  let suspended = false;
+  const dispatchHarness = createHarness({
+    afterPersist: async (record) => {
+      if (!suspended && record.status === RUN_STATUSES.dispatchingStep) {
+        suspended = true;
+        throw new Error('simulated worker suspension');
+      }
+    },
+    storage: dispatchStorage,
+    tabs: dispatchTabs,
+  });
+  const { run: dispatchRun } = await bindAndSendRequest(dispatchHarness);
+  const dispatchActor = actorPort(dispatchRun.execution.tabId, 'execution_document_1');
+  const dispatchBinding = dispatchHarness.coordinator.bindPort(dispatchActor);
+  await assert.rejects(
+    dispatchHarness.coordinator.handlePageReady(
+      dispatchRun,
+      dispatchBinding,
+      pageReady({
+        documentId: 'execution_document_1',
+        navigationSequence: 0,
+        run: dispatchRun,
+        sequence: 1,
+        stateId: 'catalog',
+        url: SOURCE_URL,
+      }),
+    ),
+    /simulated worker suspension/,
+  );
+  const prepared = await dispatchStorage.load(dispatchRun.runId);
+  assert.equal(prepared.status, RUN_STATUSES.dispatchingStep);
+  assert.equal(dispatchActor.sent.length, 0);
+
+  const dispatchRestart = createHarness({ storage: dispatchStorage, tabs: dispatchTabs });
+  await dispatchRestart.coordinator.recover();
+  const recoveredActor = actorPort(dispatchRun.execution.tabId, 'execution_document_1');
+  dispatchRestart.coordinator.bindPort(recoveredActor);
+  await new Promise((resolve) => { setImmediate(resolve); });
+  const recoveredEffect = await dispatchStorage.load(dispatchRun.runId);
+  assert.equal(recoveredEffect.status, RUN_STATUSES.waitingForEffect);
+  assert.equal(recoveredActor.sent.at(-1).payload.commandId, prepared.pendingCommand.commandId);
+
+  const effectHarness = createHarness();
+  const { run: effectAccepted } = await bindAndSendRequest(effectHarness);
+  const effectReady = await bindActorAndReady(effectHarness, effectAccepted);
+  const originalCommand = effectReady.port.sent.at(-1);
+  const effectRestart = createHarness({
+    clock: effectHarness.clock,
+    ids: effectHarness.ids,
+    observations: effectHarness.observations,
+    storage: effectHarness.storage,
+    tabs: effectHarness.tabs,
+  });
+  await effectRestart.coordinator.recover();
+  const effectActor = actorPort(effectAccepted.execution.tabId, 'execution_document_1');
+  effectRestart.coordinator.bindPort(effectActor);
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.equal(effectActor.sent.length, 1);
+  assert.equal(effectActor.sent[0].payload.commandId, originalCommand.payload.commandId);
+});
+
+test('restart recovery replays confirmation and extraction without creating new commands', async () => {
+  const confirmationList = publishedList();
+  confirmationList.actions[0].safety.class = 'write';
+  confirmationList.actions[0].safety.writesExternalState = true;
+  confirmationList.actions[0].safety.confirmation = 'before_run';
+  confirmationList.actions[0].safety.confirmationStepId = null;
+  confirmationList.actions[0].safety.idempotency = 'conditional';
+  confirmationList.actions[0].tool.annotations.readOnlyHint = false;
+  const confirmationHarness = createHarness({ list: confirmationList });
+  const { run: confirmationRun } = await bindAndSendRequest(confirmationHarness);
+  assert.equal(confirmationRun.status, RUN_STATUSES.awaitingConfirmation);
+
+  const confirmationRestart = createHarness({
+    list: confirmationList,
+    storage: confirmationHarness.storage,
+    tabs: confirmationHarness.tabs,
+  });
+  await confirmationRestart.coordinator.recover();
+  const review = reviewPort();
+  confirmationRestart.coordinator.bindPort(review);
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.equal(review.sent.length, 1);
+  assert.equal(review.sent[0].type, MESSAGE_TYPES.runAwaitingConfirmation);
+  assert.equal(review.sent[0].payload.stepId, 'fill_query');
+
+  const extractionList = publishedList();
+  extractionList.actions[0].steps = [
+    extractionList.actions[0].steps[0],
+    extractionList.actions[0].steps[3],
+  ];
+  const extractionHarness = createHarness({ list: extractionList });
+  const { run: extractionAccepted } = await bindAndSendRequest(extractionHarness);
+  let extractionReady = await bindActorAndReady(extractionHarness, extractionAccepted);
+  const fillCommand = extractionReady.port.sent.at(-1);
+  await extractionHarness.coordinator.receive(
+    extractionReady.port,
+    extractionReady.binding,
+    completed({
+      command: fillCommand,
+      documentId: 'execution_document_1',
+      run: extractionReady.run,
+      sequence: 2,
+    }),
+  );
+  const extracting = await extractionHarness.storage.load(extractionAccepted.runId);
+  const extractCommand = extractionReady.port.sent.at(-1);
+  assert.equal(extracting.status, RUN_STATUSES.extracting);
+
+  const extractionRestart = createHarness({
+    list: extractionList,
+    storage: extractionHarness.storage,
+    tabs: extractionHarness.tabs,
+  });
+  await extractionRestart.coordinator.recover();
+  const extractionActor = actorPort(extractionAccepted.execution.tabId, 'execution_document_1');
+  extractionRestart.coordinator.bindPort(extractionActor);
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.equal(extractionActor.sent.length, 1);
+  assert.equal(extractionActor.sent[0].payload.commandId, extractCommand.payload.commandId);
+});
+
+test('source tab closure produces one transport failure', async () => {
+  const harness = createHarness();
+  const { run } = await bindAndSendRequest(harness);
+  await harness.coordinator.tabClosed(run.source.tabId);
+  await harness.coordinator.tabClosed(run.source.tabId);
+  const failed = await harness.storage.load(run.runId);
+  assert.equal(failed.error.code, 'TRANSPORT_DISCONNECTED');
+  assert.equal(harness.observations.values.length, 1);
 });
 
 test('terminal recovery stores one observation and waits for the source before dispatch', async () => {
