@@ -139,79 +139,37 @@
     equal(WebMcpErrors.cancellationError().name, 'AbortError');
   });
 
-  test('loads thin roots without starting adapter registration', () => {
-    equal(typeof WebMcpLearningBootstrap.handleMessage, 'function');
+  test('loads thin roots and sends source-owned page readiness', () => {
     equal(typeof WebMcpSourceBootstrap.handleMessage, 'function');
+    equal(typeof WebMcpSourceBootstrap.initialize, 'function');
     equal(typeof WebMcpCoordinatorBootstrap.start, 'function');
-    deepEqual(chrome.__test.sentMessages.map(({ type }) => type), ['PAGE_READY']);
+    deepEqual(chrome.__test.sentMessages.map(({ type, state }) => ({ type, hasState: Boolean(state) })), [
+      { type: 'PAGE_READY', hasState: true },
+    ]);
     equal(chrome.__test.runtimeListeners.length, 2);
     equal(chrome.__test.tabRemovedListeners.length, 1);
   });
 
-  test('preserves learning message routing return values', () => {
-    let response;
-    equal(WebMcpLearningBootstrap.handleMessage({
-      type: WebMcpProtocol.MESSAGE_TYPES.recordingStart,
-      recordingId: 'recording_1',
-    }, {}, (value) => { response = value; }), false);
-    deepEqual(response, { ok: true });
-
-    equal(WebMcpLearningBootstrap.handleMessage({
-      type: WebMcpProtocol.MESSAGE_TYPES.getPageState,
-    }, {}, (value) => { response = value; }), false);
-    equal(response.ok, true);
-    equal(typeof response.state.fingerprint, 'string');
-    equal(WebMcpLearningBootstrap.handleMessage({ type: 'UNKNOWN' }, {}, () => {}), undefined);
-  });
-
-  test('captures fill, click, and Enter while preserving recorder exclusions', async () => {
-    const contentListener = chrome.__test.runtimeListeners[0];
-    let response;
-    contentListener({
-      type: WebMcpProtocol.MESSAGE_TYPES.recordingStart,
-      recordingId: 'recording_interactions',
-    }, {}, (value) => { response = value; });
-    deepEqual(response, { ok: true });
-
-    const fixture = document.createElement('section');
-    const input = document.createElement('input');
-    input.setAttribute('aria-label', 'Search catalog');
-    const button = document.createElement('button');
-    button.textContent = 'Search';
-    fixture.append(input, button);
-    document.body.append(fixture);
-
-    const before = chrome.__test.sentMessages.length;
-    input.value = 'headphones';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }));
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
-    input.dispatchEvent(new KeyboardEvent('keydown', {
-      bubbles: true,
-      key: 'Enter',
-    }));
-    globalThis.__webMcpRunnerActive = true;
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
-    globalThis.__webMcpRunnerActive = false;
-
-    await new Promise((resolve) => { setTimeout(resolve, 450); });
-    const observed = chrome.__test.sentMessages.slice(before);
-    deepEqual(observed
-      .filter(({ type }) => type === 'TRACE_EVENT_STARTED')
-      .map(({ event: traceEvent }) => traceEvent.kind), ['fill', 'click', 'press']);
-    equal(observed.filter(({ type }) => type === 'TRACE_EVENT_COMPLETED').length, 3);
-
-    const stopResponse = await new Promise((resolve) => {
-      equal(contentListener({
-        type: WebMcpProtocol.MESSAGE_TYPES.recordingStop,
-      }, {}, resolve), true);
-    });
-    equal(stopResponse.ok, true);
-    equal(typeof stopResponse.finalState.fingerprint, 'string');
-    const afterStop = chrome.__test.sentMessages.length;
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
-    equal(chrome.__test.sentMessages.length, afterStop);
-    fixture.remove();
+  test('sends PAGE_READY even when ambient startup fails', async () => {
+    const originalSource = globalThis.WebMcpSourceBootstrap;
+    const originalAmbient = globalThis.WebMcpAmbientRuntime;
+    globalThis.WebMcpSourceBootstrap = {
+      handleMessage() { return false; },
+      initialize() {
+        chrome.runtime.sendMessage({ type: 'PAGE_READY', state: { fingerprint: 'ready_state' } });
+        return Promise.resolve();
+      },
+    };
+    globalThis.WebMcpAmbientRuntime = { start: async () => { throw new Error('policy denied'); } };
+    const request = new XMLHttpRequest();
+    request.open('GET', '../content.js', false);
+    request.send();
+    (0, eval)(request.responseText);
+    await Promise.resolve();
+    equal(chrome.__test.sentMessages.at(-1).type, 'PAGE_READY');
+    equal(document.documentElement.dataset.webMcpAmbient, 'unavailable');
+    globalThis.WebMcpSourceBootstrap = originalSource;
+    globalThis.WebMcpAmbientRuntime = originalAmbient;
   });
 
   test('keeps registration paused until an explicit refresh', async () => {
@@ -301,59 +259,6 @@
       ok: false,
       error: 'Unknown extension message',
     });
-  });
-
-  test('preserves background recording event guards and stop behavior', async () => {
-    const initial = pageState('background_initial', 'https://example.com/search');
-    const changed = pageState('background_changed', 'https://example.com/search');
-    chrome.__test.setTabResponder((_tabId, message) => {
-      if (message.type === 'GET_PAGE_STATE') return { ok: true, state: initial };
-      if (message.type === 'RECORDING_STOP') return { ok: true, finalState: changed };
-      return { ok: true };
-    });
-
-    const started = await WebMcpCoordinatorBootstrap.handleMessage({
-      type: 'START_RECORDING',
-      tabId: 7,
-    }, {});
-    equal(started.ok, true);
-    equal(started.recording.status, 'recording');
-
-    const rejectedEvent = event('rejected_background_click', 'click', 'Search');
-    await WebMcpCoordinatorBootstrap.handleMessage({
-      type: 'TRACE_EVENT_STARTED',
-      recordingId: started.recording.id,
-      event: rejectedEvent,
-      beforeState: initial,
-    }, { tab: { id: 99 } });
-    equal(Object.keys(
-      chrome.storage.session.values.activeRecording.pendingEvents,
-    ).length, 0);
-
-    const observedEvent = event('background_click', 'click', 'Search');
-    await WebMcpCoordinatorBootstrap.handleMessage({
-      type: 'TRACE_EVENT_STARTED',
-      recordingId: started.recording.id,
-      event: observedEvent,
-      beforeState: initial,
-    }, { tab: { id: 7 } });
-    await WebMcpCoordinatorBootstrap.handleMessage({
-      type: 'TRACE_EVENT_COMPLETED',
-      recordingId: started.recording.id,
-      eventId: observedEvent.id,
-      afterState: changed,
-      delta: delta(initial, changed),
-    }, { tab: { id: 7 } });
-
-    const stopped = await WebMcpCoordinatorBootstrap.handleMessage({
-      type: 'STOP_RECORDING',
-      learn: false,
-    }, {});
-    equal(stopped.ok, true);
-    equal(stopped.recording.status, 'ready');
-    equal(stopped.recording.eventCount, 1);
-    equal(stopped.discovery, null);
-    chrome.__test.setTabResponder(() => ({ ok: true }));
   });
 
   test('validates a deterministic learned adapter', () => {

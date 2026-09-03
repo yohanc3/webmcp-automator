@@ -8,6 +8,8 @@
     return sourceResult ?? false;
   });
 
+  void source.initialize().catch(() => {});
+
   void WebMcpAmbientRuntime.start().catch(() => {
     document.documentElement.dataset.webMcpAmbient = 'unavailable';
   });

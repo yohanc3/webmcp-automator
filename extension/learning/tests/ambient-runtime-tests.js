@@ -38,6 +38,7 @@ const completedLayer = ({ id, origin, scopeId }) => ({
   privacy: { rawPersisted: false },
   siteScope: { origin, scopeId },
 });
+const delay = (milliseconds = 0) => new Promise((resolve) => { setTimeout(resolve, milliseconds); });
 
 const coordinatorFixture = ({ activeUrl = 'https://shop.test/catalog', now = () => '2026-09-03T12:00:00.000Z' } = {}) => {
   const areas = { local: { unrelatedLocal: 'kept' }, session: { unrelatedSession: 'kept' } };
@@ -303,6 +304,116 @@ test('coordinator preserves backend, adapter, job, page-ready, and status dispat
   assert.equal((await coordinator.handleMessage({ type: 'PAGE_READY' }, sender)).recordingActive, false);
   assert.deepEqual(await coordinator.handleMessage({ type: 'WEBMCP_STATUS', available: true, registered: 2 }, sender), { ok: true });
   assert.equal(areas.session.webMcpStatus.registered, 2);
+});
+
+test('coordinator executes fill then navigation click, resumes on PAGE_READY, extracts, reports, and closes the execution tab', async () => {
+  const areas = { local: {}, session: {} };
+  const commands = [];
+  const reports = [];
+  const removed = [];
+  const chromeApi = {
+    storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
+      async get(key) { return { [key]: areas[area][key] }; },
+      async set(values) { Object.assign(areas[area], values); },
+      async remove() {},
+    }])),
+    tabs: {
+      async create() { return { id: 17 }; },
+      async remove(tabId) { removed.push(tabId); },
+      async sendMessage(tabId, message) {
+        commands.push({ tabId, op: message.step.op });
+        if (message.step.op === 'click') return { navigating: true, ok: true };
+        if (message.step.op === 'extract') return { ok: true, result: { products: ['headphones'] } };
+        return { ok: true };
+      },
+    },
+  };
+  const manifest = { manifestMatchesLocation: () => true, validateManifest: (value) => ({ manifest: value, valid: true }) };
+  const coordinator = coordinatorApi.createCoordinator({
+    chromeApi,
+    fetchApi: async (url, options) => {
+      if (url.endsWith('/api/runs')) reports.push(JSON.parse(options.body));
+      return { json: async () => ({}), ok: true };
+    },
+    manifest,
+  });
+  const adapter = {
+    manifest: {
+      execution: { closeExecutionTab: true },
+      tool: { steps: [{ op: 'fill' }, { op: 'click' }] },
+    },
+    versionId: 'version_1',
+  };
+  const started = await coordinator.handleMessage({ type: 'START_JOB', adapter, args: { query: 'headphones' }, sourceUrl: 'https://shop.test/catalog' }, { tab: { id: 4 } });
+  await coordinator.handleMessage({ type: 'PAGE_READY' }, { tab: { id: 17 } });
+  await delay(5);
+  assert.deepEqual(commands.map(({ op }) => op), ['fill', 'click']);
+  assert.equal(areas.session.jobs[started.jobId].status, 'waiting-navigation');
+  await coordinator.handleMessage({ type: 'PAGE_READY' }, { tab: { id: 17 } });
+  await delay(5);
+  assert.equal(areas.session.jobs[started.jobId].status, 'completed');
+  assert.deepEqual(areas.session.jobs[started.jobId].result, { products: ['headphones'] });
+  assert.deepEqual(commands.map(({ op }) => op), ['fill', 'click', 'extract']);
+  assert.deepEqual(reports, [{ error: null, failedStep: null, observed: null, outcome: 'success', url: 'https://shop.test/catalog', versionId: 'version_1' }]);
+  assert.deepEqual(removed, [17]);
+});
+
+test('coordinator retries startup transport failures and GET_JOB nudges a nonterminal job', async () => {
+  const areas = { local: {}, session: {} };
+  let attempts = 0;
+  const chromeApi = {
+    storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
+      async get(key) { return { [key]: areas[area][key] }; }, async set(values) { Object.assign(areas[area], values); }, async remove() {},
+    }])),
+    tabs: {
+      async create() { return { id: 18 }; },
+      async remove() {},
+      async sendMessage() {
+        attempts += 1;
+        if (attempts === 1) throw new Error('content script is not ready');
+        if (attempts === 2) return { ok: true };
+        return { ok: true, result: { ready: true } };
+      },
+    },
+  };
+  const manifest = { manifestMatchesLocation: () => true, validateManifest: (value) => ({ manifest: value, valid: true }) };
+  const coordinator = coordinatorApi.createCoordinator({ chromeApi, fetchApi: async () => ({ json: async () => ({}), ok: true }), manifest });
+  const started = await coordinator.handleMessage({ type: 'START_JOB', adapter: { manifest: { tool: { steps: [{ op: 'wait' }] } }, versionId: 'version_2' }, args: {}, sourceUrl: 'https://shop.test/catalog' }, { tab: { id: 4 } });
+  await coordinator.handleMessage({ type: 'GET_JOB', jobId: started.jobId });
+  await delay(270);
+  assert.equal(attempts >= 2, true);
+  await coordinator.handleMessage({ type: 'GET_JOB', jobId: started.jobId });
+  await delay(5);
+  assert.equal(areas.session.jobs[started.jobId].status, 'completed');
+});
+
+test('coordinator serializes concurrent advances and fails a nonterminal job when its execution tab closes', async () => {
+  const areas = { local: {}, session: {} };
+  let sends = 0;
+  const chromeApi = {
+    storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
+      async get(key) { return { [key]: areas[area][key] }; }, async set(values) { Object.assign(areas[area], values); }, async remove() {},
+    }])),
+    tabs: {
+      async create() { return { id: 19 }; },
+      async remove() {},
+      async sendMessage() { sends += 1; await delay(5); return { navigating: true, ok: true }; },
+    },
+  };
+  const manifest = { manifestMatchesLocation: () => true, validateManifest: (value) => ({ manifest: value, valid: true }) };
+  const coordinator = coordinatorApi.createCoordinator({ chromeApi, fetchApi: async () => ({ json: async () => ({}), ok: true }), manifest });
+  const started = await coordinator.handleMessage({ type: 'START_JOB', adapter: { manifest: { tool: { steps: [{ op: 'click' }] } }, versionId: 'version_3' }, args: {}, sourceUrl: 'https://shop.test/catalog' }, { tab: { id: 4 } });
+  await Promise.all([
+    coordinator.handleMessage({ type: 'PAGE_READY' }, { tab: { id: 19 } }),
+    coordinator.handleMessage({ type: 'PAGE_READY' }, { tab: { id: 19 } }),
+  ]);
+  await delay(15);
+  assert.equal(sends, 1);
+  coordinator.onTabRemoved(19);
+  await delay(5);
+  assert.equal(areas.session.jobs[started.jobId].status, 'failed');
+  assert.equal(areas.session.jobs[started.jobId].failedStep, 1);
+  assert.match(areas.session.jobs[started.jobId].error, /closed/);
 });
 
 test('content forwards ambient delivery while the service worker adds the internal header and classifies receipts', async () => {

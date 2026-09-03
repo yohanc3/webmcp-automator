@@ -41,6 +41,7 @@
   } = {}) => {
     let queue = Promise.resolve();
     let storage = null;
+    const advancingJobs = new Set();
     const serial = (work) => {
       const result = queue.then(work, work);
       queue = result.catch(() => {});
@@ -161,20 +162,97 @@
       await set('session', 'jobs', jobs);
       return jobs[id];
     });
+    const reportRun = async (job, outcome, details = {}) => {
+      await requestBackend('/api/runs', {
+        body: JSON.stringify({
+          error: details.error || null,
+          failedStep: details.failedStep ?? null,
+          observed: details.observed || null,
+          outcome,
+          url: details.url || job.sourceUrl,
+          versionId: job.adapter.versionId,
+        }),
+        method: 'POST',
+      }).catch(() => {});
+    };
+    const finishJob = async (id, status, details = {}) => {
+      const job = await changeJob(id, (current) => {
+        current.finishedAt = now();
+        current.status = status;
+        if (status === 'completed') current.result = details.result;
+        if (status === 'failed') {
+          current.error = details.error;
+          current.failedStep = details.failedStep;
+        }
+      });
+      if (!job) return;
+      await reportRun(job, status === 'completed' ? 'success' : 'failure', details);
+      if (job.closeExecutionTab) await chromeApi.tabs.remove(job.tabId).catch(() => {});
+    };
     const advanceJob = async (id) => {
-      const job = (await getJobs())[id];
-      if (!job || ['completed', 'failed'].includes(job.status)) return;
-      const step = job.adapter.manifest.tool.steps[job.stepIndex];
-      if (!step) {
-        await changeJob(id, (current) => { current.status = 'completed'; });
-        return;
+      if (advancingJobs.has(id)) return;
+      advancingJobs.add(id);
+      try {
+        while (true) {
+          const job = (await getJobs())[id];
+          if (!job || ['completed', 'failed'].includes(job.status)) return;
+          const steps = job.adapter.manifest.tool.steps;
+          if (job.stepIndex >= steps.length) {
+            if (job.result === null) {
+              let extraction;
+              try {
+                extraction = await tabMessage(job.tabId, {
+                  type: 'EXECUTE_STEP',
+                  step: { expectNavigation: false, key: null, literalValue: null, op: 'extract', target: {}, timeoutMs: 5000, valueFrom: null },
+                  args: job.args,
+                  tool: job.adapter.manifest.tool,
+                });
+              } catch (error) {
+                extraction = { error: error.message, ok: false };
+              }
+              if (!extraction?.ok) {
+                await finishJob(id, 'failed', { error: extraction?.error || 'Could not extract adapter output', failedStep: job.stepIndex });
+                return;
+              }
+              await changeJob(id, (current) => { current.result = extraction.result; });
+              continue;
+            }
+            await finishJob(id, 'completed', { result: job.result });
+            return;
+          }
+
+          const step = steps[job.stepIndex];
+          await changeJob(id, (current) => { current.status = 'running'; });
+          let response;
+          try {
+            response = await tabMessage(job.tabId, { type: 'EXECUTE_STEP', step, args: job.args, tool: job.adapter.manifest.tool });
+          } catch (error) {
+            const attempts = (job.transportAttempts || 0) + 1;
+            if (attempts <= 20) {
+              await changeJob(id, (current) => {
+                current.status = 'starting';
+                current.transportAttempts = attempts;
+              });
+              setTimeout(() => { void advanceJob(id); }, 250);
+              return;
+            }
+            response = { error: `Execution page did not become ready: ${error.message}`, ok: false };
+          }
+          if (!response?.ok) {
+            await finishJob(id, 'failed', { error: response?.error || 'Adapter step failed', failedStep: job.stepIndex });
+            return;
+          }
+          await changeJob(id, (current) => {
+            current.result = response.result ?? current.result;
+            current.stepIndex += 1;
+            current.status = response.navigating ? 'waiting-navigation' : 'running';
+            current.transportAttempts = 0;
+          });
+          if (response.navigating) return;
+        }
+      } finally {
+        advancingJobs.delete(id);
       }
-      const response = await tabMessage(job.tabId, { type: 'EXECUTE_STEP', step, args: job.args, tool: job.adapter.manifest.tool });
-      if (!response?.ok) {
-        await changeJob(id, (current) => { current.error = response?.error || 'Adapter step failed'; current.status = 'failed'; });
-        return;
-      }
-      await changeJob(id, (current) => { current.stepIndex += 1; current.status = response.navigating ? 'waiting-navigation' : 'running'; });
     };
     const getAdapters = async (origin) => {
       const cache = await get('local', 'adapterCache', {});
@@ -192,14 +270,15 @@
       const validation = manifest.validateManifest(adapter.manifest);
       if (!validation.valid || !manifest.manifestMatchesLocation(validation.manifest, sourceUrl)) throw new Error('This adapter is not valid for the current page');
       const tab = await chromeApi.tabs.create({ active: false, url: sourceUrl });
-      const job = { adapter: { ...adapter, manifest: validation.manifest }, args, createdAt: now(), error: null, id: crypto.randomUUID(), result: null, sourceTabId, sourceUrl, status: 'starting', stepIndex: 0, tabId: tab.id, updatedAt: now() };
+      const job = { adapter: { ...adapter, manifest: validation.manifest }, args, closeExecutionTab: adapter.manifest.execution?.closeExecutionTab === true, createdAt: now(), error: null, id: crypto.randomUUID(), result: null, sourceTabId, sourceUrl, status: 'starting', stepIndex: 0, tabId: tab.id, updatedAt: now() };
       await serial(async () => { const jobs = await getJobs(); jobs[job.id] = job; await set('session', 'jobs', jobs); });
+      setTimeout(() => { void advanceJob(job.id); }, 300);
       return job.id;
     };
     const pageReady = async (sender) => {
       const tabId = sender.tab?.id;
       const job = Object.values(await getJobs()).find((candidate) => candidate.tabId === tabId && !['completed', 'failed'].includes(candidate.status));
-      if (job) await advanceJob(job.id);
+      if (job) setTimeout(() => { void advanceJob(job.id); }, 0);
       return { recordingActive: false, recordingId: null };
     };
 
@@ -379,6 +458,7 @@
         case protocol.MESSAGE_TYPES.getJob: {
           const job = (await getJobs())[message.jobId];
           if (!job) return { ok: false, error: 'Job not found' };
+          if (!['completed', 'failed'].includes(job.status)) setTimeout(() => { void advanceJob(job.id); }, 0);
           return { ok: true, job };
         }
         case protocol.MESSAGE_TYPES.webMcpStatus:
@@ -387,7 +467,20 @@
         default: return { ok: false, error: 'Unknown extension message' };
       }
     };
-    return Object.freeze({ handleMessage, retryMetadata, retrySpoolReady: Boolean(retrySpoolApi) });
+    const onTabRemoved = (tabId) => {
+      void getJobs().then((jobs) => {
+        const job = Object.values(jobs).find((candidate) => (
+          candidate.tabId === tabId && !['completed', 'failed'].includes(candidate.status)
+        ));
+        if (job) {
+          void finishJob(job.id, 'failed', {
+            error: 'The background execution tab was closed',
+            failedStep: job.stepIndex,
+          });
+        }
+      });
+    };
+    return Object.freeze({ handleMessage, onTabRemoved, retryMetadata, retrySpoolReady: Boolean(retrySpoolApi) });
   };
 
   let started = false;
@@ -399,6 +492,7 @@
       coordinator.handleMessage(message, sender).then(sendResponse).catch((error) => sendResponse(publicErrors?.legacyResponseFor?.(error) || { ok: false, error: error.message }));
       return true;
     });
+    chrome.tabs.onRemoved.addListener(coordinator.onTabRemoved);
   };
   return Object.freeze({ createCoordinator, start });
 }));
