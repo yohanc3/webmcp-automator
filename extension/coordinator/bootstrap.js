@@ -11,8 +11,10 @@
 
   const POLICY_PREFIX = 'ambientPolicy:';
   const LIFECYCLE_PREFIX = 'ambientLifecycle:';
+  const CANDIDATE_PREFIX = 'ambientActionListCandidate:';
   const RECORD_KEY = 'ambientRetryRecords';
   const KEY_NAME = 'ambientRetryKey';
+  const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 
   const explicitOrigin = (value) => {
     try {
@@ -23,6 +25,12 @@
     }
   };
   const originFromUrl = (value) => ambientScope.originFor(value);
+  const validDigest = (value) => typeof value === 'string' && DIGEST_PATTERN.test(value);
+  const validRevision = (value) => Number.isInteger(value) && value > 0;
+  const responseHeader = (response, name) => response.headers?.get?.(name) || null;
+  const unquotedETag = (value) => (
+    typeof value === 'string' && /^"[^"]+"$/.test(value) ? value.slice(1, -1) : null
+  );
 
   const createCoordinator = ({
     chromeApi = chrome,
@@ -45,6 +53,7 @@
     const set = (area, key, value) => chromeApi.storage[area].set({ [key]: value });
     const policyKey = (origin) => `${POLICY_PREFIX}${origin}`;
     const lifecycleKey = (scopeId) => `${LIFECYCLE_PREFIX}${scopeId}`;
+    const candidateKey = (scopeId) => `${CANDIDATE_PREFIX}${scopeId}`;
 
     const currentPolicy = async ({ origin, scope, revision = null }) => {
       const normalized = explicitOrigin(origin);
@@ -97,35 +106,32 @@
       if (!response.ok) throw new Error(body.error || `Backend request failed with status ${response.status}`);
       return body;
     };
-    const validDigest = (value) => /^sha256:[a-f0-9]{64}$/.test(value || '');
-    const loadActionMapStatus = async (origin, scopeId) => {
-      try {
-        const headResponse = await fetchApi(`http://127.0.0.1:4317/v1/action-maps/${encodeURIComponent(scopeId)}/head`);
-        if (headResponse.status === 404) return { status: 'absent' };
-        if (!headResponse.ok) return { status: 'unavailable' };
-        const head = await headResponse.json();
-        const revision = head.revision;
-        const digest = head.digest;
-        if (head.siteScopeId !== scopeId || !Number.isInteger(revision) || revision < 1 || !validDigest(digest)) return { status: 'unavailable' };
-        const contextResponse = await fetchApi(`http://127.0.0.1:4317/v1/action-maps/${encodeURIComponent(scopeId)}/context?revision=${revision}`);
-        if (!contextResponse.ok) return { status: 'unavailable' };
-        const compact = await contextResponse.json();
-        if (compact.siteScopeId !== scopeId || compact.revision !== revision || compact.digest !== digest) return { status: 'unavailable' };
-        return { status: 'available', actionMap: { actions: compact.actions || [], states: compact.states || [] }, revision, digest };
-      } catch (error) { return { status: 'unavailable' }; }
+    const requestRegistry = async (path) => {
+      const response = await fetchApi(`http://127.0.0.1:4317${path}`);
+      const body = await response.json().catch(() => null);
+      return { body, response };
     };
-    const loadCandidate = async (scopeId, map) => {
-      if (map.status !== 'available') return null;
-      const pointer = await get('session', `ambientActionListCandidate:${scopeId}`);
-      if (!pointer || pointer.revision !== map.revision || !validDigest(pointer.digest)) return null;
-      try {
-        const response = await fetchApi(`http://127.0.0.1:4317/v1/action-lists/${encodeURIComponent(pointer.listId)}/revisions/${pointer.revision}`);
-        const etag = response.headers?.get?.('ETag')?.replace(/^"|"$/g, '');
-        if (!response.ok || etag !== pointer.digest) return null;
-        const document = await response.json();
-        if (document.listId !== pointer.listId || document.publication?.revision !== pointer.revision || document.publication?.status !== 'candidate') return null;
-        return { actions: document.actions || [], actionMapDigest: map.digest, actionMapRevision: map.revision, listDigest: pointer.digest, listId: pointer.listId, listRevision: pointer.revision };
-      } catch (error) { return null; }
+    const actionListCandidate = (value) => {
+      if (
+        !value || typeof value !== 'object'
+        || typeof value.listId !== 'string' || value.listId.length === 0
+        || !validRevision(value.revision) || !validDigest(value.digest)
+      ) return null;
+      return {
+        digest: value.digest,
+        listId: value.listId,
+        revision: value.revision,
+        ...(Object.hasOwn(value, 'status') ? { status: value.status } : {}),
+      };
+    };
+    const saveCandidate = async (completedLayer, receipt) => {
+      const pointer = actionListCandidate(receipt.actionListCandidate);
+      const scopeId = completedLayer?.siteScope?.scopeId;
+      if (!pointer || !scopeId || !['applied', 'duplicate'].includes(receipt.outcome)) {
+        return null;
+      }
+      await set('session', candidateKey(scopeId), pointer);
+      return pointer;
     };
     const deliverAmbientLayer = async (completedLayer) => {
       const response = await fetchApi('http://127.0.0.1:4317/v1/ambient/layers', {
@@ -137,16 +143,13 @@
       if (response.status === 409) return { outcome: 'conflict', receiptId: body?.requestId || null };
       if (!response.ok || !body || typeof body.outcome !== 'string') throw new Error(`Ambient delivery retryable: ${response.status}`);
       if (!['applied', 'duplicate', 'no_change', 'rejected'].includes(body.outcome)) throw new Error('Ambient delivery returned an invalid receipt');
-      const candidate = body.actionListCandidate;
-      const validCandidate = ['applied', 'duplicate'].includes(body.outcome)
-        && candidate?.status === 'candidate'
-        && typeof candidate.listId === 'string'
-        && Number.isInteger(candidate.revision) && candidate.revision > 0
-        && validDigest(candidate.digest);
-      if (validCandidate && completedLayer?.siteScope?.scopeId) {
-        await set('session', `ambientActionListCandidate:${completedLayer.siteScope.scopeId}`, candidate);
-      }
-      return validCandidate ? { outcome: body.outcome, receiptId: body.requestId || null, actionListCandidate: candidate } : { outcome: body.outcome, receiptId: body.requestId || null };
+      const receipt = {
+        actionListCandidate: actionListCandidate(body.actionListCandidate),
+        outcome: body.outcome,
+        receiptId: body.requestId || null,
+      };
+      await saveCandidate(completedLayer, receipt);
+      return receipt;
     };
     const tabMessage = (tabId, value) => chromeApi.tabs.sendMessage(tabId, value);
     const getJobs = () => get('session', 'jobs', {});
@@ -229,6 +232,76 @@
       const oldest = [...matching].sort((a, b) => a.enqueuedAt - b.enqueuedAt)[0];
       return { count: matching.length, scopeId, expiresAt: oldest ? new Date(oldest.expiresAt).toISOString() : null, oldestAt: oldest ? new Date(oldest.enqueuedAt).toISOString() : null };
     };
+    const unavailableActionMap = (reason) => ({ actionMap: null, actionMapStatus: { reason, status: 'unavailable' }, candidate: null });
+    const currentActionMap = async (scopeId) => {
+      let headResult;
+      try {
+        headResult = await requestRegistry(`/v1/action-maps/${encodeURIComponent(scopeId)}/head`);
+      } catch (error) {
+        return unavailableActionMap('Action-map registry is unavailable.');
+      }
+      if (headResult.response.status === 404) {
+        return { actionMap: null, actionMapStatus: { status: 'no_map' }, candidate: null };
+      }
+      const head = headResult.body;
+      if (
+        !headResult.response.ok || !head || head.siteScopeId !== scopeId
+        || !validRevision(head.revision) || !validDigest(head.digest)
+      ) return unavailableActionMap('Action-map head was malformed or did not match this site scope.');
+
+      let contextResult;
+      try {
+        contextResult = await requestRegistry(`/v1/action-maps/${encodeURIComponent(scopeId)}/context?revision=${head.revision}`);
+      } catch (error) {
+        return unavailableActionMap('Action-map context is unavailable.');
+      }
+      const context = contextResult.body;
+      if (
+        !contextResult.response.ok || !context || context.siteScopeId !== scopeId
+        || context.revision !== head.revision || context.digest !== head.digest
+        || !validDigest(context.digest) || !Array.isArray(context.actions)
+      ) return unavailableActionMap('Action-map context was malformed or did not match the current revision.');
+
+      return {
+        actionMap: {
+          actions: context.actions,
+          digest: head.digest,
+          revision: head.revision,
+          scopeId,
+        },
+        actionMapStatus: { status: 'available' },
+        candidate: null,
+      };
+    };
+    const currentCandidate = async ({ actionMap, scopeId }) => {
+      const pointer = actionListCandidate(await get('session', candidateKey(scopeId)));
+      if (!pointer || pointer.revision !== actionMap.revision) return null;
+      let result;
+      try {
+        result = await requestRegistry(`/v1/action-lists/${encodeURIComponent(pointer.listId)}/revisions/${pointer.revision}`);
+      } catch (error) {
+        return null;
+      }
+      const document = result.body;
+      if (
+        !result.response.ok || unquotedETag(responseHeader(result.response, 'ETag')) !== pointer.digest
+        || !document || document.listId !== pointer.listId
+        || document.publication?.revision !== pointer.revision
+        || document.publication?.status !== 'candidate'
+      ) return null;
+      return {
+        actionMapDigest: actionMap.digest,
+        actionMapRevision: actionMap.revision,
+        actions: Array.isArray(document.actions) ? document.actions : [],
+        contentDigest: pointer.digest,
+        listDigest: pointer.digest,
+        listId: pointer.listId,
+        listRevision: pointer.revision,
+        publication: document.publication,
+        revision: pointer.revision,
+        title: document.title || document.listId,
+      };
+    };
 
     const handleMessage = async (message, sender = {}) => {
       switch (message?.type) {
@@ -242,14 +315,27 @@
         case 'GET_POLICY_REVIEW_STATE': {
           const tabs = sender.tab ? [sender.tab] : await chromeApi.tabs.query({ active: true, lastFocusedWindow: true });
           const origin = originFromUrl(tabs[0]?.url);
-          if (!origin) return { ok: true, state: { context: { origin: null, requestedScope: 'ambient_learn' }, policy: { status: 'denied', scopes: [] }, retrySpool: { count: 0 } } };
+          if (!origin) return { ok: true, state: { actionMapStatus: { status: 'no_map' }, context: { origin: null, requestedScope: 'ambient_learn' }, policy: { status: 'denied', scopes: [] }, retrySpool: { count: 0 } } };
           const stored = await get('local', policyKey(origin));
           const policy = await currentPolicy({ origin, scope: 'ambient_learn', revision: stored?.revision ?? null });
           const scopeId = ambientScope.scopeFor(origin);
-          const map = await loadActionMapStatus(origin, scopeId);
-          const candidate = await loadCandidate(scopeId, map);
-          const actionMap = map.status === 'available' ? { scopeId, revision: map.revision, digest: map.digest, ...map.actionMap } : null;
-          return { ok: true, state: { context: { origin, siteScopeId: scopeId, policyRevision: policy?.revision ?? null, requestedScope: 'ambient_learn', actionMapRevision: map.revision || null, actionMapDigest: map.digest || null }, policy, overrideAudit: stored?.overrideAudit || null, actionMap, actionMapStatus: map.status, candidate, retrySpool: await retryMetadata(origin, scopeId) } };
+          const mapState = await currentActionMap(scopeId);
+          if (mapState.actionMap) {
+            mapState.candidate = await currentCandidate({ actionMap: mapState.actionMap, scopeId });
+          }
+          return { ok: true, state: {
+            ...mapState,
+            context: {
+              actionMapDigest: mapState.actionMap?.digest || null,
+              actionMapRevision: mapState.actionMap?.revision || null,
+              origin,
+              policyRevision: policy?.revision ?? null,
+              requestedScope: 'ambient_learn',
+              siteScopeId: scopeId,
+            },
+            policy,
+            retrySpool: await retryMetadata(origin, scopeId),
+          } };
         }
         case 'SET_OWNED_DEMO_OVERRIDE':
         {
