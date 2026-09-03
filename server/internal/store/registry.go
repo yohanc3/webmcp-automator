@@ -1,0 +1,533 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"strings"
+	"time"
+
+	"webmcp-automator/server/internal/manifest"
+)
+
+var (
+	ErrNotFound = errors.New("action list revision was not found")
+	ErrConflict = errors.New("action list registry conflict")
+	ErrGate     = errors.New("action list publication gate rejected the request")
+)
+
+type ActionListRevision struct {
+	ListID          string          `json:"listId"`
+	Revision        int             `json:"revision"`
+	Status          string          `json:"status"`
+	CandidateDigest string          `json:"candidateDigest,omitempty"`
+	Digest          string          `json:"digest"`
+	Document        json.RawMessage `json:"actionList"`
+	CreatedAt       time.Time       `json:"createdAt"`
+	PublishedAt     *time.Time      `json:"publishedAt,omitempty"`
+}
+
+type PublishActionListRequest struct {
+	ExpectedDigest   string `json:"expectedDigest"`
+	ReviewDecision   string `json:"reviewDecision"`
+	Reviewer         string `json:"reviewer"`
+	PolicyDecisionID string `json:"policyDecisionId"`
+	ReplayReportID   string `json:"replayReportId"`
+}
+
+type PolicyRecord struct {
+	ID              string
+	ListID          string
+	Revision        int
+	CandidateDigest string
+	Decision        string
+	Scopes          []string
+	CheckedAt       time.Time
+	ExpiresAt       *time.Time
+}
+
+type ReplayReport struct {
+	ID              string
+	ListID          string
+	Revision        int
+	CandidateDigest string
+	Status          string
+	Report          json.RawMessage
+}
+
+type RunObservation struct {
+	SchemaVersion string            `json:"schemaVersion"`
+	RunID         string            `json:"runId"`
+	ListID        string            `json:"listId"`
+	ListDigest    string            `json:"listDigest"`
+	ActionID      string            `json:"actionId"`
+	ActionVersion int               `json:"actionVersion"`
+	StartedAt     string            `json:"startedAt"`
+	FinishedAt    string            `json:"finishedAt"`
+	Status        string            `json:"status"`
+	Steps         []ObservationStep `json:"steps"`
+	FinalStateID  *string           `json:"finalStateId"`
+	ErrorCode     *string           `json:"errorCode"`
+}
+
+type ObservationStep struct {
+	StepID                 string `json:"stepId"`
+	Status                 string `json:"status"`
+	DurationMS             int    `json:"durationMs"`
+	LocatorStrategyIndex   *int   `json:"locatorStrategyIndex"`
+	MatchCount             *int   `json:"matchCount"`
+	PostconditionSatisfied *bool  `json:"postconditionSatisfied"`
+}
+
+func (store *Store) InsertActionListRevision(ctx context.Context, raw json.RawMessage) (ActionListRevision, error) {
+	list, err := manifest.DecodeActionList(raw)
+	if err != nil {
+		return ActionListRevision{}, err
+	}
+	if list.Publication.Status != "candidate" && list.Publication.Status != "draft" {
+		return ActionListRevision{}, errors.New("only draft or candidate documents may enter revision storage")
+	}
+	for _, action := range list.Actions {
+		if action.Lifecycle != "candidate" {
+			return ActionListRevision{}, errors.New("ingested actions must have candidate lifecycle")
+		}
+	}
+	digest, err := manifest.CandidateDigest(raw)
+	if err != nil {
+		return ActionListRevision{}, err
+	}
+	canonical, err := json.Marshal(list)
+	if err != nil {
+		return ActionListRevision{}, fmt.Errorf("encode action list revision: %w", err)
+	}
+	createdAt, _ := time.Parse(time.RFC3339Nano, list.Publication.CreatedAt)
+	transaction, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ActionListRevision{}, fmt.Errorf("begin action list insertion: %w", err)
+	}
+	defer transaction.Rollback()
+
+	var storedOrigin string
+	if err := transaction.QueryRowContext(ctx, `
+		INSERT INTO action_lists (list_id, origin, created_at)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (list_id) DO UPDATE SET list_id = EXCLUDED.list_id
+		RETURNING origin`, list.ListID, list.Site.Origin, createdAt).Scan(&storedOrigin); err != nil {
+		return ActionListRevision{}, fmt.Errorf("upsert action list identity: %w", err)
+	}
+	if storedOrigin != list.Site.Origin {
+		return ActionListRevision{}, fmt.Errorf("%w: listId already belongs to a different origin", ErrConflict)
+	}
+	var inserted int
+	if err := transaction.QueryRowContext(ctx, `
+		INSERT INTO action_list_revisions
+		  (list_id, revision, schema_version, candidate_digest, document_json, source_map_id, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT DO NOTHING
+		RETURNING revision`, list.ListID, list.Publication.Revision, list.SchemaVersion, digest,
+		string(canonical), list.Publication.SourceMapID, createdAt).Scan(&inserted); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ActionListRevision{}, fmt.Errorf("%w: revisions are append-only", ErrConflict)
+		}
+		return ActionListRevision{}, fmt.Errorf("insert action list revision: %w", err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return ActionListRevision{}, fmt.Errorf("commit action list revision: %w", err)
+	}
+	return ActionListRevision{
+		ListID: list.ListID, Revision: inserted, Status: list.Publication.Status,
+		CandidateDigest: digest, Digest: digest, Document: canonical, CreatedAt: createdAt,
+	}, nil
+}
+
+func (store *Store) GetActionListRevision(ctx context.Context, listID string, revision int) (ActionListRevision, error) {
+	var result ActionListRevision
+	var document string
+	var publishedAt sql.NullTime
+	err := store.db.QueryRowContext(ctx, `
+		SELECT r.list_id, r.revision,
+		       CASE WHEN p.list_id IS NULL THEN 'candidate' ELSE 'published' END,
+		       r.candidate_digest, COALESCE(p.published_digest, r.candidate_digest),
+		       COALESCE(p.published_json, r.document_json), r.created_at, p.published_at
+		FROM action_list_revisions r
+		LEFT JOIN action_list_publications p
+		  ON p.list_id = r.list_id AND p.revision = r.revision
+		WHERE r.list_id = $1 AND r.revision = $2`, listID, revision).Scan(
+		&result.ListID, &result.Revision, &result.Status, &result.CandidateDigest,
+		&result.Digest, &document, &result.CreatedAt, &publishedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ActionListRevision{}, ErrNotFound
+	}
+	if err != nil {
+		return ActionListRevision{}, fmt.Errorf("get action list revision: %w", err)
+	}
+	result.Document = json.RawMessage(document)
+	if result.Status == "published" {
+		if err := manifest.VerifyDigest(result.Document, result.Digest); err != nil {
+			return ActionListRevision{}, fmt.Errorf("validate stored published revision: %w", err)
+		}
+		value := publishedAt.Time
+		result.PublishedAt = &value
+	} else {
+		actual, err := manifest.CandidateDigest(result.Document)
+		if err != nil {
+			return ActionListRevision{}, fmt.Errorf("validate stored candidate revision: %w", err)
+		}
+		if actual != result.CandidateDigest {
+			return ActionListRevision{}, errors.New("stored candidate action list digest is invalid")
+		}
+	}
+	return result, nil
+}
+
+func (store *Store) DiscoverActionLists(ctx context.Context, origin, absoluteURL string) ([]ActionListRevision, error) {
+	if err := exactOrigin(origin); err != nil {
+		return nil, err
+	}
+	if absoluteURL != "" {
+		parsed, err := url.Parse(absoluteURL)
+		if err != nil || parsed.Scheme+"://"+parsed.Host != origin {
+			return nil, errors.New("url must be absolute and have the requested origin")
+		}
+	}
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT p.list_id, p.revision, r.candidate_digest, p.published_digest,
+		       p.published_json, r.created_at, p.published_at
+		FROM action_list_publications p
+		JOIN action_list_revisions r
+		  ON r.list_id = p.list_id AND r.revision = p.revision
+		JOIN action_lists l ON l.list_id = p.list_id
+		WHERE l.origin = $1
+		ORDER BY p.list_id, p.revision DESC`, origin)
+	if err != nil {
+		return nil, fmt.Errorf("discover published action lists: %w", err)
+	}
+	defer rows.Close()
+	results := make([]ActionListRevision, 0)
+	seen := make(map[string]struct{})
+	for rows.Next() {
+		var result ActionListRevision
+		var document string
+		var publishedAt time.Time
+		if err := rows.Scan(&result.ListID, &result.Revision, &result.CandidateDigest,
+			&result.Digest, &document, &result.CreatedAt, &publishedAt); err != nil {
+			return nil, fmt.Errorf("scan published action list: %w", err)
+		}
+		if _, exists := seen[result.ListID]; exists {
+			continue
+		}
+		result.Status = "published"
+		result.Document = json.RawMessage(document)
+		result.PublishedAt = &publishedAt
+		if err := manifest.VerifyDigest(result.Document, result.Digest); err != nil {
+			return nil, fmt.Errorf("validate published action list %s: %w", result.ListID, err)
+		}
+		list, _ := manifest.DecodeActionList(result.Document)
+		if manifest.PolicyAllows(list, time.Now().UTC()) != nil {
+			continue
+		}
+		if absoluteURL != "" && !manifest.MatchesLocation(list, absoluteURL) {
+			continue
+		}
+		seen[result.ListID] = struct{}{}
+		results = append(results, result)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate published action lists: %w", err)
+	}
+	return results, nil
+}
+
+func (store *Store) SavePolicyDecision(ctx context.Context, decision PolicyRecord) error {
+	if !boundedIdentifier(decision.ID, 128) || !boundedIdentifier(decision.ListID, 80) || decision.Revision < 1 ||
+		!containsString([]string{"allowed", "denied", "unknown"}, decision.Decision) ||
+		!validDigest(decision.CandidateDigest) || decision.CheckedAt.IsZero() || len(decision.Scopes) > 5 {
+		return errors.New("policy decision is invalid")
+	}
+	seenScopes := make(map[string]struct{}, len(decision.Scopes))
+	for _, scope := range decision.Scopes {
+		if !containsString([]string{"learn", "inject", "read", "write", "danger"}, scope) {
+			return errors.New("policy decision contains an invalid scope")
+		}
+		if _, exists := seenScopes[scope]; exists {
+			return errors.New("policy decision contains a duplicate scope")
+		}
+		seenScopes[scope] = struct{}{}
+	}
+	scopes, err := json.Marshal(decision.Scopes)
+	if err != nil {
+		return fmt.Errorf("encode policy scopes: %w", err)
+	}
+	_, err = store.db.ExecContext(ctx, `
+		INSERT INTO policy_decisions
+		  (id, list_id, revision, candidate_digest, decision, scopes_json, checked_at, expires_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, decision.ID, decision.ListID,
+		decision.Revision, decision.CandidateDigest, decision.Decision, string(scopes),
+		decision.CheckedAt, decision.ExpiresAt, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("save policy decision: %w", err)
+	}
+	return nil
+}
+
+func (store *Store) SaveReplayReport(ctx context.Context, report ReplayReport) error {
+	if !boundedIdentifier(report.ID, 128) || !boundedIdentifier(report.ListID, 80) || report.Revision < 1 ||
+		!containsString([]string{"passed", "failed"}, report.Status) ||
+		!validDigest(report.CandidateDigest) || !json.Valid(report.Report) {
+		return errors.New("replay report is invalid")
+	}
+	_, err := store.db.ExecContext(ctx, `
+		INSERT INTO replay_reports
+		  (id, list_id, revision, candidate_digest, status, report_json, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`, report.ID, report.ListID, report.Revision,
+		report.CandidateDigest, report.Status, string(report.Report), time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("save replay report: %w", err)
+	}
+	return nil
+}
+
+func (store *Store) PublishActionList(
+	ctx context.Context,
+	listID string,
+	revision int,
+	request PublishActionListRequest,
+) (ActionListRevision, error) {
+	if request.ReviewDecision != "approve" || strings.TrimSpace(request.Reviewer) == "" ||
+		strings.TrimSpace(request.PolicyDecisionID) == "" || strings.TrimSpace(request.ReplayReportID) == "" {
+		return ActionListRevision{}, fmt.Errorf("%w: explicit approval, reviewer, policy, and replay are required", ErrGate)
+	}
+	transaction, err := store.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return ActionListRevision{}, fmt.Errorf("begin publication transaction: %w", err)
+	}
+	defer transaction.Rollback()
+
+	var document string
+	var candidateDigest string
+	var createdAt time.Time
+	if err := transaction.QueryRowContext(ctx, `
+		SELECT document_json, candidate_digest, created_at
+		FROM action_list_revisions
+		WHERE list_id = $1 AND revision = $2
+		FOR UPDATE`, listID, revision).Scan(&document, &candidateDigest, &createdAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ActionListRevision{}, ErrNotFound
+		}
+		return ActionListRevision{}, fmt.Errorf("lock action list revision: %w", err)
+	}
+	if request.ExpectedDigest != candidateDigest {
+		return ActionListRevision{}, fmt.Errorf("%w: expected digest is stale", ErrConflict)
+	}
+	actualCandidateDigest, err := manifest.CandidateDigest(json.RawMessage(document))
+	if err != nil || actualCandidateDigest != candidateDigest {
+		return ActionListRevision{}, fmt.Errorf("%w: stored candidate digest is invalid", ErrGate)
+	}
+
+	var policyDecision string
+	var policyDigest string
+	var scopesJSON string
+	var checkedAt time.Time
+	var expiresAt sql.NullTime
+	if err := transaction.QueryRowContext(ctx, `
+		SELECT decision, candidate_digest, scopes_json, checked_at, expires_at
+		FROM policy_decisions
+		WHERE id = $1 AND list_id = $2 AND revision = $3`, request.PolicyDecisionID, listID, revision).Scan(
+		&policyDecision, &policyDigest, &scopesJSON, &checkedAt, &expiresAt,
+	); err != nil {
+		return ActionListRevision{}, fmt.Errorf("%w: policy decision was not found", ErrGate)
+	}
+	if policyDecision != "allowed" || policyDigest != candidateDigest ||
+		(expiresAt.Valid && !expiresAt.Time.After(time.Now().UTC())) {
+		return ActionListRevision{}, fmt.Errorf("%w: policy is blocked, stale, or for another digest", ErrGate)
+	}
+	var scopes []string
+	if err := json.Unmarshal([]byte(scopesJSON), &scopes); err != nil {
+		return ActionListRevision{}, fmt.Errorf("decode policy scopes: %w", err)
+	}
+	list, err := manifest.DecodeActionList(json.RawMessage(document))
+	if err != nil {
+		return ActionListRevision{}, fmt.Errorf("validate candidate during publication: %w", err)
+	}
+	list.Policy.Status = policyDecision
+	list.Policy.Scopes = scopes
+	list.Policy.CheckedAt = checkedAt.UTC().Format(time.RFC3339Nano)
+	if expiresAt.Valid {
+		value := expiresAt.Time.UTC().Format(time.RFC3339Nano)
+		list.Policy.ExpiresAt = &value
+	} else {
+		list.Policy.ExpiresAt = nil
+	}
+	if err := manifest.PolicyAllows(list, time.Now().UTC()); err != nil {
+		return ActionListRevision{}, fmt.Errorf("%w: %v", ErrGate, err)
+	}
+	policyAdjusted, err := json.Marshal(list)
+	if err != nil {
+		return ActionListRevision{}, fmt.Errorf("encode policy-adjusted candidate: %w", err)
+	}
+
+	var replayStatus string
+	var replayDigest string
+	if err := transaction.QueryRowContext(ctx, `
+		SELECT status, candidate_digest
+		FROM replay_reports
+		WHERE id = $1 AND list_id = $2 AND revision = $3`, request.ReplayReportID, listID, revision).Scan(
+		&replayStatus, &replayDigest,
+	); err != nil {
+		return ActionListRevision{}, fmt.Errorf("%w: replay report was not found", ErrGate)
+	}
+	if replayStatus != "passed" || replayDigest != candidateDigest {
+		return ActionListRevision{}, fmt.Errorf("%w: replay did not pass for this digest", ErrGate)
+	}
+
+	now := time.Now().UTC()
+	for index := range list.Actions {
+		reviewedAt := now.Format(time.RFC3339Nano)
+		reviewer := request.Reviewer
+		list.Actions[index].Provenance.ReviewedAt = &reviewedAt
+		list.Actions[index].Provenance.ReviewedBy = &reviewer
+	}
+	policyAdjusted, err = json.Marshal(list)
+	if err != nil {
+		return ActionListRevision{}, fmt.Errorf("encode reviewed candidate: %w", err)
+	}
+	published, publishedDigest, err := manifest.PublishActionList(policyAdjusted, now)
+	if err != nil {
+		return ActionListRevision{}, fmt.Errorf("prepare published action list: %w", err)
+	}
+	reviewID := newID("review")
+	if _, err := transaction.ExecContext(ctx, `
+		INSERT INTO action_list_reviews
+		  (id, list_id, revision, candidate_digest, decision, reviewer, created_at)
+		VALUES ($1, $2, $3, $4, 'approve', $5, $6)`, reviewID, listID, revision,
+		candidateDigest, request.Reviewer, now); err != nil {
+		return ActionListRevision{}, fmt.Errorf("record action list review: %w", err)
+	}
+	var publicationID string
+	if err := transaction.QueryRowContext(ctx, `
+		INSERT INTO action_list_publications
+		  (id, list_id, revision, candidate_digest, published_digest, published_json,
+		   policy_decision_id, replay_report_id, review_id, published_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (list_id, revision) DO NOTHING
+		RETURNING id`, newID("publication"), listID, revision, candidateDigest, publishedDigest,
+		string(published), request.PolicyDecisionID, request.ReplayReportID, reviewID, now).Scan(&publicationID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ActionListRevision{}, fmt.Errorf("%w: revision was already published", ErrConflict)
+		}
+		return ActionListRevision{}, fmt.Errorf("insert action list publication: %w", err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return ActionListRevision{}, fmt.Errorf("commit action list publication: %w", err)
+	}
+	return ActionListRevision{
+		ListID: listID, Revision: revision, Status: "published", CandidateDigest: candidateDigest,
+		Digest: publishedDigest, Document: published, CreatedAt: createdAt, PublishedAt: &now,
+	}, nil
+}
+
+func (observation RunObservation) Validate() error {
+	if observation.SchemaVersion != "run-observation/1" || !boundedIdentifier(observation.RunID, 128) ||
+		!boundedIdentifier(observation.ListID, 80) || !validDigest(observation.ListDigest) ||
+		!boundedIdentifier(observation.ActionID, 80) || observation.ActionVersion < 1 ||
+		!containsString([]string{"completed", "failed", "cancelled"}, observation.Status) {
+		return errors.New("run observation identity or status is invalid")
+	}
+	if len(observation.Steps) > 32 || observation.Status == "completed" && observation.ErrorCode != nil {
+		return errors.New("run observation terminal fields are invalid")
+	}
+	if observation.ErrorCode != nil && !containsString([]string{
+		"POLICY_BLOCKED", "PLAN_NOT_FOUND", "PLAN_VERSION_MISMATCH", "INVALID_ARGUMENTS",
+		"PRECONDITION_FAILED", "TARGET_NOT_FOUND", "TARGET_AMBIGUOUS", "TARGET_NOT_INTERACTABLE",
+		"POSTCONDITION_FAILED", "NAVIGATION_OUT_OF_SCOPE", "CONFIRMATION_REQUIRED",
+		"CONFIRMATION_DENIED", "CANCELLED", "TIMEOUT", "EXECUTION_TAB_CLOSED",
+		"TRANSPORT_DISCONNECTED", "INTERNAL_ERROR",
+	}, *observation.ErrorCode) {
+		return errors.New("run observation errorCode is invalid")
+	}
+	startedAt, err := time.Parse(time.RFC3339Nano, observation.StartedAt)
+	if err != nil {
+		return errors.New("run observation startedAt is invalid")
+	}
+	finishedAt, err := time.Parse(time.RFC3339Nano, observation.FinishedAt)
+	if err != nil || finishedAt.Before(startedAt) {
+		return errors.New("run observation finishedAt is invalid")
+	}
+	for _, step := range observation.Steps {
+		if !boundedIdentifier(step.StepID, 80) || !containsString([]string{"completed", "failed", "cancelled"}, step.Status) ||
+			step.DurationMS < 0 || step.DurationMS > 300000 || step.MatchCount != nil && *step.MatchCount < 0 ||
+			step.LocatorStrategyIndex != nil && *step.LocatorStrategyIndex < 0 {
+			return errors.New("run observation contains an invalid step")
+		}
+	}
+	return nil
+}
+
+func validDigest(value string) bool {
+	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+	return err == nil
+}
+
+func boundedIdentifier(value string, maximum int) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > maximum {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= '0' && character <= '9' ||
+			character == '_' || character == '-' || character == '.' {
+			continue
+		}
+		return false
+	}
+	return value[0] >= 'a' && value[0] <= 'z'
+}
+
+func (store *Store) RecordRunObservation(ctx context.Context, observation RunObservation) error {
+	if err := observation.Validate(); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(observation)
+	if err != nil {
+		return fmt.Errorf("encode run observation: %w", err)
+	}
+	startedAt, _ := time.Parse(time.RFC3339Nano, observation.StartedAt)
+	finishedAt, _ := time.Parse(time.RFC3339Nano, observation.FinishedAt)
+	_, err = store.db.ExecContext(ctx, `
+		INSERT INTO run_observations
+		  (run_id, list_id, list_digest, action_id, action_version, status,
+		   observation_json, started_at, finished_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, observation.RunID,
+		observation.ListID, observation.ListDigest, observation.ActionID, observation.ActionVersion,
+		observation.Status, string(raw), startedAt, finishedAt, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("record run observation: %w", err)
+	}
+	return nil
+}
+
+func exactOrigin(origin string) error {
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+		return errors.New("origin must be an exact HTTP or HTTPS origin")
+	}
+	return nil
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,6 +38,11 @@ type DiscoveryStore interface {
 	ListActive(context.Context, string) ([]store.PublishedAdapter, error)
 	Publish(context.Context, string, string) error
 	RecordRun(context.Context, store.Run) error
+	InsertActionListRevision(context.Context, json.RawMessage) (store.ActionListRevision, error)
+	DiscoverActionLists(context.Context, string, string) ([]store.ActionListRevision, error)
+	GetActionListRevision(context.Context, string, int) (store.ActionListRevision, error)
+	PublishActionList(context.Context, string, int, store.PublishActionListRequest) (store.ActionListRevision, error)
+	RecordRunObservation(context.Context, store.RunObservation) error
 }
 
 type Server struct {
@@ -52,7 +59,7 @@ type learnRequest struct {
 	Trace json.RawMessage `json:"trace"`
 }
 
-type publishRequest struct {
+type legacyPublishRequest struct {
 	AdapterID string `json:"adapterId"`
 	VersionID string `json:"versionId"`
 }
@@ -77,6 +84,11 @@ func New(
 	mux.HandleFunc("GET /api/adapters", server.listAdapters)
 	mux.HandleFunc("POST /api/adapters/publish", server.publish)
 	mux.HandleFunc("POST /api/runs", server.recordRun)
+	mux.HandleFunc("POST /v1/action-lists", server.insertActionList)
+	mux.HandleFunc("GET /v1/action-lists", server.discoverActionLists)
+	mux.HandleFunc("GET /v1/action-lists/{listID}/revisions/{revision}", server.getActionListRevision)
+	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/publish", server.publishActionList)
+	mux.HandleFunc("POST /v1/run-observations", server.recordRunObservation)
 	mux.HandleFunc("GET /demo", server.demo)
 	mux.HandleFunc("GET /demo/", server.demo)
 	server.handler = server.withCORS(mux)
@@ -213,7 +225,7 @@ func (server *Server) listAdapters(writer http.ResponseWriter, request *http.Req
 }
 
 func (server *Server) publish(writer http.ResponseWriter, request *http.Request) {
-	var input publishRequest
+	var input legacyPublishRequest
 	if err := readJSON(writer, request, &input); err != nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -223,10 +235,118 @@ func (server *Server) publish(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	if err := server.store.Publish(request.Context(), input.AdapterID, input.VersionID); err != nil {
-		writeJSON(writer, http.StatusNotFound, map[string]string{"error": err.Error()})
+		status := http.StatusNotFound
+		if errors.Is(err, store.ErrGate) {
+			status = http.StatusConflict
+		}
+		writeJSON(writer, status, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]bool{"published": true})
+}
+
+func (server *Server) insertActionList(writer http.ResponseWriter, request *http.Request) {
+	raw, err := readRawJSON(writer, request)
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	revision, err := server.store.InsertActionListRevision(request.Context(), raw)
+	if err != nil {
+		writeRegistryError(writer, err)
+		return
+	}
+	setRegistryHeaders(writer, revision.Digest)
+	writeJSON(writer, http.StatusCreated, revision)
+}
+
+func (server *Server) discoverActionLists(writer http.ResponseWriter, request *http.Request) {
+	origin := strings.TrimSpace(request.URL.Query().Get("origin"))
+	absoluteURL := strings.TrimSpace(request.URL.Query().Get("url"))
+	if origin == "" || absoluteURL == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "origin and url are required"})
+		return
+	}
+	revisions, err := server.store.DiscoverActionLists(request.Context(), origin, absoluteURL)
+	if err != nil {
+		writeRegistryError(writer, err)
+		return
+	}
+	lists := make([]json.RawMessage, 0, len(revisions))
+	for _, revision := range revisions {
+		lists = append(lists, revision.Document)
+	}
+	body := struct {
+		ActionLists []json.RawMessage `json:"actionLists"`
+	}{ActionLists: lists}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(encoded))
+	setRegistryHeaders(writer, digest)
+	if requestETagMatches(request, digest) {
+		writer.WriteHeader(http.StatusNotModified)
+		return
+	}
+	writeJSON(writer, http.StatusOK, body)
+}
+
+func (server *Server) getActionListRevision(writer http.ResponseWriter, request *http.Request) {
+	revisionNumber, err := positiveRevision(request.PathValue("revision"))
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	revision, err := server.store.GetActionListRevision(
+		request.Context(), strings.TrimSpace(request.PathValue("listID")), revisionNumber,
+	)
+	if err != nil {
+		writeRegistryError(writer, err)
+		return
+	}
+	setRegistryHeaders(writer, revision.Digest)
+	if requestETagMatches(request, revision.Digest) {
+		writer.WriteHeader(http.StatusNotModified)
+		return
+	}
+	writeRawJSON(writer, http.StatusOK, revision.Document)
+}
+
+func (server *Server) publishActionList(writer http.ResponseWriter, request *http.Request) {
+	revisionNumber, err := positiveRevision(request.PathValue("revision"))
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	var input store.PublishActionListRequest
+	if err := readJSON(writer, request, &input); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	revision, err := server.store.PublishActionList(
+		request.Context(), strings.TrimSpace(request.PathValue("listID")), revisionNumber, input,
+	)
+	if err != nil {
+		writeRegistryError(writer, err)
+		return
+	}
+	setRegistryHeaders(writer, revision.Digest)
+	writeJSON(writer, http.StatusOK, revision)
+}
+
+func (server *Server) recordRunObservation(writer http.ResponseWriter, request *http.Request) {
+	var observation store.RunObservation
+	if err := readJSON(writer, request, &observation); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := server.store.RecordRunObservation(request.Context(), observation); err != nil {
+		writeRegistryError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusCreated, map[string]bool{"recorded": true})
 }
 
 func (server *Server) recordRun(writer http.ResponseWriter, request *http.Request) {
@@ -276,8 +396,9 @@ func (server *Server) demo(writer http.ResponseWriter, request *http.Request) {
 func (server *Server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Access-Control-Allow-Origin", "*")
-		writer.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, If-None-Match")
 		writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		writer.Header().Set("Access-Control-Expose-Headers", "ETag, X-Content-Digest")
 		writer.Header().Set("Cache-Control", "no-store")
 		if request.Method == http.MethodOptions {
 			writer.WriteHeader(http.StatusNoContent)
@@ -298,6 +419,60 @@ func readJSON(writer http.ResponseWriter, request *http.Request, destination any
 		return errors.New("request body must contain one JSON object")
 	}
 	return nil
+}
+
+func readRawJSON(writer http.ResponseWriter, request *http.Request) (json.RawMessage, error) {
+	request.Body = http.MaxBytesReader(writer, request.Body, maxRequestBytes)
+	raw, err := io.ReadAll(request.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read request body: %w", err)
+	}
+	if !json.Valid(raw) {
+		return nil, errors.New("request body must be valid JSON")
+	}
+	return json.RawMessage(raw), nil
+}
+
+func positiveRevision(value string) (int, error) {
+	revision, err := strconv.Atoi(value)
+	if err != nil || revision < 1 {
+		return 0, errors.New("revision must be a positive integer")
+	}
+	return revision, nil
+}
+
+func writeRegistryError(writer http.ResponseWriter, err error) {
+	status := http.StatusBadRequest
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		status = http.StatusNotFound
+	case errors.Is(err, store.ErrConflict), errors.Is(err, store.ErrGate):
+		status = http.StatusConflict
+	}
+	writeJSON(writer, status, map[string]string{"error": err.Error()})
+}
+
+func setRegistryHeaders(writer http.ResponseWriter, digest string) {
+	writer.Header().Set("ETag", `"`+digest+`"`)
+	writer.Header().Set("X-Content-Digest", digest)
+	writer.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+}
+
+func requestETagMatches(request *http.Request, digest string) bool {
+	wanted := `"` + digest + `"`
+	for _, value := range strings.Split(request.Header.Get("If-None-Match"), ",") {
+		value = strings.TrimSpace(value)
+		if value == "*" || value == wanted || value == "W/"+wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func writeRawJSON(writer http.ResponseWriter, status int, body json.RawMessage) {
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.WriteHeader(status)
+	_, _ = writer.Write(body)
 }
 
 func writeJSON(writer http.ResponseWriter, status int, body any) {

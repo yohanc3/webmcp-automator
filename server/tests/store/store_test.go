@@ -3,6 +3,9 @@ package store_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -12,6 +15,7 @@ import (
 
 	"webmcp-automator/server/internal/actionmap"
 	"webmcp-automator/server/internal/learning"
+	"webmcp-automator/server/internal/manifest"
 	"webmcp-automator/server/internal/store"
 )
 
@@ -149,6 +153,165 @@ func TestSaveDiscoveryUsesPostgresTransaction(t *testing.T) {
 	}
 	if discovery.SessionID != session.ID || discovery.ActionMap.Actions[0].ID != "search_products" {
 		t.Fatalf("unexpected discovery: %#v", discovery)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func storefrontActionList(t *testing.T) json.RawMessage {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(
+		"..", "..", "..", "documentation", "contracts", "examples", "owned-storefront.action-list.json",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestInsertActionListRevisionUsesAppendOnlyTransaction(t *testing.T) {
+	sqlDatabase, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database := store.New(sqlDatabase)
+	defer database.Close()
+	raw := storefrontActionList(t)
+	list, err := manifest.DecodeActionList(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, _ := json.Marshal(list)
+	digest, _ := manifest.CandidateDigest(raw)
+	createdAt, _ := time.Parse(time.RFC3339, list.Publication.CreatedAt)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("INSERT INTO action_lists").
+		WithArgs(list.ListID, list.Site.Origin, createdAt).
+		WillReturnRows(sqlmock.NewRows([]string{"origin"}).AddRow(list.Site.Origin))
+	mock.ExpectQuery("INSERT INTO action_list_revisions").
+		WithArgs(list.ListID, 1, manifest.ActionListSchemaVersion, digest, string(canonical), sqlmock.AnyArg(), createdAt).
+		WillReturnRows(sqlmock.NewRows([]string{"revision"}).AddRow(1))
+	mock.ExpectCommit()
+
+	revision, err := database.InsertActionListRevision(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision.CandidateDigest != digest || revision.Revision != 1 {
+		t.Fatalf("unexpected revision: %#v", revision)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPublishActionListTransactionHasOneDatabaseWinner(t *testing.T) {
+	sqlDatabase, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database := store.New(sqlDatabase)
+	defer database.Close()
+	raw := storefrontActionList(t)
+	list, _ := manifest.DecodeActionList(raw)
+	canonical, _ := json.Marshal(list)
+	digest, _ := manifest.CandidateDigest(raw)
+	createdAt, _ := time.Parse(time.RFC3339, list.Publication.CreatedAt)
+	checkedAt := time.Now().UTC().Truncate(time.Microsecond)
+	request := store.PublishActionListRequest{
+		ExpectedDigest: digest, ReviewDecision: "approve", Reviewer: "local-user",
+		PolicyDecisionID: "policy_owned_demo_001", ReplayReportID: "replay_owned_demo_001",
+	}
+
+	expectPublish := func(winner bool) {
+		mock.ExpectBegin()
+		mock.ExpectQuery("SELECT document_json, candidate_digest, created_at").
+			WithArgs(list.ListID, 1).
+			WillReturnRows(sqlmock.NewRows([]string{"document_json", "candidate_digest", "created_at"}).
+				AddRow(string(canonical), digest, createdAt))
+		mock.ExpectQuery("SELECT decision, candidate_digest, scopes_json, checked_at, expires_at").
+			WithArgs("policy_owned_demo_001", list.ListID, 1).
+			WillReturnRows(sqlmock.NewRows([]string{"decision", "candidate_digest", "scopes_json", "checked_at", "expires_at"}).
+				AddRow("allowed", digest, `["learn","inject","read","write"]`, checkedAt, nil))
+		mock.ExpectQuery("SELECT status, candidate_digest").
+			WithArgs("replay_owned_demo_001", list.ListID, 1).
+			WillReturnRows(sqlmock.NewRows([]string{"status", "candidate_digest"}).AddRow("passed", digest))
+		mock.ExpectExec("INSERT INTO action_list_reviews").
+			WithArgs(sqlmock.AnyArg(), list.ListID, 1, digest, "local-user", sqlmock.AnyArg()).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		publication := mock.ExpectQuery("INSERT INTO action_list_publications").
+			WithArgs(
+				sqlmock.AnyArg(), list.ListID, 1, digest, sqlmock.AnyArg(), sqlmock.AnyArg(),
+				"policy_owned_demo_001", "replay_owned_demo_001", sqlmock.AnyArg(), sqlmock.AnyArg(),
+			)
+		if winner {
+			publication.WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("publication_1"))
+			mock.ExpectCommit()
+		} else {
+			publication.WillReturnRows(sqlmock.NewRows([]string{"id"}))
+			mock.ExpectRollback()
+		}
+	}
+
+	expectPublish(true)
+	published, err := database.PublishActionList(context.Background(), list.ListID, 1, request)
+	if err != nil {
+		t.Fatalf("first publication: %v", err)
+	}
+	if published.Status != "published" || manifest.VerifyDigest(published.Document, published.Digest) != nil {
+		t.Fatalf("invalid published result: %#v", published)
+	}
+	expectPublish(false)
+	_, err = database.PublishActionList(context.Background(), list.ListID, 1, request)
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("expected second publisher conflict, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLegacyListActiveProjectsOnlyCanonicalPublishedRegistry(t *testing.T) {
+	sqlDatabase, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database := store.New(sqlDatabase)
+	defer database.Close()
+	raw := storefrontActionList(t)
+	candidateDigest, _ := manifest.CandidateDigest(raw)
+	publishedAt := time.Now().UTC().Truncate(time.Microsecond)
+	published, publishedDigest, err := manifest.PublishActionList(raw, publishedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdAt := publishedAt.Add(-time.Minute)
+	mock.ExpectQuery("FROM action_list_publications").
+		WithArgs("http://127.0.0.1:4317").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"list_id", "revision", "candidate_digest", "published_digest", "published_json", "created_at", "published_at",
+		}).AddRow(
+			"owned_storefront", 1, candidateDigest, publishedDigest, string(published), createdAt, publishedAt,
+		))
+	adapters, err := database.ListActive(context.Background(), "http://127.0.0.1:4317")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(adapters) != 1 || adapters[0].Manifest.SchemaVersion != manifest.SchemaVersion ||
+		adapters[0].Manifest.Validate() != nil {
+		t.Fatalf("unexpected legacy projection: %#v", adapters)
+	}
+	matched := false
+	for _, pattern := range adapters[0].Manifest.Site.RoutePatterns {
+		compiled, compileErr := regexp.Compile(pattern)
+		if compileErr == nil && compiled.MatchString("http://127.0.0.1:4317/demo/search?q=headphones") {
+			matched = true
+		}
+	}
+	if !matched {
+		t.Fatalf("legacy route projection does not match full URL: %#v", adapters[0].Manifest.Site.RoutePatterns)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
