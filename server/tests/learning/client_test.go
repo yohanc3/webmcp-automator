@@ -5,28 +5,15 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"webmcp-automator/server/internal/learning"
+	"webmcp-automator/server/internal/privacy"
+	learningtrace "webmcp-automator/server/internal/trace"
 )
-
-const actionMapJSON = `{
-	"schemaVersion":"action-map/1",
-	"site":{"origin":"https://example.com","observedUrls":["https://example.com/"]},
-	"summary":"A searchable catalog",
-	"states":[{"id":"catalog","label":"Catalog","urlPattern":"^https://example.com/","fingerprint":null,"evidence":["search form"]}],
-	"actions":[{
-		"id":"search_products","name":"Search products","description":"Submit a catalog query",
-		"category":"submit","status":"observed","safety":"read","confidence":0.8,
-		"fromState":"catalog","toState":"catalog","parameters":[],
-		"steps":[{"op":"wait","target":{"css":null,"role":null,"name":null,"placeholder":null,"text":null,"hrefContains":null},"valueFrom":null,"literalValue":null,"key":null,"expect":{"kind":"none","state":null,"urlPattern":null,"target":{"css":null,"role":null,"name":null,"placeholder":null,"text":null,"hrefContains":null}},"timeoutMs":100}],
-		"output":{"mode":"none","collectionRoot":{"css":null,"role":null,"name":null,"placeholder":null,"text":null,"hrefContains":null},"item":{"css":null,"role":null,"name":null,"placeholder":null,"text":null,"hrefContains":null},"limit":10,"fields":[]},
-		"evidence":["recorded"],"missingEvidence":[]
-	}],
-	"warnings":[],
-	"privacy":{"redactionsApplied":0,"categories":[],"policy":"No private values retained"}
-}`
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -72,6 +59,7 @@ func TestNewClientSelectsAvailableProvider(t *testing.T) {
 }
 
 func TestDiscoverUsesOpenRouterGemmaStructuredOutputs(t *testing.T) {
+	evidence, actionMapJSON := semanticFixture(t)
 	client := learning.NewClient("", "test-key")
 	client.Endpoint = "https://openrouter.test/chat"
 	client.HTTPClient = requestClient(t, func(request *http.Request, body map[string]any) {
@@ -97,9 +85,9 @@ func TestDiscoverUsesOpenRouterGemmaStructuredOutputs(t *testing.T) {
 		if !hasSchemaKeyword(schema, "pattern") || !hasSchemaKeyword(schema, "maxItems") {
 			t.Fatal("OpenRouter should receive the complete action-map schema")
 		}
-	}, learning.OpenRouterModel, "fast-provider")
+	}, learning.OpenRouterModel, "fast-provider", actionMapJSON)
 
-	result, err := client.Discover(context.Background(), json.RawMessage(`{"steps":[]}`))
+	result, err := client.Semanticize(context.Background(), evidence)
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
@@ -111,6 +99,7 @@ func TestDiscoverUsesOpenRouterGemmaStructuredOutputs(t *testing.T) {
 }
 
 func TestDiscoverUsesCerebrasGemmaStructuredOutputs(t *testing.T) {
+	evidence, actionMapJSON := semanticFixture(t)
 	client := learning.NewClient("test-key", "")
 	client.Endpoint = "https://cerebras.test/chat"
 	client.HTTPClient = requestClient(t, func(request *http.Request, body map[string]any) {
@@ -142,9 +131,9 @@ func TestDiscoverUsesCerebrasGemmaStructuredOutputs(t *testing.T) {
 		if len(encodedSchema) > 5000 {
 			t.Fatalf("Cerebras schema exceeds 5,000 characters: %d", len(encodedSchema))
 		}
-	}, learning.CerebrasModel, "")
+	}, learning.CerebrasModel, "", actionMapJSON)
 
-	result, err := client.Discover(context.Background(), json.RawMessage(`{"steps":[]}`))
+	result, err := client.Semanticize(context.Background(), evidence)
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
@@ -160,6 +149,7 @@ func requestClient(
 	assertRequest func(*http.Request, map[string]any),
 	model string,
 	provider string,
+	actionMapJSON string,
 ) *http.Client {
 	t.Helper()
 	return &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -187,6 +177,32 @@ func requestClient(
 	})}
 }
 
+func semanticFixture(t *testing.T) (learning.SemanticInput, string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "fixtures", "storefront-search-trace.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sanitized, _, err := privacy.SanitizeTrace(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := learningtrace.BuildGraph(sanitized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := learning.MinimizeGraph(graph)
+	fake, err := (learning.FakeSemanticizer{}).Semanticize(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(fake.ActionMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return input, string(encoded)
+}
+
 func assertSharedRequest(t *testing.T, body map[string]any) {
 	t.Helper()
 	if body["max_completion_tokens"] != float64(8000) {
@@ -201,6 +217,14 @@ func assertSharedRequest(t *testing.T, body map[string]any) {
 	userMessage := messages[1].(map[string]any)["content"].(string)
 	if !strings.Contains(userMessage, learning.DiscoveryGoal) {
 		t.Fatalf("expected automatic action discovery, got %s", userMessage)
+	}
+	for _, forbidden := range []string{"semanticXml", "headphones", "rect", "IGNORE PREVIOUS"} {
+		if strings.Contains(userMessage, forbidden) {
+			t.Fatalf("model input retained %q: %s", forbidden, userMessage)
+		}
+	}
+	if !strings.Contains(userMessage, `"evidenceGraph"`) || !strings.Contains(userMessage, `"transition_1"`) {
+		t.Fatalf("model input did not contain the minimized graph: %s", userMessage)
 	}
 	systemMessage := messages[0].(map[string]any)["content"].(string)
 	if !strings.Contains(systemMessage, "Never reproduce a person's name") {
