@@ -467,20 +467,22 @@
     const evidence = createElement('div', 'evidence-links compact-evidence');
     evidence.append(createElement('span', 'evidence-label', 'Evidence handles'));
     compactEvidenceHandles(action).forEach((handle) => {
-      const link = createElement('button', 'evidence-link mono', handle);
-      link.type = 'button';
-      link.dataset.evidenceId = handle;
-      link.addEventListener('click', () => {
-        if (registry?.openEvidence) {
+      if (typeof registry?.openEvidence === 'function') {
+        const link = createElement('button', 'evidence-link mono', handle);
+        link.type = 'button';
+        link.dataset.evidenceId = handle;
+        link.addEventListener('click', () => {
           void registry.openEvidence({
             actionMapDigest,
             id: handle,
             kind: 'compact_handle',
             label: handle,
           });
-        }
-      });
-      evidence.append(link);
+        });
+        evidence.append(link);
+      } else {
+        evidence.append(createElement('span', 'evidence-link mono', handle));
+      }
     });
     if (evidence.childElementCount === 1) {
       evidence.append(createElement('span', 'evidence-empty', 'No safe evidence handles'));
@@ -540,10 +542,9 @@
     return section;
   };
 
-  const renderCandidate = ({ state, registry, refresh, now }) => {
+  const renderCandidate = ({ state, registry, now }) => {
     if (!state.candidate) return null;
     const { candidate } = state;
-    const decision = evaluatePolicy({ policy: state.policy, context: state.context, now: now() });
     const replay = replayState(candidate);
     const bindingValue = reviewBinding(candidate);
     const staleReasons = staleReviewReasons(candidate, state.context);
@@ -590,13 +591,17 @@
       const evidence = createElement('div', 'evidence-links');
       evidence.append(createElement('span', 'evidence-label', 'Evidence'));
       evidenceReferences(action).forEach((reference) => {
-        const link = createElement('button', 'evidence-link mono', reference.label);
-        link.type = 'button';
-        link.dataset.evidenceId = reference.id;
-        link.addEventListener('click', () => {
-          if (registry?.openEvidence) void registry.openEvidence(reference);
-        });
-        evidence.append(link);
+        if (typeof registry?.openEvidence === 'function') {
+          const link = createElement('button', 'evidence-link mono', reference.label);
+          link.type = 'button';
+          link.dataset.evidenceId = reference.id;
+          link.addEventListener('click', () => {
+            void registry.openEvidence(reference);
+          });
+          evidence.append(link);
+        } else {
+          evidence.append(createElement('span', 'evidence-link mono', reference.label));
+        }
       });
       if (evidence.childElementCount === 1) {
         evidence.append(createElement('span', 'evidence-empty', 'No linked evidence'));
@@ -612,29 +617,6 @@
       section.append(warning);
     }
 
-    if (registry?.submitCandidateDecision) {
-      const controls = createElement('div', 'decision-controls');
-      const deny = createElement('button', 'button button-stop', 'Reject candidate');
-      const approve = createElement('button', 'button button-verified', 'Approve candidate');
-      deny.type = 'button';
-      approve.type = 'button';
-      deny.disabled = !reviewIsExact;
-      approve.disabled = !decision.eligible || replay !== 'passed' || !reviewIsExact;
-      const submit = (approved, button) => {
-        button.disabled = true;
-        void registry.submitCandidateDecision({
-          approved,
-          binding: bindingValue,
-          contentDigest: bindingValue.listDigest,
-          listId: candidate.listId,
-          revision: bindingValue.listRevision,
-        }).then(refresh).catch(() => refresh());
-      };
-      deny.addEventListener('click', () => submit(false, deny));
-      approve.addEventListener('click', () => submit(true, approve));
-      controls.append(deny, approve);
-      section.append(controls);
-    }
     return section;
   };
 
@@ -797,7 +779,7 @@
       currentState = nextState || {};
       const parts = [renderPolicy({ state: currentState, coordinator, refresh, now })];
       const actionMap = renderActionMap({ state: currentState, registry });
-      const candidate = renderCandidate({ state: currentState, registry, refresh, now });
+      const candidate = renderCandidate({ state: currentState, registry, now });
       const spool = renderRetrySpool({ state: currentState, retrySpool, refresh, now });
       const confirmation = renderConfirmation({ state: currentState, coordinator, refresh, now });
       if (actionMap) parts.push(actionMap);

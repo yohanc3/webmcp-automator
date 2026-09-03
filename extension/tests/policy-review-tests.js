@@ -469,32 +469,38 @@
     rootElement.remove();
   });
 
-  test('routes candidate approve and deny through the registry without direct publication', () => {
-    const decisions = [];
+  test('renders evidence handles and references as inert text without an authoritative port', () => {
+    const rootElement = root();
+    const controller = policyReview.createController({
+      rootElement,
+      coordinator: { getPolicyReviewState: async () => ({}) },
+      registry: {},
+    });
+    controller.render({
+      actionMap: actionMap(),
+      candidate: candidate(),
+      context: context(),
+      policy: policy(),
+    });
+    match(rootElement.textContent, /node_order_list/);
+    match(rootElement.textContent, /transition_1: page_1 → page_2/);
+    equal(rootElement.querySelectorAll('.evidence-link').length > 0, true);
+    equal(rootElement.querySelectorAll('button.evidence-link').length, 0);
+    rootElement.remove();
+  });
+
+  test('renders candidate review as read-only even if a publication port is supplied', () => {
     const rootElement = root();
     const controller = policyReview.createController({
       rootElement,
       coordinator: { getPolicyReviewState: async () => ({}) },
       registry: {
-        submitCandidateDecision: (decision) => {
-          decisions.push(decision);
-          return Promise.resolve();
-        },
+        submitCandidateDecision: () => Promise.resolve(),
       },
     });
     controller.render({ context: context(), policy: policy(), candidate: candidate() });
-    buttonNamed(rootElement, 'Approve candidate').click();
-    buttonNamed(rootElement, 'Reject candidate').click();
-    equal(decisions.length, 2);
-    equal(decisions[0].approved, true);
-    equal(decisions[1].approved, false);
-    equal(decisions[0].contentDigest, DIGEST);
-    deepEqual(decisions[0].binding, {
-      actionMapDigest: MAP_DIGEST,
-      actionMapRevision: 2,
-      listDigest: DIGEST,
-      listRevision: 3,
-    });
+    equal(buttonNamed(rootElement, 'Approve candidate'), undefined);
+    equal(buttonNamed(rootElement, 'Reject candidate'), undefined);
     rootElement.remove();
   });
 
@@ -514,8 +520,6 @@
         replayStatus: 'failed',
       }),
     });
-    equal(buttonNamed(rootElement, 'Approve candidate').disabled, true);
-    equal(buttonNamed(rootElement, 'Reject candidate').disabled, true);
     match(rootElement.textContent, /Action-map digest binding is missing/);
     match(rootElement.textContent, /Action-list digest binding is missing/);
     rootElement.remove();
@@ -533,8 +537,6 @@
       policy: policy(),
       candidate: candidate(),
     });
-    equal(buttonNamed(rootElement, 'Approve candidate').disabled, true);
-    equal(buttonNamed(rootElement, 'Reject candidate').disabled, true);
     match(rootElement.textContent, /Action-map digest changed/);
 
     controller.render({
@@ -558,8 +560,6 @@
       policy: policy(),
       candidate: candidate({ actionMapDigest: 'sha256:also-invalid' }),
     });
-    equal(buttonNamed(rootElement, 'Approve candidate').disabled, true);
-    equal(buttonNamed(rootElement, 'Reject candidate').disabled, true);
     match(rootElement.textContent, /Action-map digest binding is invalid/);
     match(rootElement.textContent, /Current action-list digest is invalid/);
     rootElement.remove();

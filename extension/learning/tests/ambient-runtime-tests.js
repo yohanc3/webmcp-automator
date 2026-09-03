@@ -221,13 +221,159 @@ test('content forwards ambient delivery while the service worker adds the intern
   };
   const coordinator = coordinatorApi.createCoordinator({ chromeApi, fetchApi: responseFor(200, { outcome: 'applied', requestId: 'r1' }), retrySpoolApi: {} });
   assert.equal(coordinator.retrySpoolReady, true);
-  assert.deepEqual(await coordinator.handleMessage({ type: 'AMBIENT_DELIVER_LAYER', completedLayer: { layer: { layerId: 'layer_1' } } }), { ok: true, receipt: { outcome: 'applied', receiptId: 'r1' } });
+  assert.deepEqual(await coordinator.handleMessage({ type: 'AMBIENT_DELIVER_LAYER', completedLayer: { layer: { layerId: 'layer_1' } } }), { ok: true, receipt: { actionListCandidate: null, outcome: 'applied', receiptId: 'r1' } });
   assert.equal(calls[0].url, 'http://127.0.0.1:4317/v1/ambient/layers');
   assert.equal(calls[0].options.headers['X-WebMCP-Internal'], 'ambient-v1');
   const conflict = coordinatorApi.createCoordinator({ chromeApi, fetchApi: responseFor(409, {}), retrySpoolApi: {} });
   assert.equal((await conflict.handleMessage({ type: 'AMBIENT_DELIVER_LAYER', completedLayer: {} })).receipt.outcome, 'conflict');
   const retryable = coordinatorApi.createCoordinator({ chromeApi, fetchApi: responseFor(503, {}), retrySpoolApi: {} });
   await assert.rejects(() => retryable.handleMessage({ type: 'AMBIENT_DELIVER_LAYER', completedLayer: {} }), /retryable/);
+});
+
+test('persists the exact accepted action-list candidate pointer by ambient site scope', async () => {
+  const areas = { local: {}, session: {} };
+  const chromeApi = { storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
+    async get(key) { return { [key]: areas[area][key] }; }, async set(value) { Object.assign(areas[area], value); }, async remove() {},
+  }])) };
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const candidate = { digest, listId: 'ambient_site_shop_test', revision: 3, status: 'candidate' };
+  const fetchApi = async () => ({
+    json: async () => ({ actionListCandidate: candidate, outcome: 'applied', requestId: 'receipt_1' }), ok: true, status: 201,
+  });
+  const coordinator = coordinatorApi.createCoordinator({ chromeApi, fetchApi, retrySpoolApi: {} });
+  const completedLayer = { siteScope: { scopeId: 'site_shop_test' } };
+  const response = await coordinator.handleMessage({ type: 'AMBIENT_DELIVER_LAYER', completedLayer });
+  assert.deepEqual(response.receipt.actionListCandidate, candidate);
+  assert.deepEqual(areas.session['ambientActionListCandidate:site_shop_test'], candidate);
+});
+
+test('preserves applied and duplicate candidate pointers without persisting unaccepted receipts', async () => {
+  const areas = { local: {}, session: {} };
+  const chromeApi = { storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
+    async get(key) { return { [key]: areas[area][key] }; }, async set(value) { Object.assign(areas[area], value); }, async remove() {},
+  }])) };
+  const pointer = { digest: `sha256:${'b'.repeat(64)}`, listId: 'ambient_site_shop_test', revision: 4 };
+  const outcomes = ['duplicate', 'no_change'];
+  const coordinator = coordinatorApi.createCoordinator({
+    chromeApi,
+    fetchApi: async () => ({ json: async () => ({ actionListCandidate: pointer, outcome: outcomes.shift(), requestId: 'receipt_2' }), ok: true, status: 200 }),
+    retrySpoolApi: {},
+  });
+  const completedLayer = { siteScope: { scopeId: 'site_shop_test' } };
+  await coordinator.handleMessage({ type: 'AMBIENT_DELIVER_LAYER', completedLayer });
+  assert.deepEqual(areas.session['ambientActionListCandidate:site_shop_test'], pointer);
+  await coordinator.handleMessage({ type: 'AMBIENT_DELIVER_LAYER', completedLayer });
+  assert.deepEqual(areas.session['ambientActionListCandidate:site_shop_test'], pointer);
+});
+
+test('loads only exact authoritative action-map context and candidate bindings for policy review', async () => {
+  const areas = { local: {}, session: {} };
+  const scopeId = 'site_https___shop_test';
+  const mapDigest = `sha256:${'c'.repeat(64)}`;
+  const listDigest = `sha256:${'d'.repeat(64)}`;
+  areas.session[`ambientActionListCandidate:${scopeId}`] = { digest: listDigest, listId: 'ambient_site_https_shop_test', revision: 2 };
+  const chromeApi = {
+    storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
+      async get(key) { return { [key]: areas[area][key] }; }, async set(value) { Object.assign(areas[area], value); }, async remove() {},
+    }])),
+    tabs: { async query() { return [{ url: 'https://shop.test/catalog' }]; } },
+  };
+  const calls = [];
+  const response = (body, { etag = null, status = 200 } = {}) => ({
+    headers: { get: (name) => (name === 'ETag' ? etag : null) }, json: async () => body, ok: status >= 200 && status < 300, status,
+  });
+  const coordinator = coordinatorApi.createCoordinator({
+    chromeApi,
+    fetchApi: async (url) => {
+      calls.push(url);
+      if (url.endsWith('/head')) return response({ digest: mapDigest, revision: 2, siteScopeId: scopeId });
+      if (url.includes('/context?revision=2')) return response({ actions: [{ actionId: 'search', evidenceHandles: ['layer_1:node_1'] }], digest: mapDigest, revision: 2, siteScopeId: scopeId });
+      return response({ actions: [{ id: 'search' }], listId: 'ambient_site_https_shop_test', publication: { revision: 2, status: 'candidate' } }, { etag: `"${listDigest}"` });
+    },
+    retrySpoolApi: { createChromeEncryptedStorage: async () => ({}), createRetrySpool: () => ({ list: async () => [] }) },
+  });
+  const result = await coordinator.handleMessage({ type: 'GET_POLICY_REVIEW_STATE' });
+  assert.deepEqual(calls, [
+    'http://127.0.0.1:4317/v1/action-maps/site_https___shop_test/head',
+    'http://127.0.0.1:4317/v1/action-maps/site_https___shop_test/context?revision=2',
+    'http://127.0.0.1:4317/v1/action-lists/ambient_site_https_shop_test/revisions/2',
+  ]);
+  assert.equal(result.state.actionMap.digest, mapDigest);
+  assert.deepEqual(result.state.actionMap.actions, [{ actionId: 'search', evidenceHandles: ['layer_1:node_1'] }]);
+  assert.deepEqual(result.state.candidate, {
+    actionMapDigest: mapDigest, actionMapRevision: 2, actions: [{ id: 'search' }], contentDigest: listDigest, listDigest, listId: 'ambient_site_https_shop_test', listRevision: 2, publication: { revision: 2, status: 'candidate' }, revision: 2, title: 'ambient_site_https_shop_test',
+  });
+});
+
+test('fails closed for absent, offline, malformed, and mismatched policy-review action maps', async () => {
+  const scopeId = 'site_https___shop_test';
+  const chromeApi = {
+    storage: Object.fromEntries(['local', 'session'].map((area) => [area, { async get() { return {}; }, async set() {}, async remove() {} }])),
+    tabs: { async query() { return [{ url: 'https://shop.test/catalog' }]; } },
+  };
+  const cases = [
+    { name: 'not found', fetchApi: async () => ({ json: async () => ({}), ok: false, status: 404 }), status: 'no_map' },
+    { name: 'offline', fetchApi: async () => { throw new Error('offline'); }, status: 'unavailable' },
+    { name: 'malformed', fetchApi: async () => ({ json: async () => ({ siteScopeId: scopeId }), ok: true, status: 200 }), status: 'unavailable' },
+    {
+      name: 'mismatched context',
+      fetchApi: async (url) => (url.endsWith('/head')
+        ? { json: async () => ({ digest: `sha256:${'e'.repeat(64)}`, revision: 2, siteScopeId: scopeId }), ok: true, status: 200 }
+        : { json: async () => ({ actions: [], digest: `sha256:${'f'.repeat(64)}`, revision: 2, siteScopeId: scopeId }), ok: true, status: 200 }),
+      status: 'unavailable',
+    },
+  ];
+  for (const scenario of cases) {
+    const coordinator = coordinatorApi.createCoordinator({
+      chromeApi,
+      fetchApi: scenario.fetchApi,
+      retrySpoolApi: { createChromeEncryptedStorage: async () => ({}), createRetrySpool: () => ({ list: async () => [] }) },
+    });
+    const result = await coordinator.handleMessage({ type: 'GET_POLICY_REVIEW_STATE' });
+    assert.equal(result.state.actionMap, null, scenario.name);
+    assert.equal(result.state.candidate, null, scenario.name);
+    assert.equal(result.state.actionMapStatus.status, scenario.status, scenario.name);
+  }
+});
+
+test('omits candidates whose ETag or document bindings are not exact', async () => {
+  const scopeId = 'site_https___shop_test';
+  const mapDigest = `sha256:${'e'.repeat(64)}`;
+  const listDigest = `sha256:${'f'.repeat(64)}`;
+  const areas = { local: {}, session: { [`ambientActionListCandidate:${scopeId}`]: { digest: listDigest, listId: 'candidate_list', revision: 2 } } };
+  const chromeApi = {
+    storage: Object.fromEntries(['local', 'session'].map((area) => [area, { async get(key) { return { [key]: areas[area][key] }; }, async set(value) { Object.assign(areas[area], value); }, async remove() {} }])),
+    tabs: { async query() { return [{ url: 'https://shop.test/catalog' }]; } },
+  };
+  const coordinator = coordinatorApi.createCoordinator({
+    chromeApi,
+    fetchApi: async (url) => {
+      if (url.endsWith('/head')) return { json: async () => ({ digest: mapDigest, revision: 2, siteScopeId: scopeId }), ok: true, status: 200 };
+      if (url.includes('/context?')) return { json: async () => ({ actions: [], digest: mapDigest, revision: 2, siteScopeId: scopeId }), ok: true, status: 200 };
+      return { headers: { get: () => `"sha256:${'0'.repeat(64)}"` }, json: async () => ({ listId: 'candidate_list', publication: { revision: 2, status: 'candidate' } }), ok: true, status: 200 };
+    },
+    retrySpoolApi: { createChromeEncryptedStorage: async () => ({}), createRetrySpool: () => ({ list: async () => [] }) },
+  });
+  const result = await coordinator.handleMessage({ type: 'GET_POLICY_REVIEW_STATE' });
+  assert.equal(result.state.actionMap.digest, mapDigest);
+  assert.equal(result.state.candidate, null);
+});
+
+test('unsupported review messages are fail-closed without fetch, tabs, jobs, or storage effects', async () => {
+  let fetches = 0;
+  let tabCalls = 0;
+  let storageWrites = 0;
+  const chromeApi = {
+    storage: Object.fromEntries(['local', 'session'].map((area) => [area, { async get() { return {}; }, async set() { storageWrites += 1; }, async remove() { storageWrites += 1; } }])),
+    tabs: { async create() { tabCalls += 1; }, async query() { tabCalls += 1; }, async sendMessage() { tabCalls += 1; } },
+  };
+  const coordinator = coordinatorApi.createCoordinator({ chromeApi, fetchApi: async () => { fetches += 1; }, retrySpoolApi: {} });
+  for (const type of ['SUBMIT_CANDIDATE_REVIEW', 'OPEN_CANDIDATE_EVIDENCE', 'SUBMIT_RUN_CONFIRMATION']) {
+    const result = await coordinator.handleMessage({ type });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /Unsupported/);
+  }
+  assert.deepEqual({ fetches, storageWrites, tabCalls }, { fetches: 0, storageWrites: 0, tabCalls: 0 });
 });
 
 test('content runtime never fetches ambient layers directly', async () => {
