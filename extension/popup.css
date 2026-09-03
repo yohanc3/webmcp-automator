@@ -3,8 +3,13 @@
   --paper: #171819;
   --surface: #1f2122;
   --surface-raised: #27292a;
+  --surface-inset: #1a1b1c;
+  --control-background: #141516;
   --line: #3a3d3e;
+  --line-soft: rgb(58 61 62 / 55%);
   --text: #f1f1ed;
+  --secondary: #c9cbc8;
+  --tertiary: #858a87;
   --muted: #a8aca9;
   --amber: #f0ad3c;
   --green: #68c58a;
@@ -29,8 +34,16 @@ body {
 }
 
 button,
+input,
 textarea {
   font: inherit;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 1px solid var(--blue);
+  outline-offset: 2px;
 }
 
 .shell {
@@ -177,7 +190,7 @@ p {
 }
 
 .button:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.55;
 }
 
@@ -277,7 +290,7 @@ p {
   border-radius: 0;
   outline: none;
   color: var(--text);
-  background: #141516;
+  background: var(--control-background);
   font-size: 12px;
   line-height: 1.4;
   text-transform: none;

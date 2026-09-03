@@ -11,6 +11,8 @@ extension/learning/bootstrap.js
 extension/shared/errors.js
 extension/shared/protocol.js
 extension/source/bootstrap.js
+extension/ui/README.md
+extension/ui/policy-review.js
 extension/tests/index.html
 extension/tests/test-harness.js
 documentation/README.md
