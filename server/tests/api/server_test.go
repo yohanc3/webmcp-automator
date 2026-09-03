@@ -38,6 +38,15 @@ type memoryStore struct {
 	observations map[string]store.RunObservation
 }
 
+type ambientMemoryStore struct {
+	*memoryStore
+	*store.MemoryActionMapStore
+}
+
+func newAmbientMemoryStore() *ambientMemoryStore {
+	return &ambientMemoryStore{memoryStore: newMemoryStore(), MemoryActionMapStore: store.NewMemoryActionMapStore()}
+}
+
 func newMemoryStore() *memoryStore {
 	return &memoryStore{
 		sessions:     map[string]store.Session{},
@@ -353,7 +362,7 @@ func (failingDiscoverer) Discover(
 }
 
 func TestHealthReportsPostgres(t *testing.T) {
-	database := newMemoryStore()
+	database := newAmbientMemoryStore()
 	server := api.New(database, &fakeDiscoverer{}, false, "openrouter", "fake", "")
 	request := httptest.NewRequest(http.MethodGet, "/health", nil)
 	response := httptest.NewRecorder()
@@ -365,6 +374,21 @@ func TestHealthReportsPostgres(t *testing.T) {
 	_ = json.Unmarshal(response.Body.Bytes(), &body)
 	if body["database"] != "postgres" {
 		t.Fatalf("expected postgres health response, got %#v", body)
+	}
+}
+
+func TestAmbientMutationRejectsWebpageOriginBeforeBodyParsing(t *testing.T) {
+	database := newAmbientMemoryStore()
+	server := api.New(database, &fakeDiscoverer{}, false, "openrouter", "fake", "")
+	request := httptest.NewRequest(http.MethodPost, "/v1/ambient/layers", strings.NewReader("not json"))
+	request.Header.Set("Origin", "https://untrusted.example")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("expected webpage origin rejection, got %d: %s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("webpage origin received CORS permission: %q", response.Header().Get("Access-Control-Allow-Origin"))
 	}
 }
 
