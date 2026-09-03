@@ -4,9 +4,10 @@
     root.WebMcpErrors,
     root.WebMcpManifest,
     root.WebMcpRunner,
+    root.WebMcpSemantic,
   );
 }(typeof globalThis === 'undefined' ? this : globalThis,
-  (protocol, publicErrors, manifestContract, runner) => {
+  (protocol, publicErrors, manifestContract, runner, semantic) => {
     'use strict';
 
     const {
@@ -19,6 +20,11 @@
     const registrationControllers = new Map();
 
     const sendMessage = (message) => sendRuntimeMessage(chrome.runtime, message);
+
+    // Readiness belongs to the source bridge, not to optional ambient capture.
+    const initialize = () => sendMessage(createMessage(MESSAGE_TYPES.pageReady, {
+      state: semantic.capturePageState(),
+    }));
 
     const waitForJob = async (jobId, signal) => {
       while (!signal?.aborted) {
@@ -98,6 +104,7 @@
 
     return {
       handleMessage,
+      initialize,
       registerAdapters,
       waitForJob,
     };
