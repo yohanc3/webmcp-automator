@@ -74,6 +74,7 @@
         scopes: Array.isArray(incoming.scopes) ? incoming.scopes : [incoming.scope || 'ambient_learn'],
         source: incoming.source || 'local_policy_review',
         status: incoming.enabled === false ? 'revoked' : (incoming.decision || incoming.status || 'allowed'),
+        overrideAudit: incoming.overrideAudit || null,
       };
       await set('local', policyKey(origin), policy);
       return policy;
@@ -207,10 +208,11 @@
           const tabs = sender.tab ? [sender.tab] : await chromeApi.tabs.query({ active: true, lastFocusedWindow: true });
           const override = message.override;
           const origin = originFromUrl(tabs[0]?.url);
-          if (origin !== 'http://127.0.0.1:4317' || override.origin !== origin || override.requestedScope !== 'ambient_learn' || Number.isNaN(Date.parse(override.acknowledgedAt || ''))) return { ok: false, error: 'Owned demo override is not valid for this active origin' };
-          if (override.enabled === false && override.reasonCode === 'OWNED_DEMO_OVERRIDE_DISABLED') return { ok: true, policy: await savePolicy({ ...override, decision: 'revoked', scope: 'ambient_learn', source: 'owned_demo_override' }, tabs[0]?.url) };
+          if (origin !== 'http://127.0.0.1:4317' || override.origin !== origin || override.requestedScope !== 'ambient_learn') return { ok: false, error: 'Owned demo override is not valid for this active origin' };
+          if (override.enabled === false && override.reasonCode === 'OWNED_DEMO_OVERRIDE_DISABLED') return { ok: true, policy: await savePolicy({ ...override, decision: 'revoked', scope: 'ambient_learn', source: 'owned_demo_override', overrideAudit: { action: 'disabled', at: now(), reasonCode: override.reasonCode } }, tabs[0]?.url) };
+          if (Number.isNaN(Date.parse(override.acknowledgedAt || ''))) return { ok: false, error: 'Owned demo enable requires an acknowledgement time' };
           if (override.enabled !== true || override.reasonCode !== 'OWNED_DEMO_EXPLICIT_OVERRIDE') return { ok: false, error: 'Owned demo override is not valid for this active origin' };
-          return { ok: true, policy: await savePolicy({ ...override, decision: 'allowed', scope: 'ambient_learn', source: 'owned_demo_override' }, tabs[0]?.url) };
+          return { ok: true, policy: await savePolicy({ ...override, decision: 'allowed', scope: 'ambient_learn', source: 'owned_demo_override', overrideAudit: { action: 'enabled', at: now(), reasonCode: override.reasonCode } }, tabs[0]?.url) };
         }
         case 'SUBMIT_POLICY_DECISION': {
           const tabs = sender.tab ? [sender.tab] : await chromeApi.tabs.query({ active: true, lastFocusedWindow: true });
