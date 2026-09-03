@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="A spatial reconstruction of an X Home interface from extracted XML geometry.">
+    <title>UI Reconstruction · X Action Atlas</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body data-page="reconstruction">
+    <a class="skip-link" href="#ui-stage">Skip to reconstructed UI</a>
+    <header class="app-header">
+      <a class="brand" href="index.html" aria-label="X Action Atlas home">
+        <span class="brand-mark">X</span>
+        <span>
+          <strong>Action Atlas</strong>
+          <small>XML → human intent</small>
+        </span>
+      </a>
+      <nav class="view-switcher" aria-label="Views">
+        <a href="index.html">Action map</a>
+        <a class="is-active" href="ui.html" aria-current="page">UI reconstruction</a>
+      </nav>
+      <span class="snapshot-source">x.com/home · XML snapshot</span>
+    </header>
+
+    <main class="reconstruction-shell">
+      <section class="reconstruction-intro" aria-labelledby="ui-title">
+        <div>
+          <p class="eyebrow">Separate visual view</p>
+          <h1 id="ui-title">What the extracted page looked like.</h1>
+          <p class="lede">
+            Geometry is direct from XML. Typography, icon symbols, and absent media are reconstructed cues.
+          </p>
+        </div>
+        <div class="scale-controls" aria-label="Canvas scale">
+          <span>Scale</span>
+          <button type="button" data-scale="0.5">50%</button>
+          <button class="is-active" type="button" data-scale="0.7">70%</button>
+          <button type="button" data-scale="0.85">85%</button>
+        </div>
+      </section>
+
+      <div class="reconstruction-grid">
+        <section class="canvas-panel" aria-label="Reconstructed X page">
+          <div class="canvas-toolbar">
+            <div>
+              <strong id="canvas-summary"></strong>
+              <span>Original coordinates retained</span>
+            </div>
+            <label class="toggle-label">
+              <input id="show-labels" type="checkbox" checked>
+              <span>Show XML IDs</span>
+            </label>
+          </div>
+          <div class="ui-stage-frame" id="ui-stage" tabindex="0">
+            <div class="ui-stage-sizer" id="ui-stage-sizer">
+              <div class="ui-canvas" id="ui-canvas">
+                <div class="ui-column ui-column-nav"><span>Primary navigation</span></div>
+                <div class="ui-column ui-column-feed"><span>Home timeline</span></div>
+                <div class="ui-column ui-column-rail"><span>Discovery rail</span></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="ui-inspector" aria-labelledby="inspector-title">
+          <div class="inspector-sticky">
+            <p class="eyebrow">Selected hit target</p>
+            <h2 id="inspector-title">Choose an action</h2>
+            <p class="inspector-outcome" id="inspector-outcome">
+              Click any reconstructed control to see the human interpretation and XML evidence.
+            </p>
+            <div id="inspector-content"></div>
+            <a class="secondary-link" id="inspector-ledger-link" href="index.html" hidden>
+              Open in action ledger →
+            </a>
+            <div class="reconstruction-key">
+              <h3>How to read this</h3>
+              <p><strong>Solid surfaces</strong> are structural regions and post cards.</p>
+              <p><strong>Blue outlines</strong> are confirmed links or labeled controls.</p>
+              <p><strong>Amber outlines</strong> are inferred icon actions.</p>
+              <p><strong>Dotted outlines</strong> are controls the XML cannot identify.</p>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </main>
+
+    <script src="data.js"></script>
+    <script src="model.js"></script>
+    <script src="ui-app.js"></script>
+  </body>
+</html>
