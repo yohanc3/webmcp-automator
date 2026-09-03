@@ -26,6 +26,7 @@
 
   const MESSAGE_TYPES = Object.freeze({
     ambientConsumePending: 'AMBIENT_CONSUME_PENDING',
+    ambientClearPending: 'AMBIENT_CLEAR_PENDING',
     ambientNextLayerSequence: 'AMBIENT_NEXT_LAYER_SEQUENCE',
     ambientPolicyCurrent: 'AMBIENT_POLICY_CURRENT',
     ambientPutPending: 'AMBIENT_PUT_PENDING',

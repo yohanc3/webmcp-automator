@@ -239,6 +239,8 @@
     incompleteLayerTtlMs = INCOMPLETE_LAYER_TTL_MS,
     backgroundAllowed = false,
     onCompletedLayer = () => {},
+    onNavigationPending = () => {},
+    onNavigationSettled = () => {},
   } = {}) => {
     if (typeof eligibility?.current !== 'function') {
       throw new TypeError('Ambient capture requires an eligibility.current port');
@@ -385,6 +387,7 @@
           const [observationId, pending] = entry;
           current.pending.delete(observationId);
           clearTimer(pending.timer);
+          onNavigationSettled(observationId);
           const observation = {
             ...pending.observation,
             fromLayerId: current.lastLayerId,
@@ -419,6 +422,7 @@
       const timer = setTimer(() => {
         if (active !== current) return;
         current.pending.delete(observationId);
+        onNavigationSettled(observationId);
         current.discardedSequences.add(observation.eventSequence);
         current.connection?.discard?.(observationId, 'incomplete_layer_ttl');
         void flushCompletedObservations(current);
@@ -429,6 +433,9 @@
         timer,
         boundary: null,
       });
+      if (candidate.navigation === true) {
+        onNavigationPending({ ...observation, fromLayerId: current.lastLayerId });
+      }
       return observationId;
     };
 

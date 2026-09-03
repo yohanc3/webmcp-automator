@@ -7,6 +7,8 @@ const test = require('node:test');
 const ambientRuntime = require('../ambient-runtime.js');
 const coordinatorApi = require('../../coordinator/bootstrap.js');
 const retrySpool = require('../retry-spool.js');
+const privacy = require('../privacy.js');
+const semantic = require('../semantic.js');
 
 const policy = (overrides = {}) => ({
   checkedAt: '2026-09-03T12:00:00.000Z',
@@ -62,6 +64,7 @@ const fakeChrome = (policies, outcomes = ['no_change']) => {
         if (message.type === 'AMBIENT_NEXT_LAYER_SEQUENCE') response.sequence = ++sequence;
         if (message.type === 'AMBIENT_CONSUME_PENDING') { response.pending = pending; pending = null; }
         if (message.type === 'AMBIENT_PUT_PENDING') { pending = message.pending; response.pending = pending; }
+        if (message.type === 'AMBIENT_CLEAR_PENDING') { response.cleared = pending?.observationId === message.observationId; if (response.cleared) pending = null; }
         if (message.type === 'AMBIENT_SPOOL_OPERATION') {
           const { operation, payload = {} } = message;
           if (operation === 'enqueue') { const record = { completedLayer: payload.completedLayer, id: payload.completedLayer.layer.layerId, state: 'queued' }; records.set(record.id, record); response.result = record; }
@@ -107,26 +110,27 @@ test('a policy-change allow attaches automatically after an initial denial', asy
   assert.equal(runtime.controller.status().attached, true);
 });
 
-test('pagehide carries only an unresolved trusted navigation once into the recreated document', async () => {
+test('trusted navigation is bridged immediately and consumed once by the recreated document', async () => {
   const chromeApi = fakeChrome([policy(), policy(), policy(), policy()]);
   const firstWindow = fakeWindow();
-  let navigation = { kind: 'click', observationId: 'obs_real', targetEvidenceId: 'node_link' };
+  let callbacks;
   const firstObserver = {
-    attach() { return { consumeNavigation: () => { const value = navigation; navigation = null; return value; }, disconnect() {} }; },
+    attach(value) { callbacks = value; return { disconnect() {} }; },
     async captureInitial() { return projection(); },
   };
   const first = ambientRuntime.createRuntime({ chromeApi, documentApi: fakeDocument(), fetchApi: async () => null, observer: firstObserver, windowApi: firstWindow });
   await first.start();
-  firstWindow.emit('pagehide');
+  const id = callbacks.onObservation({ kind: 'click', navigation: true, targetEvidenceId: 'node_link', trusted: true });
   await new Promise((resolve) => setImmediate(resolve));
   const second = ambientRuntime.createRuntime({ chromeApi, documentApi: fakeDocument(), fetchApi: async () => null, observer: fakeObserver(), windowApi: fakeWindow() });
   await second.start();
   const enqueued = chromeApi.calls.filter(({ type, operation }) => type === 'AMBIENT_SPOOL_OPERATION' && operation === 'enqueue');
-  assert.equal(enqueued.at(-1).payload.completedLayer.observation.observationId, 'obs_real');
+  assert.equal(enqueued.at(-1).payload.completedLayer.observation.observationId, id);
   assert.equal(enqueued.at(-1).payload.completedLayer.observation.kind, 'click');
   firstWindow.emit('pagehide');
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(chromeApi.calls.filter(({ type }) => type === 'AMBIENT_PUT_PENDING').length, 1);
+  first.controller.stop();
 });
 
 test('denied policy never attaches, while a later fresh allow attaches without reload', async () => {
@@ -175,6 +179,9 @@ test('service worker serializes policy revisions and tab-scoped causal lifecycle
     type: 'AMBIENT_NEXT_LAYER_SEQUENCE', scopeId: 'shop_scope',
   }, sender)));
   assert.deepEqual(sequences.map(({ sequence }) => sequence), [1, 2, 3, 4]);
+  await coordinator.handleMessage({ type: 'AMBIENT_PUT_PENDING', scopeId: 'shop_scope', documentId: 'ignored', pending: { observationId: 'obs_1' } }, sender);
+  assert.equal((await coordinator.handleMessage({ type: 'AMBIENT_CLEAR_PENDING', scopeId: 'shop_scope', documentId: 'ignored', observationId: 'other' }, sender)).cleared, false);
+  assert.equal((await coordinator.handleMessage({ type: 'AMBIENT_CLEAR_PENDING', scopeId: 'shop_scope', documentId: 'ignored', observationId: 'obs_1' }, sender)).cleared, true);
   await coordinator.handleMessage({ type: 'AMBIENT_PUT_PENDING', scopeId: 'shop_scope', documentId: 'ignored', pending: { observationId: 'obs_1' } }, sender);
   assert.deepEqual((await coordinator.handleMessage({ type: 'AMBIENT_CONSUME_PENDING', scopeId: 'shop_scope', documentId: 'ignored' }, sender)).pending, { observationId: 'obs_1' });
   assert.equal((await coordinator.handleMessage({ type: 'AMBIENT_CONSUME_PENDING', scopeId: 'shop_scope', documentId: 'ignored' }, sender)).pending, null);
@@ -229,6 +236,53 @@ test('encrypted retry storage keeps only JWK session material and ciphertext loc
   assert.deepEqual(values.local.ambientRetryRecords, undefined);
 });
 
+test('semantic XML retains deterministic sanitized allowlisted attributes without a privacy canary', () => {
+  const ledger = privacy.createLedger();
+  const attributes = privacy.sanitizeAttributes({
+    href: 'https://shop.test/orders?token=canary-secret-12345',
+    placeholder: 'Order number',
+    'data-field': 'orderId',
+    itemprop: 'order',
+    type: 'search',
+    'aria-expanded': 'false',
+    'data-private': 'canary-secret-12345',
+  }, { ledger });
+  const xml = semantic.nodesToXml([{
+    attributes,
+    css: '#orders',
+    id: 'node_orders',
+    name: 'Open orders',
+    role: 'link',
+    tag: 'a',
+    text: null,
+  }], 'https://shop.test/catalog', 'Store');
+  assert.match(xml, /href="https:\/\/shop.test\/orders"/);
+  assert.match(xml, /data-field="orderId"/);
+  assert.match(xml, /placeholder="Order number"/);
+  assert.equal(xml.includes('data-private'), false);
+  assert.equal(xml.includes('canary-secret-12345'), false);
+  assert.equal(ledger.summary().total > 0, true);
+});
+
+test('runtime projection attaches the real nonzero privacy ledger summary', async () => {
+  const observer = ambientRuntime.defaultObserver({
+    documentApi: fakeDocument(),
+    privacyApi: privacy,
+    semanticApi: {
+      capturePageState({ ledger }) {
+        ledger.record('credential', 2);
+        return { nodes: [{ id: 'node_safe' }], semanticXml: '<semantic-ui schema="semantic-ui/2" />' };
+      },
+    },
+    windowApi: fakeWindow(),
+  });
+  const captured = await observer.captureInitial();
+  assert.deepEqual(captured.redactions, {
+    schemaVersion: 'redaction-ledger/1', total: 2, counts: { credential: 2 },
+  });
+  assert.equal(captured.rawPersisted, false);
+});
+
 test('default observer records trusted event kinds, route hooks, and removes the exact popstate callback', () => {
   class Element {
     constructor({ form = null, navigation = false } = {}) { this.form = form; this.navigation = navigation; }
@@ -258,8 +312,6 @@ test('default observer records trusted event kinds, route hooks, and removes the
   windowApi.history.replaceState({}, '', '/again');
   windowApi.emit('popstate');
   assert.deepEqual(seen, ['click', 'other', 'fill', 'press', 'submit']);
-  assert.equal(connection.consumeNavigation().kind, 'submit');
-  assert.equal(connection.consumeNavigation(), null);
   connection.disconnect();
   windowApi.emit('popstate');
 });

@@ -2,10 +2,11 @@
   const runtime = factory(
     root.WebMcpAmbientCapture || (typeof module === 'object' && module.exports ? require('./ambient-capture.js') : null),
     root.WebMcpLearningSemantic || (typeof module === 'object' && module.exports ? { capturePageState: () => ({ nodes: [], semanticXml: '' }), describeElement: () => ({ id: 'node_test' }) } : null),
+    root.WebMcpLearningPrivacy || (typeof module === 'object' && module.exports ? require('./privacy.js') : null),
   );
   root.WebMcpAmbientRuntime = runtime;
   if (typeof module === 'object' && module.exports) module.exports = runtime;
-}(typeof globalThis === 'undefined' ? this : globalThis, (capture, semantic) => {
+}(typeof globalThis === 'undefined' ? this : globalThis, (capture, semantic, privacy) => {
   'use strict';
 
   const BACKEND = 'http://127.0.0.1:4317';
@@ -36,20 +37,19 @@
     if (['applied', 'duplicate', 'no_change', 'rejected'].includes(body.outcome)) return { outcome: body.outcome, receiptId: body.requestId || null };
     throw new Error('Ambient transfer returned an unrecognized outcome');
   };
-  const defaultObserver = ({ documentApi, windowApi }) => ({
+  const defaultObserver = ({ documentApi, privacyApi = privacy, semanticApi = semantic, windowApi }) => ({
     attach({ onObservation, onSettled }) {
       let timer = null;
       const pending = new Map();
-      let navigation = null;
       const project = () => {
-        const page = semantic.capturePageState({ document: documentApi });
-        return { ...page, evidenceIds: page.nodes.map(({ id }) => id), rawPersisted: false };
+        const ledger = privacyApi.createLedger();
+        const page = semanticApi.capturePageState({ document: documentApi, ledger });
+        return { ...page, evidenceIds: page.nodes.map(({ id }) => id), rawPersisted: false, redactions: ledger.summary() };
       };
       const settle = (kind = 'semantic_update') => {
         clearTimeout(timer);
         timer = setTimeout(() => pending.forEach((value, id) => {
           pending.delete(id);
-          if (navigation?.observationId === id) navigation = null;
           const projection = project();
           onSettled(id, { outcome: { kind, evidenceIds: projection.evidenceIds }, projection });
         }), 180);
@@ -62,11 +62,10 @@
       };
       const observe = (event, kind) => {
         if (!event.isTrusted || windowApi.__webMcpRunnerActive || windowApi.__webMcpActorActive) return;
-        const target = event.target instanceof windowApi.Element ? semantic.describeElement(event.target, { argumentsByValue: new Map() }) : null;
-        const id = onObservation({ kind, targetEvidenceId: target?.id, trusted: true });
+        const target = event.target instanceof windowApi.Element ? semanticApi.describeElement(event.target, { argumentsByValue: new Map() }) : null;
+          const id = onObservation({ kind, navigation: navigationCausing(event, kind), targetEvidenceId: target?.id, trusted: true });
         if (id) {
           pending.set(id, true);
-          if (navigationCausing(event, kind)) navigation = { kind, observationId: id, targetEvidenceId: target?.id || null };
           settle();
         }
       };
@@ -88,25 +87,27 @@
       windowApi.addEventListener('popstate', popstate);
       mutations.observe(documentApi.documentElement, { childList: true, subtree: true, characterData: true });
       return {
-        consumeNavigation() { const value = navigation; navigation = null; return value; },
         disconnect() { clearTimeout(timer); pending.clear(); mutations.disconnect(); undoPush(); undoReplace(); documentApi.removeEventListener('click', click, true); documentApi.removeEventListener('focusin', focus, true); documentApi.removeEventListener('input', input, true); documentApi.removeEventListener('submit', submit, true); documentApi.removeEventListener('keydown', keydown, true); windowApi.removeEventListener('popstate', popstate); },
       };
     },
     async captureInitial() {
-      const page = semantic.capturePageState({ document: documentApi });
-      return { ...page, evidenceIds: page.nodes.map(({ id }) => id), rawPersisted: false };
+      const ledger = privacyApi.createLedger();
+      const page = semanticApi.capturePageState({ document: documentApi, ledger });
+      return { ...page, evidenceIds: page.nodes.map(({ id }) => id), rawPersisted: false, redactions: ledger.summary() };
     },
   });
-  const createRuntime = ({ chromeApi = chrome, documentApi = document, fetchApi = fetch, observer = null, windowApi = window } = {}) => {
+  const createRuntime = ({ chromeApi = chrome, documentApi = document, fetchApi = fetch, observer = null, privacyApi = privacy, semanticApi = semantic, windowApi = window } = {}) => {
     const origin = windowApi.location.origin;
     const siteScope = { origin, routePatterns: ['^/.*$'], scopeId: scopeFor(origin) };
     const runtime = chromeApi.runtime;
-    const observerPort = observer || defaultObserver({ documentApi, windowApi });
+    const observerPort = observer || defaultObserver({ documentApi, privacyApi, semanticApi, windowApi });
     let observerConnection = null;
     const controller = capture.createAmbientCapture({
       delivery: { deliver: async (layer) => classify(await fetchApi(`${BACKEND}/v1/ambient/layers`, { body: JSON.stringify(layer), headers: { 'Content-Type': 'application/json' }, method: 'POST' })) },
       eligibility: policyPort(runtime),
       layerSequence: { next: async (scopeId) => (await message(runtime, { type: 'AMBIENT_NEXT_LAYER_SEQUENCE', scopeId })).sequence },
+      onNavigationPending: (pending) => void message(runtime, { type: 'AMBIENT_PUT_PENDING', scopeId: siteScope.scopeId, documentId: 'top', pending }),
+      onNavigationSettled: (observationId) => void message(runtime, { type: 'AMBIENT_CLEAR_PENDING', scopeId: siteScope.scopeId, documentId: 'top', observationId }),
       observer: {
         attach(options) { observerConnection = observerPort.attach(options); return observerConnection; },
         captureInitial: (...args) => observerPort.captureInitial(...args),
@@ -119,13 +120,6 @@
       documentApi.documentElement.dataset.webMcpAmbient = result.attached ? 'attached' : 'policy_denied';
       return result;
     };
-    windowApi.addEventListener('pagehide', () => {
-      const status = controller.status();
-      const navigation = observerConnection?.consumeNavigation?.();
-      if (!status.lastLayerId || !navigation) return;
-      const pending = { fromLayerId: status.lastLayerId, kind: navigation.kind, observationId: navigation.observationId, eventSequence: status.eventSequence, targetEvidenceId: navigation.targetEvidenceId, argumentTokens: [] };
-      void message(runtime, { type: 'AMBIENT_PUT_PENDING', scopeId: siteScope.scopeId, documentId: 'top', pending });
-    }, { once: true });
     chromeApi.storage.onChanged?.addListener((changes, area) => {
       if (area !== 'local' || !changes[`ambientPolicy:${origin}`]) return;
       void controller.requestDelivery();

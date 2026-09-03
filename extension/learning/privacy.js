@@ -9,10 +9,15 @@
 
   const ATTRIBUTE_ALLOWLIST = new Set([
     'aria-checked',
+    'aria-controls',
     'aria-current',
+    'aria-describedby',
     'aria-expanded',
+    'aria-label',
+    'aria-labelledby',
     'aria-selected',
     'data-component-type',
+    'data-field',
     'data-product-card',
     'data-product-id',
     'data-testid',

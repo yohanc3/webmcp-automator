@@ -193,6 +193,15 @@
     await fixture.capture.whenIdle();
   });
 
+  test('carries the projection redaction ledger into completed-layer privacy metadata', async () => {
+    const fixture = createFixture({ initialProjection: projection({ marker: '[redacted]' }) });
+    const { initialLayer } = await start(fixture);
+    equal(initialLayer.privacy.redactionCount, 1);
+    deepEqual(initialLayer.privacy.categories, ['credential']);
+    equal(initialLayer.privacy.rawPersisted, false);
+    await fixture.capture.whenIdle();
+  });
+
   test('buffers an attachment-time event until the initial layer has committed', async () => {
     const layers = [];
     let earlySettlement = Promise.resolve();

@@ -1,5 +1,7 @@
 (function initializeLearningSemantic(root, factory) {
-  const semantic = factory(root.WebMcpLearningPrivacy);
+  const semantic = factory(
+    root.WebMcpLearningPrivacy || (typeof module === 'object' && module.exports ? require('./privacy.js') : null),
+  );
   root.WebMcpLearningSemantic = semantic;
   root.WebMcpSemantic = semantic;
   if (typeof module === 'object' && module.exports) {
@@ -236,12 +238,19 @@
 
   const nodesToXml = (nodes, url, title) => [
     `<semantic-ui schema="semantic-ui/2" url="${xmlSafe(url)}" title="${xmlSafe(title)}">`,
-    ...nodes.map((node) => [
-      `  <node ref="${xmlSafe(node.id)}" tag="${xmlSafe(node.tag)}"`,
-      node.role ? ` role="${xmlSafe(node.role)}"` : '',
-      node.name ? ` name="${xmlSafe(node.name)}"` : '',
-      ` css="${xmlSafe(node.css)}">${xmlSafe(node.text || '')}</node>`,
-    ].join('')),
+    ...nodes.map((node) => {
+      const attributes = Object.entries(node.attributes || {})
+        .filter(([name]) => !['name', 'role'].includes(name))
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([name, value]) => ` ${xmlSafe(name)}="${xmlSafe(value)}"`)
+        .join('');
+      return [
+        `  <node ref="${xmlSafe(node.id)}" tag="${xmlSafe(node.tag)}"`,
+        node.role ? ` role="${xmlSafe(node.role)}"` : '',
+        node.name ? ` name="${xmlSafe(node.name)}"` : '',
+        ` css="${xmlSafe(node.css)}"${attributes}>${xmlSafe(node.text || '')}</node>`,
+      ].join('');
+    }),
     '</semantic-ui>',
   ].join('\n');
 
@@ -340,6 +349,7 @@
     diffStates,
     eventValue,
     isInteractive,
+    nodesToXml,
     roleFor,
   });
 }));
