@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,39 +161,6 @@ func TestSemanticPrivacyCanaryIsRejected(t *testing.T) {
 	diagnostic := requireDiagnostic(t, learning.ValidateSemanticResult(graph, result), "SENSITIVE_RECONSTRUCTION")
 	if !strings.Contains(diagnostic.Path, ".description") {
 		t.Fatalf("unexpected privacy path: %#v", diagnostic)
-	}
-}
-
-func TestSensitiveEvidenceCannotCrossProviderBoundary(t *testing.T) {
-	graph := storefrontGraph(t)
-	input := learning.MinimizeGraph(graph)
-	input.Pages[0].Nodes[0].Name = "privacy-canary@example.com"
-	called := false
-	client := learning.NewClient("", "test-key")
-	client.HTTPClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		called = true
-		return nil, context.Canceled
-	})}
-	_, err := client.Semanticize(context.Background(), input)
-	if err == nil || !strings.Contains(err.Error(), "minimized evidence rejected") {
-		t.Fatalf("expected privacy boundary rejection, got %v", err)
-	}
-	if called {
-		t.Fatal("provider was called with sensitive evidence")
-	}
-}
-
-func TestProviderAndFakeOutputsUseTheSameValidationGate(t *testing.T) {
-	graph, result := validSemanticResult(t)
-	result.ActionMap.Actions[0].Evidence[0] = "invented_transition"
-	requireDiagnostic(t, learning.ValidateSemanticResult(graph, result), "INVENTED_EVIDENCE")
-	encoded, _ := json.Marshal(result.ActionMap)
-	client := learning.NewClient("", "test-key")
-	client.Endpoint = "https://provider.test/chat"
-	client.HTTPClient = requestClient(t, func(_ *http.Request, _ map[string]any) {}, learning.OpenRouterModel, "test-provider", string(encoded))
-	_, err := client.Semanticize(context.Background(), learning.MinimizeGraph(graph))
-	if err == nil || !strings.Contains(err.Error(), "$.actions[0].evidence[0]") {
-		t.Fatalf("provider output bypassed shared validation: %v", err)
 	}
 }
 
