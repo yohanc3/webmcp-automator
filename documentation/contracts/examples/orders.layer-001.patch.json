@@ -1,0 +1,143 @@
+{
+  "schemaVersion": "action-map-patch/1",
+  "patchId": "patch_orders_001",
+  "requestId": "parse_orders_001",
+  "idempotencyKey": "sha256:9bb83aa28261962a45302016f2ef9c040bbd057d5e8fc8cab73f3a02a1449f3b",
+  "siteScopeId": "owned_account_orders",
+  "layerSequence": 1,
+  "mapBase": {
+    "revision": 0,
+    "digest": null
+  },
+  "parser": {
+    "parserId": "ambient_action_parser",
+    "parserVersion": "1.0.0",
+    "promptVersion": "ambient-v1"
+  },
+  "decision": "patch",
+  "summary": "Infer an executable Open orders action from the Account page semantic link.",
+  "operations": [
+    {
+      "op": "upsert_state",
+      "entityId": "account_home",
+      "state": {
+        "id": "account_home",
+        "label": "Account home",
+        "urlPattern": "^https://shop\\.example/account(?:\\?.*)?$",
+        "fingerprint": null,
+        "evidence": [
+          "layer_orders_001:node_account_heading"
+        ]
+      },
+      "provenance": "inferred",
+      "reason": "The semantic layer identifies the account route and Account heading.",
+      "citationIds": [
+        "cite_account_heading"
+      ]
+    },
+    {
+      "op": "upsert_action",
+      "entityId": "open_orders",
+      "action": {
+        "id": "open_orders",
+        "name": "Open orders",
+        "description": "Open the account Orders page.",
+        "category": "navigate",
+        "status": "resolvable",
+        "safety": "read",
+        "confidence": 0.91,
+        "fromState": "account_home",
+        "toState": null,
+        "parameters": [],
+        "steps": [
+          {
+            "op": "click",
+            "target": {
+              "css": null,
+              "role": "link",
+              "name": "Orders",
+              "placeholder": null,
+              "text": "Orders",
+              "hrefContains": "/orders"
+            },
+            "valueFrom": null,
+            "literalValue": null,
+            "key": null,
+            "expect": {
+              "kind": "navigation",
+              "state": null,
+              "urlPattern": "^https://shop\\.example/orders(?:\\?.*)?$",
+              "target": {
+                "css": null,
+                "role": null,
+                "name": null,
+                "placeholder": null,
+                "text": null,
+                "hrefContains": null
+              }
+            },
+            "timeoutMs": 10000
+          }
+        ],
+        "output": {
+          "mode": "none",
+          "collectionRoot": {
+            "css": null,
+            "role": null,
+            "name": null,
+            "placeholder": null,
+            "text": null,
+            "hrefContains": null
+          },
+          "item": {
+            "css": null,
+            "role": null,
+            "name": null,
+            "placeholder": null,
+            "text": null,
+            "hrefContains": null
+          },
+          "limit": 1,
+          "fields": []
+        },
+        "evidence": [
+          "layer_orders_001:node_orders_link:step_0_target"
+        ],
+        "missingEvidence": []
+      },
+      "provenance": "inferred",
+      "reason": "The Orders link supplies a semantic target and same-origin destination before any event is observed.",
+      "componentActionIds": [],
+      "citationIds": [
+        "cite_orders_link"
+      ],
+      "stepEvidence": [
+        {
+          "stepIndex": 0,
+          "role": "target",
+          "evidenceId": "node_orders_link",
+          "layerId": "layer_orders_001",
+          "fieldName": null
+        }
+      ]
+    }
+  ],
+  "evidenceCitations": [
+    {
+      "citationId": "cite_account_heading",
+      "evidenceId": "node_account_heading",
+      "layerId": "layer_orders_001",
+      "source": "current_layer",
+      "kind": "node",
+      "digest": "sha256:083328f70788701f3ce315f7c9c634ebbce5db3859a730ba8a304b1005d90e25"
+    },
+    {
+      "citationId": "cite_orders_link",
+      "evidenceId": "node_orders_link",
+      "layerId": "layer_orders_001",
+      "source": "current_layer",
+      "kind": "node",
+      "digest": "sha256:083328f70788701f3ce315f7c9c634ebbce5db3859a730ba8a304b1005d90e25"
+    }
+  ]
+}
