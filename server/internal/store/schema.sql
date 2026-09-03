@@ -66,6 +66,47 @@ CREATE TABLE IF NOT EXISTS action_maps (
   created_at TIMESTAMPTZ NOT NULL
 );
 
+-- Ambient action-map revisions contain only the canonical materialized map and
+-- privacy-safe provenance/evidence metadata. Source XML, observations, prompt
+-- bodies, typed values, and browsing history never have columns here.
+CREATE TABLE IF NOT EXISTS action_map_scopes (
+  scope_id TEXT PRIMARY KEY,
+  origin TEXT NOT NULL,
+  route_patterns_json JSONB NOT NULL,
+  head_revision INTEGER NOT NULL DEFAULT 0,
+  head_digest TEXT,
+  last_layer_sequence INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  CHECK ((head_revision = 0 AND head_digest IS NULL) OR
+         (head_revision > 0 AND head_digest IS NOT NULL))
+);
+
+CREATE TABLE IF NOT EXISTS action_map_revisions (
+  scope_id TEXT NOT NULL REFERENCES action_map_scopes(scope_id),
+  revision INTEGER NOT NULL,
+  digest TEXT NOT NULL,
+  source_layer_sequence INTEGER NOT NULL,
+  schema_version TEXT NOT NULL,
+  document_json JSONB NOT NULL,
+  evidence_metadata_json JSONB NOT NULL,
+  parser_id TEXT NOT NULL,
+  parser_version TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (scope_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS action_map_receipts (
+  scope_id TEXT NOT NULL REFERENCES action_map_scopes(scope_id),
+  idempotency_key TEXT NOT NULL,
+  input_digest TEXT NOT NULL,
+  source_layer_sequence INTEGER NOT NULL,
+  receipt_json JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (scope_id, idempotency_key)
+);
+
 -- action_lists and their revisions replace the paused learned-adapter tables as
 -- the only publication source of truth. The legacy tables remain readable for
 -- non-destructive database upgrades, but new registry code never writes them.
@@ -160,6 +201,8 @@ CREATE INDEX IF NOT EXISTS adapter_runs_version_idx
   ON adapter_runs(adapter_version_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS action_maps_site_idx
   ON action_maps(site_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS action_map_revisions_scope_idx
+  ON action_map_revisions(scope_id, revision DESC);
 CREATE INDEX IF NOT EXISTS action_lists_origin_idx
   ON action_lists(origin);
 CREATE INDEX IF NOT EXISTS action_list_publications_latest_idx
