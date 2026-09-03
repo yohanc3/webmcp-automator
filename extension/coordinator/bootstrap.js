@@ -32,7 +32,7 @@ const ambientPolicyKey = (origin) => `${AMBIENT_POLICY_PREFIX}${origin}`;
 
 const policyFromDecision = (decision) => {
   const origin = new URL(decision.origin).origin;
-  const revision = Number.isInteger(decision.policyRevision) ? decision.policyRevision + 1 : 1;
+  const revision = 1;
   return {
     decisionId: `policy_${Date.now()}`,
     status: decision.decision || 'allowed',
@@ -452,13 +452,16 @@ const popupState = async () => {
 const handleMessage = async (message, sender) => {
   switch (message.type) {
     case 'GET_POLICY_REVIEW_STATE': {
-      const origin = sender.tab?.url ? new URL(sender.tab.url).origin : 'http://127.0.0.1:4317';
+      const activeTabs = sender.tab ? [sender.tab] : await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      const origin = activeTabs[0]?.url ? new URL(activeTabs[0].url).origin : 'http://127.0.0.1:4317';
       const policy = await storageGet('local', ambientPolicyKey(origin), null);
       return { ok: true, state: { policy, context: { origin, policyRevision: policy?.revision || null }, retrySpool: [] } };
     }
     case 'SET_OWNED_DEMO_OVERRIDE':
     case 'SUBMIT_POLICY_DECISION': {
-      const policy = policyFromDecision(message.override || message.decision);
+      const incoming = message.override || message.decision;
+      const existing = await storageGet('local', ambientPolicyKey(new URL(incoming.origin).origin), null);
+      const policy = { ...policyFromDecision(incoming), revision: (existing?.revision || 0) + 1 };
       await storageSet('local', ambientPolicyKey(policy.origin), policy);
       return { ok: true, policy };
     }
