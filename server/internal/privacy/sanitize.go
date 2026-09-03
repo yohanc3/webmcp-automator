@@ -3,10 +3,12 @@ package privacy
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 const redactionMarker = "[redacted]"
@@ -15,7 +17,7 @@ var (
 	emailPattern   = regexp.MustCompile(`(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b`)
 	phonePattern   = regexp.MustCompile(`(?:\+?\d[\d\s().-]{7,}\d)`)
 	cardPattern    = regexp.MustCompile(`\b(?:\d[ -]*?){13,19}\b`)
-	secretPattern  = regexp.MustCompile(`(?i)\b(?:bearer\s+)?[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{12,}(?:\.[A-Za-z0-9_-]{12,})?\b`)
+	secretPattern  = regexp.MustCompile(`(?i)\b(?:(?:bearer\s+|sk-)[A-Za-z0-9._~-]{12,}|AKIA[A-Z0-9]{16}|[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{12,}(?:\.[A-Za-z0-9_-]{12,})?)\b`)
 	addressPattern = regexp.MustCompile(`(?i)\b\d{1,6}\s+[A-Za-z0-9 .'-]{2,50}\s(?:street|st|road|rd|avenue|ave|lane|ln|drive|dr|boulevard|blvd|court|ct)\b`)
 	accountPattern = regexp.MustCompile(`(?i)\b(?:hello|hi|deliver to|ship to|account for)\s*,?\s+[A-Z][A-Za-z'-]{1,30}\b`)
 	longIDPattern  = regexp.MustCompile(`\b(?:\d[ -]?){8,}\b`)
@@ -25,6 +27,11 @@ var (
 type Summary struct {
 	RedactionsApplied int      `json:"redactionsApplied"`
 	Categories        []string `json:"categories"`
+}
+
+type Finding struct {
+	Path     string `json:"path"`
+	Category string `json:"category"`
 }
 
 type sanitizer struct {
@@ -57,6 +64,67 @@ func SanitizeTrace(trace json.RawMessage) (json.RawMessage, Summary, error) {
 	}, nil
 }
 
+// Scan reports sensitive literals without returning or logging their values.
+// It is used to reject semanticizer output instead of silently laundering a
+// reconstructed secret into an executable plan.
+func Scan(document json.RawMessage) ([]Finding, error) {
+	if !json.Valid(document) {
+		return nil, errors.New("document must be valid JSON")
+	}
+	var value any
+	if err := json.Unmarshal(document, &value); err != nil {
+		return nil, err
+	}
+	var findings []Finding
+	scanValue(value, "$", "", &findings)
+	return findings, nil
+}
+
+func scanValue(value any, path string, key string, findings *[]Finding) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for childKey, child := range typed {
+			scanValue(child, path+"."+childKey, childKey, findings)
+		}
+	case []any:
+		for index, child := range typed {
+			scanValue(child, fmt.Sprintf("%s[%d]", path, index), key, findings)
+		}
+	case string:
+		if strings.HasSuffix(strings.ToLower(key), "at") {
+			if _, err := time.Parse(time.RFC3339Nano, typed); err == nil {
+				return
+			}
+		}
+		if strings.Contains(strings.ToLower(key), "url") || strings.EqualFold(key, "href") || strings.EqualFold(key, "origin") {
+			parsed, err := url.Parse(typed)
+			if err == nil && parsed.Scheme != "" && parsed.Host != "" {
+				if parsed.RawQuery != "" || parsed.Fragment != "" {
+					*findings = append(*findings, Finding{Path: path, Category: "url_parameters"})
+				}
+				return
+			}
+			if strings.Contains(strings.ToLower(key), "pattern") {
+				return
+			}
+		}
+		patterns := []struct {
+			pattern  *regexp.Regexp
+			category string
+		}{
+			{emailPattern, "email"}, {cardPattern, "payment_number"},
+			{phonePattern, "phone"}, {secretPattern, "credential"},
+			{addressPattern, "street_address"}, {accountPattern, "account_name"},
+			{longIDPattern, "long_identifier"},
+		}
+		for _, candidate := range patterns {
+			if candidate.pattern.MatchString(typed) {
+				*findings = append(*findings, Finding{Path: path, Category: candidate.category})
+			}
+		}
+	}
+}
+
 func (processor *sanitizer) value(value any, key string) any {
 	switch typed := value.(type) {
 	case map[string]any:
@@ -85,6 +153,11 @@ func (processor *sanitizer) value(value any, key string) any {
 		}
 		return typed
 	case string:
+		if strings.HasSuffix(strings.ToLower(key), "at") {
+			if _, err := time.Parse(time.RFC3339Nano, typed); err == nil {
+				return typed
+			}
+		}
 		if strings.Contains(strings.ToLower(key), "url") || strings.EqualFold(key, "href") {
 			return processor.cleanURL(typed)
 		}
