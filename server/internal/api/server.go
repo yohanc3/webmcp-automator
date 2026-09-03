@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"webmcp-automator/server/internal/actionmap"
+	"webmcp-automator/server/internal/actionmapapi"
 	"webmcp-automator/server/internal/learning"
 	"webmcp-automator/server/internal/privacy"
 	"webmcp-automator/server/internal/store"
@@ -53,6 +54,8 @@ type Server struct {
 	model            string
 	demoDirectory    string
 	handler          http.Handler
+	actionMaps       store.ActionMapService
+	ambient          *learning.Engine
 }
 
 type learnRequest struct {
@@ -76,6 +79,12 @@ func New(
 		store: database, discoverer: discoverer, apiKeyConfigured: apiKeyConfigured,
 		provider: provider, model: model, demoDirectory: demoDirectory,
 	}
+	if actionMaps, ok := database.(store.ActionMapService); ok {
+		server.actionMaps = actionMaps
+		if parser, ok := discoverer.(learning.Parser); ok {
+			server.ambient = &learning.Engine{Parser: parser, Profile: learning.DefaultParserProfile(), MaxConflictRetries: 1}
+		}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", server.health)
 	mux.HandleFunc("POST /api/discover", server.discover)
@@ -89,6 +98,14 @@ func New(
 	mux.HandleFunc("GET /v1/action-lists/{listID}/revisions/{revision}", server.getActionListRevision)
 	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/publish", server.publishActionList)
 	mux.HandleFunc("POST /v1/run-observations", server.recordRunObservation)
+	if server.actionMaps != nil {
+		actionMapHandlers := actionmapapi.New(server.actionMaps)
+		mux.HandleFunc("GET /v1/action-maps/{scopeId}/head", actionMapHandlers.Head)
+		mux.HandleFunc("GET /v1/action-maps/{scopeId}/context", actionMapHandlers.Context)
+		mux.HandleFunc("GET /v1/action-maps/{scopeId}/revisions/{revision}", actionMapHandlers.Revision)
+		mux.HandleFunc("POST /v1/action-maps/{scopeId}/patches", actionMapHandlers.ApplyPatch)
+		mux.HandleFunc("POST /v1/ambient/layers", server.processAmbientLayer)
+	}
 	mux.HandleFunc("GET /demo", server.demo)
 	mux.HandleFunc("GET /demo/", server.demo)
 	server.handler = server.withCORS(mux)

@@ -32,6 +32,11 @@ func main() {
 		os.Getenv("CEREBRAS_API_KEY"),
 		os.Getenv("OPENROUTER_API_KEY"),
 	)
+	patchSchema, err := os.ReadFile(filepath.Join("..", "documentation", "contracts", "action-map-patch.schema.json"))
+	if err != nil {
+		log.Fatalf("load frozen ambient patch schema: %v", err)
+	}
+	learner.PatchSchema = patchSchema
 	configuration := learner.Configuration()
 
 	database, err := store.Open(databaseURL)
