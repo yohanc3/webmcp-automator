@@ -162,6 +162,9 @@ func (store *MemoryActionMapStore) GetActionMapContext(
 	if !exists {
 		return ActionMapContext{}, ErrActionMapNotFound
 	}
+	if revision == scope.head.Revision {
+		snapshot.SourceLayerSequence = scope.head.SourceLayerSequence
+	}
 	return ProjectActionMapContext(snapshot, scope.revisionMeta[revision]), nil
 }
 

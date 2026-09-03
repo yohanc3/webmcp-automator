@@ -233,13 +233,19 @@ func (store *Store) GetActionMapContext(
 	var document string
 	var metadataJSON string
 	var createdAt time.Time
+	var headRevision int
+	var lastLayerSequence int
 	err := store.db.QueryRowContext(ctx, `
-		SELECT scope_id, revision, digest, source_layer_sequence, document_json,
-		       evidence_metadata_json, created_at
-		FROM action_map_revisions
-		WHERE scope_id = $1 AND revision = $2`, scopeID, revision).Scan(
+	SELECT action_map_revisions.scope_id, action_map_revisions.revision,
+	       action_map_revisions.digest, action_map_revisions.source_layer_sequence,
+	       action_map_revisions.document_json, action_map_revisions.evidence_metadata_json,
+	       action_map_revisions.created_at, action_map_scopes.head_revision,
+	       action_map_scopes.last_layer_sequence
+	FROM action_map_revisions
+	JOIN action_map_scopes ON action_map_scopes.scope_id = action_map_revisions.scope_id
+	WHERE action_map_revisions.scope_id = $1 AND action_map_revisions.revision = $2`, scopeID, revision).Scan(
 		&snapshot.SiteScopeID, &snapshot.Revision, &digest, &snapshot.SourceLayerSequence,
-		&document, &metadataJSON, &createdAt,
+		&document, &metadataJSON, &createdAt, &headRevision, &lastLayerSequence,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ActionMapContext{}, ErrActionMapNotFound
@@ -260,6 +266,9 @@ func (store *Store) GetActionMapContext(
 	}
 	snapshot.Digest = &digest
 	snapshot.CreatedAt = &createdAt
+	if snapshot.Revision == headRevision {
+		snapshot.SourceLayerSequence = lastLayerSequence
+	}
 	return ProjectActionMapContext(snapshot, metadata), nil
 }
 
@@ -325,6 +334,7 @@ func loadActionMap(
 	}
 	snapshot.Digest = &storedDigest
 	snapshot.CreatedAt = &createdAt
+	snapshot.SourceLayerSequence = layerSequence
 	return snapshot, metadata, nil
 }
 
