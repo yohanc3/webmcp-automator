@@ -175,6 +175,12 @@
         case 'handleReceipt': return instance.handleReceipt(payload.id, payload.receipt);
         case 'list': return instance.list();
         case 'remove': return instance.remove(payload.id);
+        case 'removeMatching': {
+          const records = await instance.list();
+          const matching = records.filter((record) => record.completedLayer?.siteScope?.origin === payload.origin && record.completedLayer?.siteScope?.scopeId === payload.scopeId);
+          for (const record of matching) await instance.remove(record.id);
+          return { deleted: matching.length, scopeId: payload.scopeId };
+        }
         default: throw new Error('Unknown ambient spool operation');
       }
     });
@@ -225,10 +231,7 @@
           const origin = originFromUrl(tabs[0]?.url);
           const scopeId = ambientScope.scopeFor(origin);
           if (!origin || !scopeId) return { ok: false, error: 'An active HTTP(S) tab is required' };
-          const records = await spool('list');
-          const ids = records.filter((record) => record.completedLayer?.siteScope?.origin === origin && record.completedLayer?.siteScope?.scopeId === scopeId).map((record) => record.id);
-          await Promise.all(ids.map((id) => spool('remove', { id })));
-          return { ok: true, deleted: ids.length, scopeId };
+          return { ok: true, ...(await spool('removeMatching', { origin, scopeId })) };
         }
         case 'SUBMIT_CANDIDATE_REVIEW':
         case 'OPEN_CANDIDATE_EVIDENCE':
