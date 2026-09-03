@@ -187,7 +187,7 @@
       });
       if (!job) return;
       await reportRun(job, status === 'completed' ? 'success' : 'failure', details);
-      if (job.closeExecutionTab) await chromeApi.tabs.remove(job.tabId).catch(() => {});
+      await Promise.resolve(chromeApi.tabs.remove?.(job.tabId)).catch(() => {});
     };
     const advanceJob = async (id) => {
       if (advancingJobs.has(id)) return;
@@ -270,7 +270,7 @@
       const validation = manifest.validateManifest(adapter.manifest);
       if (!validation.valid || !manifest.manifestMatchesLocation(validation.manifest, sourceUrl)) throw new Error('This adapter is not valid for the current page');
       const tab = await chromeApi.tabs.create({ active: false, url: sourceUrl });
-      const job = { adapter: { ...adapter, manifest: validation.manifest }, args, closeExecutionTab: adapter.manifest.execution?.closeExecutionTab === true, createdAt: now(), error: null, id: crypto.randomUUID(), result: null, sourceTabId, sourceUrl, status: 'starting', stepIndex: 0, tabId: tab.id, updatedAt: now() };
+      const job = { adapter: { ...adapter, manifest: validation.manifest }, args, createdAt: now(), error: null, id: crypto.randomUUID(), result: null, sourceTabId, sourceUrl, status: 'starting', stepIndex: 0, tabId: tab.id, updatedAt: now() };
       await serial(async () => { const jobs = await getJobs(); jobs[job.id] = job; await set('session', 'jobs', jobs); });
       setTimeout(() => { void advanceJob(job.id); }, 300);
       return job.id;

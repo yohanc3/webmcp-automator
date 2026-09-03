@@ -339,7 +339,6 @@ test('coordinator executes fill then navigation click, resumes on PAGE_READY, ex
   });
   const adapter = {
     manifest: {
-      execution: { closeExecutionTab: true },
       tool: { steps: [{ op: 'fill' }, { op: 'click' }] },
     },
     versionId: 'version_1',
