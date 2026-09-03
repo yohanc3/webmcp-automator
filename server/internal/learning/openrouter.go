@@ -128,7 +128,7 @@ func (client Client) Discover(ctx context.Context, trace json.RawMessage) (Resul
 			{"role": "system", "content": systemInstructions},
 			{"role": "user", "content": string(input)},
 		},
-		"max_completion_tokens": 8000,
+		"max_tokens": 8000,
 		"reasoning": map[string]any{
 			"effort": "low",
 		},

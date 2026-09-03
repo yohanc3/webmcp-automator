@@ -25,7 +25,7 @@ Requirements:
 - a Neon PostgreSQL connection URL;
 - an OpenRouter API key when AI synthesis is needed.
 
-Node.js and npm are not required.
+`npm start` loads `OPENROUTER_API_KEY` from a repository-root `.env` file when present. You can alternatively use Go's native process environment:
 
 Put the key in `server/.env`, then start the project:
 
