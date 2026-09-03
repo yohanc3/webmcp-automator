@@ -348,7 +348,7 @@ test('preserves applied and duplicate candidate pointers without persisting unac
   const chromeApi = { storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
     async get(key) { return { [key]: areas[area][key] }; }, async set(value) { Object.assign(areas[area], value); }, async remove() {},
   }])) };
-  const pointer = { digest: `sha256:${'b'.repeat(64)}`, listId: 'ambient_site_shop_test', revision: 4 };
+  const pointer = { digest: `sha256:${'b'.repeat(64)}`, listId: 'ambient_site_shop_test', revision: 4, status: 'candidate' };
   const outcomes = ['duplicate', 'no_change'];
   const coordinator = coordinatorApi.createCoordinator({
     chromeApi,
@@ -367,7 +367,7 @@ test('loads only exact authoritative action-map context and candidate bindings f
   const scopeId = 'site_https___shop_test';
   const mapDigest = `sha256:${'c'.repeat(64)}`;
   const listDigest = `sha256:${'d'.repeat(64)}`;
-  areas.session[`ambientActionListCandidate:${scopeId}`] = { digest: listDigest, listId: 'ambient_site_https_shop_test', revision: 2 };
+  areas.session[`ambientActionListCandidate:${scopeId}`] = { digest: listDigest, listId: 'ambient_site_https_shop_test', revision: 2, status: 'candidate' };
   const chromeApi = {
     storage: Object.fromEntries(['local', 'session'].map((area) => [area, {
       async get(key) { return { [key]: areas[area][key] }; }, async set(value) { Object.assign(areas[area], value); }, async remove() {},

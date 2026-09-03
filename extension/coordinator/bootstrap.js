@@ -64,8 +64,8 @@
         && policy.scopes.includes(scope)
         && typeof policy.checkedAt === 'string'
         && !Number.isNaN(Date.parse(policy.checkedAt))
-        && policy.revision !== undefined
-        && (!policy.expiresAt || Date.parse(policy.expiresAt) > Date.now())
+        && validRevision(policy.revision)
+        && (!policy.expiresAt || Date.parse(policy.expiresAt) > Date.parse(now()))
         && (revision === null || policy.revision === revision);
       return valid ? policy : { origin: normalized, revision: policy?.revision ?? null, scopes: [], status: 'denied' };
     };
@@ -115,13 +115,13 @@
       if (
         !value || typeof value !== 'object'
         || typeof value.listId !== 'string' || value.listId.length === 0
-        || !validRevision(value.revision) || !validDigest(value.digest)
+        || value.status !== 'candidate' || !validRevision(value.revision) || !validDigest(value.digest)
       ) return null;
       return {
         digest: value.digest,
         listId: value.listId,
         revision: value.revision,
-        ...(Object.hasOwn(value, 'status') ? { status: value.status } : {}),
+        status: 'candidate',
       };
     };
     const saveCandidate = async (completedLayer, receipt) => {
@@ -268,6 +268,7 @@
           digest: head.digest,
           revision: head.revision,
           scopeId,
+          states: Array.isArray(context.states) ? context.states : [],
         },
         actionMapStatus: { status: 'available' },
         candidate: null,
@@ -352,8 +353,9 @@
         case 'SUBMIT_POLICY_DECISION': {
           const tabs = sender.tab ? [sender.tab] : await chromeApi.tabs.query({ active: true, lastFocusedWindow: true });
           const decision = message.decision || {};
-          if (!['denied', 'revoked'].includes(decision.decision) || decision.scope !== 'ambient_learn') return { ok: false, error: 'Only ambient deny or revoke decisions are supported' };
-          return { ok: true, policy: await savePolicy(decision, tabs[0]?.url) };
+          const origin = originFromUrl(tabs[0]?.url);
+          if (!origin || (decision.origin && decision.origin !== origin) || !['denied', 'revoked'].includes(decision.decision) || decision.scope !== 'ambient_learn') return { ok: false, error: 'Only ambient deny or revoke decisions are supported' };
+          return { ok: true, policy: await savePolicy(decision, origin) };
         }
         case 'REQUEST_RETRY_SPOOL_DELETION': {
           const tabs = sender.tab ? [sender.tab] : await chromeApi.tabs.query({ active: true, lastFocusedWindow: true });
