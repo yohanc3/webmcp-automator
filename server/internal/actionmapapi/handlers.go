@@ -59,16 +59,16 @@ func (handlers *Handlers) ApplyPatch(writer http.ResponseWriter, request *http.R
 	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 2<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
-		writeError(writer, http.StatusBadRequest, "request and patch must be strict JSON")
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"outcome": "rejected", "error": "request and patch must be strict JSON"})
 		return
 	}
 	if err := requireEOF(decoder); err != nil {
-		writeError(writer, http.StatusBadRequest, "request body must contain one JSON value")
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"outcome": "rejected", "error": "request body must contain one JSON value"})
 		return
 	}
 	scopeID := strings.TrimSpace(request.PathValue("scopeId"))
 	if scopeID == "" || scopeID != input.Request.SiteScope.ScopeID || scopeID != input.Patch.SiteScopeID {
-		writeError(writer, http.StatusBadRequest, "path scopeId must match request and patch")
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"outcome": "rejected", "error": "path scopeId must match request and patch"})
 		return
 	}
 	receipt, err := handlers.service.ApplyActionMapPatch(request.Context(), input)

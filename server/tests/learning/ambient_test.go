@@ -16,6 +16,7 @@ import (
 
 	"webmcp-automator/server/internal/actionmap"
 	"webmcp-automator/server/internal/learning"
+	"webmcp-automator/server/internal/manifest"
 )
 
 func TestFrozenAmbientFixturesValidateAndMaterialize(t *testing.T) {
@@ -159,6 +160,10 @@ func TestAmbientPatchRejectionsAreTypedAndFieldAddressed(t *testing.T) {
 		{"zero step", "ZERO_STEP_ACTION", func(patch *learning.ActionMapPatch) { patch.Operations[1].Action.Steps = nil }},
 		{"unbound click", "EVIDENCE_REQUIRED", func(patch *learning.ActionMapPatch) { patch.Operations[1].StepEvidence = nil }},
 		{"invented evidence", "INVENTED_EVIDENCE", func(patch *learning.ActionMapPatch) { patch.EvidenceCitations[1].EvidenceID = "node_invented" }},
+		{"mismatched click locator", "EVIDENCE_LOCATOR_MISMATCH", func(patch *learning.ActionMapPatch) {
+			value := "Account"
+			patch.Operations[1].Action.Steps[0].Target.Name = &value
+		}},
 		{"private literal", "PRIVATE_LITERAL", func(patch *learning.ActionMapPatch) {
 			value := "privacy-canary@example.com"
 			patch.Operations[1].Action.Steps[0].LiteralValue = &value
@@ -188,6 +193,32 @@ func TestUnboundExtractionFieldIsRejected(t *testing.T) {
 	operation.StepEvidence = operation.StepEvidence[:len(operation.StepEvidence)-1]
 	_, err := learning.MaterializePatch(request, patch, actionmap.Map{})
 	assertRejectionCode(t, err, "UNBOUND_OUTPUT")
+}
+
+func TestAcceptedAmbientMapProjectsToReviewableActionListCandidate(t *testing.T) {
+	request := readAmbientRequest(t, "orders.layer-001.parse-request.json")
+	materialized, err := learning.ValidateAndMaterialize(request, readContractFixture(t, "orders.layer-001.patch.json"), actionmap.Map{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := learning.CanonicalDigest(materialized.ActionMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := learning.CompileAmbientCandidate(request.SiteScope.ScopeID, materialized.ActionMap, 1, digest, request.Layer.CompletedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := manifest.DecodeActionList(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list.Publication.Status != "candidate" || list.Publication.Revision != 1 || list.Publication.SourceMapID == nil || len(list.Actions) == 0 {
+		t.Fatalf("ambient projection is not a review candidate: %#v", list.Publication)
+	}
+	if list.Policy.Status == "allowed" {
+		t.Fatal("ambient projection must not auto-publish or authorize")
+	}
 }
 
 func TestPromptInjectionInSemanticPageIsRejectedBeforeProvider(t *testing.T) {

@@ -100,8 +100,8 @@ func New(
 		mux.HandleFunc("GET /v1/action-maps/{scopeId}/head", actionMapHandlers.Head)
 		mux.HandleFunc("GET /v1/action-maps/{scopeId}/context", actionMapHandlers.Context)
 		mux.HandleFunc("GET /v1/action-maps/{scopeId}/revisions/{revision}", actionMapHandlers.Revision)
-		mux.HandleFunc("POST /v1/action-maps/{scopeId}/patches", actionMapHandlers.ApplyPatch)
-		mux.HandleFunc("POST /v1/ambient/layers", server.processAmbientLayer)
+		mux.HandleFunc("POST /v1/action-maps/{scopeId}/patches", server.requireExtensionBoundary(actionMapHandlers.ApplyPatch))
+		mux.HandleFunc("POST /v1/ambient/layers", server.requireExtensionBoundary(server.processAmbientLayer))
 	}
 	mux.HandleFunc("GET /demo", server.demo)
 	mux.HandleFunc("GET /demo/", server.demo)
@@ -409,8 +409,17 @@ func (server *Server) demo(writer http.ResponseWriter, request *http.Request) {
 
 func (server *Server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Access-Control-Allow-Origin", "*")
-		writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, If-None-Match")
+		origin := request.Header.Get("Origin")
+		if isAmbientMutation(request) {
+			if extensionOrigin(origin) {
+				writer.Header().Set("Access-Control-Allow-Origin", origin)
+				writer.Header().Set("Vary", "Origin")
+			}
+			writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, If-None-Match, X-WebMCP-Internal")
+		} else {
+			writer.Header().Set("Access-Control-Allow-Origin", "*")
+			writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, If-None-Match")
+		}
 		writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		writer.Header().Set("Access-Control-Expose-Headers", "ETag, X-Content-Digest")
 		writer.Header().Set("Cache-Control", "no-store")
@@ -420,6 +429,30 @@ func (server *Server) withCORS(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(writer, request)
 	})
+}
+
+// requireExtensionBoundary is deliberately checked before JSON decoding. Local
+// host binding and permissive CORS do not stop a normal webpage from issuing a
+// POST, so mutation routes require Chrome's extension-only origin plus an
+// internal extension header. Tests and non-browser callers can provide both
+// values explicitly without a hidden global dependency.
+func (server *Server) requireExtensionBoundary(next http.HandlerFunc) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		if !extensionOrigin(request.Header.Get("Origin")) || request.Header.Get("X-WebMCP-Internal") != "ambient-v1" {
+			writeJSON(writer, http.StatusForbidden, map[string]any{"outcome": "rejected", "error": "ambient mutation requires a Chrome extension boundary"})
+			return
+		}
+		next(writer, request)
+	}
+}
+
+func isAmbientMutation(request *http.Request) bool {
+	return request.Method == http.MethodPost && (request.URL.Path == "/v1/ambient/layers" || strings.HasPrefix(request.URL.Path, "/v1/action-maps/"))
+}
+
+func extensionOrigin(origin string) bool {
+	parsed, err := url.Parse(origin)
+	return err == nil && parsed.Scheme == "chrome-extension" && parsed.Host != ""
 }
 
 func readJSON(writer http.ResponseWriter, request *http.Request, destination any) error {

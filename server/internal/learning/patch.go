@@ -2,7 +2,11 @@ package learning
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
+	"io"
+	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -90,6 +94,10 @@ func MaterializePatch(request ParseRequest, patch ActionMapPatch, base actionmap
 	}
 
 	citations := make(map[string]EvidenceCitation, len(patch.EvidenceCitations))
+	currentNodes, xmlErr := semanticNodes(request.Layer.SemanticXML)
+	if xmlErr != nil {
+		return reject("SEMANTIC_XML_INVALID", "$.layer.semanticXml", xmlErr.Error())
+	}
 	for index, citation := range patch.EvidenceCitations {
 		path := fmt.Sprintf("$.evidenceCitations[%d]", index)
 		if _, exists := citations[citation.CitationID]; exists {
@@ -97,6 +105,9 @@ func MaterializePatch(request ParseRequest, patch ActionMapPatch, base actionmap
 		}
 		if rejection := validateCitation(request, citation, path); rejection != nil {
 			return MaterializedPatch{}, *rejection
+		}
+		if citation.Source == "current_layer" && currentNodes[citation.EvidenceID] == nil {
+			return reject("INVENTED_EVIDENCE", path+".evidenceId", "current-layer citation is absent from semantic XML")
 		}
 		citations[citation.CitationID] = citation
 	}
@@ -142,7 +153,7 @@ func MaterializePatch(request ParseRequest, patch ActionMapPatch, base actionmap
 			if operation.EntityID != operation.Action.ID {
 				return reject("ENTITY_ID_MISMATCH", path+".entityId", "entityId must equal action.id")
 			}
-			if rejection := validateAmbientAction(request, operation, citations, path); rejection != nil {
+			if rejection := validateAmbientAction(request, operation, citations, currentNodes, base, path); rejection != nil {
 				return MaterializedPatch{}, *rejection
 			}
 			sidecars[operation.EntityID] = append([]StepEvidence(nil), operation.StepEvidence...)
@@ -258,7 +269,7 @@ func validateStateEvidence(state actionmap.State, citationIDs []string, citation
 	return nil
 }
 
-func validateAmbientAction(request ParseRequest, operation PatchOperation, citations map[string]EvidenceCitation, path string) *Rejection {
+func validateAmbientAction(request ParseRequest, operation PatchOperation, citations map[string]EvidenceCitation, currentNodes map[string]*semanticNode, base actionmap.Map, path string) *Rejection {
 	action := *operation.Action
 	reject := func(code, suffix, message string) *Rejection {
 		return &Rejection{Code: code, Path: path + suffix, Message: message}
@@ -307,6 +318,7 @@ func validateAmbientAction(request ParseRequest, operation PatchOperation, citat
 	}
 	bindings := map[string]bool{}
 	expectedTokens := map[string]bool{}
+	hasCurrentExecutableEvidence := false
 	for index, binding := range operation.StepEvidence {
 		bindingPath := fmt.Sprintf(".stepEvidence[%d]", index)
 		if binding.StepIndex < 0 || binding.StepIndex >= len(action.Steps) {
@@ -340,6 +352,23 @@ func validateAmbientAction(request ParseRequest, operation PatchOperation, citat
 		if !hasCitedBinding(operation.CitationIDs, citations, binding.LayerID, binding.EvidenceID, kind) {
 			return reject("INVENTED_EVIDENCE", bindingPath+".evidenceId", "step binding is not backed by an operation citation")
 		}
+		if binding.LayerID == request.Layer.LayerID && (binding.Role == "target" || binding.Role == "output") {
+			hasCurrentExecutableEvidence = true
+			node := currentNodes[binding.EvidenceID]
+			if node == nil {
+				return reject("EVIDENCE_LOCATOR_MISMATCH", bindingPath+".evidenceId", "binding node is absent from current semantic XML")
+			}
+			locator := action.Steps[binding.StepIndex].Target
+			if binding.Role == "output" {
+				locator = outputLocator(action.Output, binding.FieldName)
+			}
+			if !node.matches(locator) {
+				return reject("EVIDENCE_LOCATOR_MISMATCH", bindingPath, "locator does not describe the cited semantic node")
+			}
+		}
+		if binding.LayerID == request.Layer.LayerID && binding.Role == "effect" {
+			hasCurrentExecutableEvidence = true
+		}
 		key := bindingKey(binding.StepIndex, binding.Role, binding.FieldName)
 		if bindings[key] {
 			return reject("DUPLICATE_STEP_BINDING", bindingPath, "step evidence bindings must be unique")
@@ -350,6 +379,9 @@ func validateAmbientAction(request ParseRequest, operation PatchOperation, citat
 		if !containsString(action.Evidence, expectedToken) {
 			return reject("EVIDENCE_TOKEN_MISSING", ".action.evidence", "action does not retain binding token "+expectedToken)
 		}
+	}
+	if previous := actionByID(base, action.ID); previous != nil && !hasCurrentExecutableEvidence && (!reflect.DeepEqual(previous.Steps, action.Steps) || !reflect.DeepEqual(previous.Output, action.Output)) {
+		return reject("PRIOR_EVIDENCE_DRIFT", ".action", "steps or output changed without current-layer locator evidence")
 	}
 	for index, step := range action.Steps {
 		switch step.Operation {
@@ -402,6 +434,115 @@ func validateAmbientAction(request ParseRequest, operation PatchOperation, citat
 		}
 	}
 	return nil
+}
+
+// semanticNode is the tiny, intentionally structural view required to prove
+// that a locator names the semantic node cited by an ambient patch. It never
+// persists XML; parsing happens only at the validation boundary.
+type semanticNode struct {
+	attrs map[string]string
+	text  string
+}
+
+func (node semanticNode) matches(locator actionmap.Locator) bool {
+	if locator.CSS != nil && !node.matchesCSS(*locator.CSS) {
+		return false
+	}
+	if locator.Role != nil && node.attrs["role"] != *locator.Role {
+		return false
+	}
+	if locator.Name != nil && node.attrs["accessible-name"] != *locator.Name {
+		return false
+	}
+	if locator.Placeholder != nil && node.attrs["placeholder"] != *locator.Placeholder {
+		return false
+	}
+	if locator.HrefContains != nil && !strings.Contains(node.attrs["href"], *locator.HrefContains) {
+		return false
+	}
+	if locator.Text != nil && !strings.Contains(strings.TrimSpace(node.text), *locator.Text) && node.attrs["accessible-name"] != *locator.Text {
+		return false
+	}
+	return true
+}
+
+var cssAttribute = regexp.MustCompile(`^\[([A-Za-z][A-Za-z0-9_-]*)(?:=(?:'([^']*)'|"([^"]*)"))?\]$`)
+
+func (node semanticNode) matchesCSS(selector string) bool {
+	selector = strings.TrimSpace(selector)
+	if strings.HasPrefix(selector, "#") && len(selector) > 1 {
+		return node.attrs["id"] == selector[1:]
+	}
+	match := cssAttribute.FindStringSubmatch(selector)
+	if match == nil {
+		return false
+	} // CSS beyond this safe XML subset is unverifiable.
+	value, exists := node.attrs[match[1]]
+	if !exists {
+		return false
+	}
+	expected := match[2]
+	if expected == "" {
+		expected = match[3]
+	}
+	return match[2] == "" && match[3] == "" || value == expected
+}
+
+func actionByID(actionMap actionmap.Map, id string) *actionmap.Action {
+	for index := range actionMap.Actions {
+		if actionMap.Actions[index].ID == id {
+			return &actionMap.Actions[index]
+		}
+	}
+	return nil
+}
+
+func outputLocator(output actionmap.Output, fieldName *string) actionmap.Locator {
+	if fieldName != nil {
+		for _, field := range output.Fields {
+			if field.Name == *fieldName {
+				return field.Locator
+			}
+		}
+	}
+	if output.CollectionRoot.HasEvidence() {
+		return output.CollectionRoot
+	}
+	return output.Item
+}
+
+func semanticNodes(source string) (map[string]*semanticNode, error) {
+	decoder := xml.NewDecoder(strings.NewReader(source))
+	nodes := map[string]*semanticNode{}
+	var stack []*semanticNode
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			return nodes, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		switch value := token.(type) {
+		case xml.StartElement:
+			node := &semanticNode{attrs: map[string]string{}}
+			for _, attr := range value.Attr {
+				node.attrs[attr.Name.Local] = attr.Value
+			}
+			if ref := node.attrs["ref"]; ref != "" {
+				nodes[ref] = node
+			}
+			stack = append(stack, node)
+		case xml.CharData:
+			if len(stack) > 0 {
+				stack[len(stack)-1].text += string(value)
+			}
+		case xml.EndElement:
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		}
+	}
 }
 
 func provenanceRank(value string) int {

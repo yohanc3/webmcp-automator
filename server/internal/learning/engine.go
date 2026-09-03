@@ -22,6 +22,7 @@ type ContextSource interface {
 type PatchApplication struct {
 	Status       string
 	ConflictCode string
+	Revision     int
 }
 
 type PatchSink interface {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,6 +28,41 @@ type fakeDiscoverer struct {
 
 type failingDiscoverer struct{}
 
+type orderedAmbientParser struct {
+	patches  []json.RawMessage
+	requests []learning.ParseRequest
+	err      error
+}
+
+func (parser *orderedAmbientParser) Discover(context.Context, json.RawMessage) (learning.Result, error) {
+	return learning.Result{}, errors.New("unused")
+}
+func (parser *orderedAmbientParser) Parse(_ context.Context, request learning.ParseRequest) (json.RawMessage, error) {
+	parser.requests = append(parser.requests, request)
+	if parser.err != nil {
+		return nil, parser.err
+	}
+	if len(parser.patches) == 0 {
+		return nil, errors.New("missing deterministic patch")
+	}
+	raw := parser.patches[0]
+	parser.patches = parser.patches[1:]
+	var patch map[string]any
+	if err := json.Unmarshal(raw, &patch); err != nil {
+		return nil, err
+	}
+	patch["requestId"], patch["idempotencyKey"] = request.RequestID, request.IdempotencyKey
+	patch["mapBase"] = map[string]any{"revision": request.MapBase.Revision, "digest": request.MapBase.Digest}
+	encoded, err := json.Marshal(patch)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := learning.DecodePatch(encoded); err != nil {
+		return nil, fmt.Errorf("deterministic patch decode: %w; %s", err, encoded)
+	}
+	return encoded, nil
+}
+
 type memoryStore struct {
 	mutex        sync.Mutex
 	sessions     map[string]store.Session
@@ -36,6 +72,15 @@ type memoryStore struct {
 	policies     map[string]store.PolicyRecord
 	replays      map[string]store.ReplayReport
 	observations map[string]store.RunObservation
+}
+
+type ambientMemoryStore struct {
+	*memoryStore
+	*store.MemoryActionMapStore
+}
+
+func newAmbientMemoryStore() *ambientMemoryStore {
+	return &ambientMemoryStore{memoryStore: newMemoryStore(), MemoryActionMapStore: store.NewMemoryActionMapStore()}
 }
 
 func newMemoryStore() *memoryStore {
@@ -353,7 +398,7 @@ func (failingDiscoverer) Discover(
 }
 
 func TestHealthReportsPostgres(t *testing.T) {
-	database := newMemoryStore()
+	database := newAmbientMemoryStore()
 	server := api.New(database, &fakeDiscoverer{}, false, "openrouter", "fake", "")
 	request := httptest.NewRequest(http.MethodGet, "/health", nil)
 	response := httptest.NewRecorder()
@@ -366,6 +411,129 @@ func TestHealthReportsPostgres(t *testing.T) {
 	if body["database"] != "postgres" {
 		t.Fatalf("expected postgres health response, got %#v", body)
 	}
+}
+
+func TestAmbientMutationRejectsWebpageOriginBeforeBodyParsing(t *testing.T) {
+	database := newAmbientMemoryStore()
+	server := api.New(database, &fakeDiscoverer{}, false, "openrouter", "fake", "")
+	request := httptest.NewRequest(http.MethodPost, "/v1/ambient/layers", strings.NewReader("not json"))
+	request.Header.Set("Origin", "https://untrusted.example")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("expected webpage origin rejection, got %d: %s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("webpage origin received CORS permission: %q", response.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
+func TestAmbientOrdersLifecycleThroughHTTP(t *testing.T) {
+	database := newAmbientMemoryStore()
+	parser := &orderedAmbientParser{patches: []json.RawMessage{ambientFixture(t, "orders.layer-001.patch.json"), ambientFixture(t, "orders.layer-002.patch.json")}}
+	server := api.New(database, parser, false, "fake", "fake", "")
+	first := ambientLayer(t, "orders.layer-001.parse-request.json")
+	firstBody := postAmbient(t, server, first, "chrome-extension://orders-test")
+	if firstBody["outcome"] != "applied" {
+		t.Fatalf("layer 1 outcome: %#v", firstBody)
+	}
+	head, err := database.GetActionMapHead(context.Background(), first.SiteScope.ScopeID)
+	if err != nil || head.Revision != 1 {
+		t.Fatalf("layer 1 head: %#v %v", head, err)
+	}
+	if _, err := database.GetActionListRevision(context.Background(), learning.AmbientCandidateListID(first.SiteScope.ScopeID), 1); err != nil {
+		t.Fatalf("candidate 1: %v", err)
+	}
+	open := mapAction(head.ActionMap, "open_orders")
+	if open == nil || len(open.Steps) == 0 || open.Steps[0].Operation != "click" {
+		t.Fatalf("open orders missing executable click: %#v", open)
+	}
+	if !strings.Contains(strings.Join(open.Evidence, " "), "node_orders_link") {
+		t.Fatal("click lacks layer-1 evidence binding")
+	}
+	second := ambientLayer(t, "orders.layer-002.parse-request.json")
+	secondBody := postAmbient(t, server, second, "chrome-extension://orders-test")
+	if secondBody["outcome"] != "applied" || secondBody["retryOf"] != nil {
+		t.Fatalf("layer 2 outcome: %#v", secondBody)
+	}
+	head, err = database.GetActionMapHead(context.Background(), second.SiteScope.ScopeID)
+	if err != nil || head.Revision != 2 {
+		t.Fatalf("layer 2 head: %#v %v", head, err)
+	}
+	if _, err := database.GetActionListRevision(context.Background(), learning.AmbientCandidateListID(second.SiteScope.ScopeID), 2); err != nil {
+		t.Fatalf("candidate 2: %v", err)
+	}
+	if mapAction(head.ActionMap, "get_recent_orders") == nil || mapAction(head.ActionMap, "get_orders_from_account") == nil {
+		t.Fatalf("Orders projection missing: %#v", head.ActionMap.Actions)
+	}
+	for _, action := range head.ActionMap.Actions {
+		if len(action.Steps) == 0 {
+			t.Fatalf("zero-step action: %s", action.ID)
+		}
+	}
+}
+
+func TestAmbientProviderFailureIsRetryableAndWebpageIsForbidden(t *testing.T) {
+	database := newAmbientMemoryStore()
+	parser := &orderedAmbientParser{err: errors.New("provider request failed with status 503")}
+	server := api.New(database, parser, false, "fake", "fake", "")
+	layer := ambientLayer(t, "orders.layer-001.parse-request.json")
+	response := httptest.NewRecorder()
+	requestBody, _ := json.Marshal(layer)
+	request := httptest.NewRequest(http.MethodPost, "/v1/ambient/layers", bytes.NewReader(requestBody))
+	request.Header.Set("Origin", "chrome-extension://orders-test")
+	request.Header.Set("X-WebMCP-Internal", "ambient-v1")
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "retryable") {
+		t.Fatalf("provider failure: %d %s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/v1/ambient/layers", bytes.NewReader(requestBody))
+	request.Header.Set("Origin", "https://webpage.example")
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || len(parser.requests) != 1 {
+		t.Fatalf("webpage boundary: %d requests=%d", response.Code, len(parser.requests))
+	}
+}
+
+func ambientFixture(t *testing.T, name string) json.RawMessage {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "documentation", "contracts", "examples", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+func ambientLayer(t *testing.T, name string) learning.CompletedLayer {
+	t.Helper()
+	request, err := learning.DecodeParseRequest(ambientFixture(t, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return learning.CompletedLayer{SiteScope: request.SiteScope, Layer: request.Layer, Observation: request.Observation, Policy: request.Policy, Privacy: request.Privacy}
+}
+func postAmbient(t *testing.T, server *api.Server, layer learning.CompletedLayer, origin string) map[string]any {
+	t.Helper()
+	raw, _ := json.Marshal(layer)
+	request := httptest.NewRequest(http.MethodPost, "/v1/ambient/layers", bytes.NewReader(raw))
+	request.Header.Set("Origin", origin)
+	request.Header.Set("X-WebMCP-Internal", "ambient-v1")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("ambient POST %d: %s", response.Code, response.Body.String())
+	}
+	var result map[string]any
+	_ = json.Unmarshal(response.Body.Bytes(), &result)
+	return result
+}
+func mapAction(actionMap actionmap.Map, id string) *actionmap.Action {
+	for index := range actionMap.Actions {
+		if actionMap.Actions[index].ID == id {
+			return &actionMap.Actions[index]
+		}
+	}
+	return nil
 }
 
 func TestDemoServesTheStorefrontShellForApplicationRoutes(t *testing.T) {

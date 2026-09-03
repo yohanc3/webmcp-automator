@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
+	"time"
 
 	"webmcp-automator/server/internal/actionmap"
 	"webmcp-automator/server/internal/learning"
@@ -72,7 +74,11 @@ func (sink ambientPatchSink) Apply(ctx context.Context, request learning.ParseRe
 	if err != nil {
 		return learning.PatchApplication{}, err
 	}
-	return learning.PatchApplication{Status: receipt.Application.Status, ConflictCode: valueOrEmpty(receipt.Application.ConflictCode)}, nil
+	revision := receipt.Application.Current.Revision
+	if receipt.Application.Result != nil {
+		revision = receipt.Application.Result.Revision
+	}
+	return learning.PatchApplication{Status: receipt.Application.Status, ConflictCode: valueOrEmpty(receipt.Application.ConflictCode), Revision: revision}, nil
 }
 
 func valueOrEmpty(value *string) string {
@@ -89,18 +95,73 @@ func (server *Server) processAmbientLayer(writer http.ResponseWriter, request *h
 	}
 	var layer learning.CompletedLayer
 	if err := readJSON(writer, request, &layer); err != nil {
-		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"outcome": "rejected", "error": err.Error()})
 		return
 	}
 	result, err := server.ambient.ProcessLayer(request.Context(), layer, ambientContextSource{service: server.actionMaps, scope: layer.SiteScope}, ambientPatchSink{server.actionMaps})
 	if err != nil {
-		writeJSON(writer, http.StatusUnprocessableEntity, map[string]any{"error": err.Error(), "parseCount": result.ParseCount})
+		writeAmbientError(writer, err, result)
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{
-		"outcome":    result.Application.Status,
-		"requestId":  result.Request.RequestID,
-		"retryOf":    result.Request.RetryOf,
-		"parseCount": result.ParseCount,
+	status := http.StatusOK
+	if result.Application.Status == "conflict" {
+		status = http.StatusConflict
+	}
+	if result.Application.Status == "rejected" {
+		writeJSON(writer, http.StatusUnprocessableEntity, map[string]any{"outcome": "rejected", "requestId": result.Request.RequestID, "retryOf": result.Request.RetryOf, "parseCount": result.ParseCount})
+		return
+	}
+	var candidateRevision any
+	if result.Application.Status == "applied" || result.Application.Status == "duplicate" {
+		head, headErr := server.actionMaps.GetActionMapRevision(request.Context(), layer.SiteScope.ScopeID, result.Application.Revision)
+		if headErr != nil {
+			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"outcome": "retryable", "retryable": true, "error": "accepted action map could not be loaded for review projection"})
+			return
+		}
+		digest := ""
+		if head.Digest != nil {
+			digest = *head.Digest
+		}
+		candidate, compileErr := learning.CompileAmbientCandidate(layer.SiteScope.ScopeID, head.ActionMap, head.Revision, digest, time.Now().UTC())
+		if compileErr != nil {
+			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"outcome": "retryable", "retryable": true, "error": "accepted action map could not be projected for review"})
+			return
+		}
+		stored, storeErr := server.store.GetActionListRevision(request.Context(), learning.AmbientCandidateListID(layer.SiteScope.ScopeID), head.Revision)
+		if errors.Is(storeErr, store.ErrNotFound) {
+			stored, storeErr = server.store.InsertActionListRevision(request.Context(), candidate)
+		}
+		if storeErr != nil {
+			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"outcome": "retryable", "retryable": true, "error": "accepted action map review projection is temporarily unavailable"})
+			return
+		}
+		candidateRevision = map[string]any{"listId": stored.ListID, "revision": stored.Revision, "digest": stored.Digest, "status": stored.Status}
+	}
+	writeJSON(writer, status, map[string]any{
+		"outcome":             result.Application.Status,
+		"requestId":           result.Request.RequestID,
+		"retryOf":             result.Request.RetryOf,
+		"parseCount":          result.ParseCount,
+		"actionListCandidate": candidateRevision,
 	})
+}
+
+func writeAmbientError(writer http.ResponseWriter, err error, result learning.ProcessResult) {
+	var rejection learning.Rejection
+	if errors.As(err, &rejection) {
+		if rejection.Code == "BASE_CONFLICT" {
+			writeJSON(writer, http.StatusConflict, map[string]any{"outcome": "conflict", "retryable": true, "error": rejection, "requestId": result.Request.RequestID, "retryOf": result.Request.RetryOf, "parseCount": result.ParseCount})
+			return
+		}
+		writeJSON(writer, http.StatusUnprocessableEntity, map[string]any{"outcome": "rejected", "error": rejection, "requestId": result.Request.RequestID, "parseCount": result.ParseCount})
+		return
+	}
+	// Provider transport, rate-limit, and internal errors are operational
+	// failures. They are intentionally retryable rather than parser rejection.
+	message := err.Error()
+	status := http.StatusServiceUnavailable
+	if strings.Contains(message, "429") {
+		status = http.StatusTooManyRequests
+	}
+	writeJSON(writer, status, map[string]any{"outcome": "retryable", "retryable": true, "error": "ambient parser temporarily unavailable", "requestId": result.Request.RequestID, "parseCount": result.ParseCount})
 }

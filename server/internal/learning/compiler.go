@@ -297,6 +297,8 @@ func compileLocator(locator actionmap.Locator, cardinality string, visible bool,
 	strategies := []any{}
 	if locator.Role != nil && locator.Name != nil {
 		strategies = append(strategies, map[string]any{"kind": "role", "role": *locator.Role, "name": *locator.Name, "exact": true})
+	} else if locator.Role != nil && safeRoleName(*locator.Role) {
+		strategies = append(strategies, map[string]any{"kind": "css", "selector": "[role='" + *locator.Role + "']"})
 	}
 	if locator.Placeholder != nil {
 		strategies = append(strategies, map[string]any{"kind": "placeholder", "text": *locator.Placeholder, "exact": true})
@@ -314,6 +316,10 @@ func compileLocator(locator actionmap.Locator, cardinality string, visible bool,
 		return nil
 	}
 	return map[string]any{"cardinality": cardinality, "visible": visible, "enabled": enabled, "strategies": strategies}
+}
+
+func safeRoleName(value string) bool {
+	return regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`).MatchString(value)
 }
 
 func compileOutput(output actionmap.Output) any {
