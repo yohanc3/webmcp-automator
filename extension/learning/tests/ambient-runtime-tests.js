@@ -259,9 +259,9 @@ test('scope-specific retry metadata and deletion preserve unrelated stored value
 
 test('candidate review and confirmation protocol messages fail closed without side effects', async () => {
   const fixture = coordinatorFixture(); const before = { ...fixture.sideEffects };
-  for (const type of ['SUBMIT_CANDIDATE_REVIEW', 'OPEN_CANDIDATE_EVIDENCE', 'SUBMIT_RUN_CONFIRMATION']) {
-    assert.deepEqual(await fixture.coordinator.handleMessage({ type }), { ok: false, error: 'Unsupported: ambient candidates are read-only until an authoritative review resolver exists' });
-  }
+  assert.deepEqual(await fixture.coordinator.handleMessage({ type: 'SUBMIT_CANDIDATE_REVIEW' }), { ok: false, error: 'An explicit decision and reviewer are required' });
+  assert.match((await fixture.coordinator.handleMessage({ type: 'OPEN_CANDIDATE_EVIDENCE' })).error, /explicitly unavailable/);
+  assert.match((await fixture.coordinator.handleMessage({ type: 'SUBMIT_RUN_CONFIRMATION' })).error, /exact coordinator run/);
   assert.deepEqual(fixture.sideEffects, before);
   assert.deepEqual(fixture.areas, { local: { unrelatedLocal: 'kept' }, session: { unrelatedSession: 'kept' } });
 });
@@ -498,6 +498,7 @@ test('loads only exact authoritative action-map context and candidate bindings f
       calls.push(url);
       if (url.endsWith('/head')) return response({ digest: mapDigest, revision: 2, siteScopeId: scopeId });
       if (url.includes('/context?revision=2')) return response({ actions: [{ actionId: 'search', evidenceHandles: ['layer_1:node_1'] }], digest: mapDigest, revision: 2, siteScopeId: scopeId });
+      if (url.endsWith('/candidate-review')) return response({ binding: { actionMapDigest: mapDigest, actionMapRevision: 2, candidateDigest: listDigest }, status: 'candidate' });
       return response({ actions: [{ id: 'search' }], listId: 'ambient_site_https_shop_test', publication: { revision: 2, status: 'candidate' } }, { etag: `"${listDigest}"` });
     },
     retrySpoolApi: { createChromeEncryptedStorage: async () => ({}), createRetrySpool: () => ({ list: async () => [] }) },
@@ -507,11 +508,12 @@ test('loads only exact authoritative action-map context and candidate bindings f
     'http://127.0.0.1:4317/v1/action-maps/site_https___shop_test/head',
     'http://127.0.0.1:4317/v1/action-maps/site_https___shop_test/context?revision=2',
     'http://127.0.0.1:4317/v1/action-lists/ambient_site_https_shop_test/revisions/2',
+    'http://127.0.0.1:4317/v1/action-lists/ambient_site_https_shop_test/revisions/2/candidate-review',
   ]);
   assert.equal(result.state.actionMap.digest, mapDigest);
   assert.deepEqual(result.state.actionMap.actions, [{ actionId: 'search', evidenceHandles: ['layer_1:node_1'] }]);
   assert.deepEqual(result.state.candidate, {
-    actionMapDigest: mapDigest, actionMapRevision: 2, actions: [{ id: 'search' }], contentDigest: listDigest, listDigest, listId: 'ambient_site_https_shop_test', listRevision: 2, publication: { revision: 2, status: 'candidate' }, revision: 2, title: 'ambient_site_https_shop_test',
+    actionMapDigest: mapDigest, actionMapRevision: 2, actions: [{ id: 'search' }], contentDigest: listDigest, listDigest, listId: 'ambient_site_https_shop_test', listRevision: 2, publication: { revision: 2, status: 'candidate' }, revision: 2, review: { binding: { actionMapDigest: mapDigest, actionMapRevision: 2, candidateDigest: listDigest }, status: 'candidate' }, status: 'candidate', title: 'ambient_site_https_shop_test',
   });
 });
 
@@ -569,7 +571,7 @@ test('omits candidates whose ETag or document bindings are not exact', async () 
   assert.equal(result.state.candidate, null);
 });
 
-test('unsupported review messages are fail-closed without fetch, tabs, jobs, or storage effects', async () => {
+test('missing review bindings fail closed without fetch, tabs, jobs, or storage effects', async () => {
   let fetches = 0;
   let tabCalls = 0;
   let storageWrites = 0;
@@ -578,11 +580,12 @@ test('unsupported review messages are fail-closed without fetch, tabs, jobs, or 
     tabs: { async create() { tabCalls += 1; }, async query() { tabCalls += 1; }, async sendMessage() { tabCalls += 1; } },
   };
   const coordinator = coordinatorApi.createCoordinator({ chromeApi, fetchApi: async () => { fetches += 1; }, retrySpoolApi: {} });
-  for (const type of ['SUBMIT_CANDIDATE_REVIEW', 'OPEN_CANDIDATE_EVIDENCE', 'SUBMIT_RUN_CONFIRMATION']) {
-    const result = await coordinator.handleMessage({ type });
-    assert.equal(result.ok, false);
-    assert.match(result.error, /Unsupported/);
-  }
+  const review = await coordinator.handleMessage({ type: 'SUBMIT_CANDIDATE_REVIEW' });
+  const evidence = await coordinator.handleMessage({ type: 'OPEN_CANDIDATE_EVIDENCE' });
+  const confirmation = await coordinator.handleMessage({ type: 'SUBMIT_RUN_CONFIRMATION' });
+  assert.match(review.error, /explicit decision and reviewer/);
+  assert.match(evidence.error, /explicitly unavailable/);
+  assert.match(confirmation.error, /exact coordinator run/);
   assert.deepEqual({ fetches, storageWrites, tabCalls }, { fetches: 0, storageWrites: 0, tabCalls: 0 });
 });
 

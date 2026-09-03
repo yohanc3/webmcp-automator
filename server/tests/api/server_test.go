@@ -34,6 +34,18 @@ type orderedAmbientParser struct {
 	err      error
 }
 
+type passingCandidateReplay struct{}
+
+func (passingCandidateReplay) Replay(_ context.Context, _ manifest.ActionList) (json.RawMessage, error) {
+	return json.RawMessage(`{"schemaVersion":"candidate-replay/1","status":"passed","privacy":"no captured values"}`), nil
+}
+
+type failingCandidateReplay struct{}
+
+func (failingCandidateReplay) Replay(_ context.Context, _ manifest.ActionList) (json.RawMessage, error) {
+	return nil, errors.New("owned demo postcondition failed")
+}
+
 func (parser *orderedAmbientParser) Discover(context.Context, json.RawMessage) (learning.Result, error) {
 	return learning.Result{}, errors.New("unused")
 }
@@ -71,6 +83,7 @@ type memoryStore struct {
 	published    map[string]map[int]store.ActionListRevision
 	policies     map[string]store.PolicyRecord
 	replays      map[string]store.ReplayReport
+	bindings     map[string]store.CandidateBinding
 	observations map[string]store.RunObservation
 }
 
@@ -91,8 +104,72 @@ func newMemoryStore() *memoryStore {
 		published:    map[string]map[int]store.ActionListRevision{},
 		policies:     map[string]store.PolicyRecord{},
 		replays:      map[string]store.ReplayReport{},
+		bindings:     map[string]store.CandidateBinding{},
 		observations: map[string]store.RunObservation{},
 	}
+}
+
+func candidateBindingKey(listID string, revision int) string {
+	return fmt.Sprintf("%s:%d", listID, revision)
+}
+
+func (database *memoryStore) BindCandidate(_ context.Context, binding store.CandidateBinding) error {
+	database.mutex.Lock()
+	defer database.mutex.Unlock()
+	key := candidateBindingKey(binding.ListID, binding.Revision)
+	if existing, exists := database.bindings[key]; exists && existing != binding {
+		return store.ErrConflict
+	}
+	database.bindings[key] = binding
+	return nil
+}
+
+func (database *memoryStore) GetCandidateReviewState(_ context.Context, listID string, revision int) (store.CandidateReviewState, error) {
+	database.mutex.Lock()
+	defer database.mutex.Unlock()
+	binding, exists := database.bindings[candidateBindingKey(listID, revision)]
+	if !exists {
+		return store.CandidateReviewState{}, store.ErrNotFound
+	}
+	candidate := database.revisions[listID][revision]
+	if candidate.Revision == 0 {
+		return store.CandidateReviewState{}, store.ErrNotFound
+	}
+	status := candidate.Status
+	if published := database.published[listID][revision]; published.Revision > 0 {
+		status = "published"
+	}
+	return store.CandidateReviewState{Binding: binding, Status: status}, nil
+}
+
+func (database *memoryStore) SavePolicyDecision(_ context.Context, policy store.PolicyRecord) error {
+	database.mutex.Lock()
+	defer database.mutex.Unlock()
+	if _, exists := database.policies[policy.ID]; exists {
+		return store.ErrConflict
+	}
+	database.policies[policy.ID] = policy
+	return nil
+}
+
+func (database *memoryStore) SaveReplayReport(_ context.Context, replay store.ReplayReport) error {
+	database.mutex.Lock()
+	defer database.mutex.Unlock()
+	if _, exists := database.replays[replay.ID]; exists {
+		return store.ErrConflict
+	}
+	database.replays[replay.ID] = replay
+	return nil
+}
+
+func (database *memoryStore) RecordCandidateRejection(_ context.Context, listID string, revision int, digest, reviewer string) error {
+	database.mutex.Lock()
+	defer database.mutex.Unlock()
+	candidate := database.revisions[listID][revision]
+	if candidate.Revision == 0 || candidate.CandidateDigest != digest || strings.TrimSpace(reviewer) == "" || database.published[listID][revision].Revision > 0 {
+		return store.ErrGate
+	}
+	return nil
 }
 
 func (database *memoryStore) CreateSession(
@@ -432,6 +509,7 @@ func TestAmbientOrdersLifecycleThroughHTTP(t *testing.T) {
 	database := newAmbientMemoryStore()
 	parser := &orderedAmbientParser{patches: []json.RawMessage{ambientFixture(t, "orders.layer-001.patch.json"), ambientFixture(t, "orders.layer-002.patch.json")}}
 	server := api.New(database, parser, false, "fake", "fake", "")
+	server.SetCandidateReplayExecutor(passingCandidateReplay{})
 	first := ambientLayer(t, "orders.layer-001.parse-request.json")
 	firstBody := postAmbient(t, server, first, "chrome-extension://orders-test")
 	if firstBody["outcome"] != "applied" {
@@ -470,6 +548,93 @@ func TestAmbientOrdersLifecycleThroughHTTP(t *testing.T) {
 		if len(action.Steps) == 0 {
 			t.Fatalf("zero-step action: %s", action.ID)
 		}
+	}
+
+	listID := learning.AmbientCandidateListID(second.SiteScope.ScopeID)
+	candidate, err := database.GetActionListRevision(context.Background(), listID, 2)
+	if err != nil || candidate.CandidateDigest == "" {
+		t.Fatalf("exact candidate: %#v %v", candidate, err)
+	}
+	state := httptest.NewRecorder()
+	server.ServeHTTP(state, httptest.NewRequest(http.MethodGet, "/v1/action-lists/"+listID+"/revisions/2/candidate-review", nil))
+	if state.Code != http.StatusOK || !strings.Contains(state.Body.String(), candidate.CandidateDigest) {
+		t.Fatalf("candidate review state: %d %s", state.Code, state.Body.String())
+	}
+
+	postReviewJSON := func(path string, value any) *httptest.ResponseRecorder {
+		body, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body)))
+		return response
+	}
+	base := "/v1/action-lists/" + listID + "/revisions/2/candidate-review"
+	firstCandidate, firstErr := database.GetActionListRevision(context.Background(), listID, 1)
+	if firstErr != nil {
+		t.Fatal(firstErr)
+	}
+	if rejected := postReviewJSON("/v1/action-lists/"+listID+"/revisions/1/candidate-review", map[string]any{"expectedDigest": firstCandidate.CandidateDigest, "decision": "reject", "reviewer": "local-user"}); rejected.Code != http.StatusOK || !strings.Contains(rejected.Body.String(), `"published":false`) {
+		t.Fatalf("reject must not publish: %d %s", rejected.Code, rejected.Body.String())
+	}
+	if database.published[listID][1].Revision != 0 {
+		t.Fatal("rejected candidate was published")
+	}
+	server.SetCandidateReplayExecutor(failingCandidateReplay{})
+	if failed := postReviewJSON("/v1/action-lists/"+listID+"/revisions/1/candidate-review/replay", map[string]any{"expectedDigest": firstCandidate.CandidateDigest}); failed.Code != http.StatusCreated || !strings.Contains(failed.Body.String(), `"status":"failed"`) {
+		t.Fatalf("failed replay: %d %s", failed.Code, failed.Body.String())
+	}
+	server.SetCandidateReplayExecutor(passingCandidateReplay{})
+	if stale := postReviewJSON(base+"/replay", map[string]any{"expectedDigest": "sha256:" + strings.Repeat("0", 64)}); stale.Code != http.StatusConflict {
+		t.Fatalf("stale replay accepted: %d %s", stale.Code, stale.Body.String())
+	}
+	denied := postReviewJSON(base+"/policy", map[string]any{"expectedDigest": candidate.CandidateDigest, "originPolicy": map[string]any{"origin": second.SiteScope.Origin, "status": "revoked", "scopes": []string{"ambient_learn"}, "checkedAt": "2026-09-03T12:11:00Z"}})
+	if denied.Code != http.StatusCreated || !strings.Contains(denied.Body.String(), `"status":"denied"`) {
+		t.Fatalf("denied policy: %d %s", denied.Code, denied.Body.String())
+	}
+	expired := postReviewJSON(base+"/policy", map[string]any{"expectedDigest": candidate.CandidateDigest, "originPolicy": map[string]any{"origin": second.SiteScope.Origin, "status": "allowed", "scopes": []string{"ambient_learn"}, "checkedAt": "2026-09-03T12:11:00Z", "expiresAt": "2026-09-03T12:11:01Z"}})
+	if expired.Code != http.StatusCreated || !strings.Contains(expired.Body.String(), `"status":"denied"`) {
+		t.Fatalf("expired policy: %d %s", expired.Code, expired.Body.String())
+	}
+	if forged := postReviewJSON(base, map[string]any{"expectedDigest": candidate.CandidateDigest, "decision": "approve", "reviewer": "local-user", "policyDecisionId": "forged", "replayReportId": "forged"}); forged.Code != http.StatusConflict {
+		t.Fatalf("forged approve: %d %s", forged.Code, forged.Body.String())
+	}
+	policy := postReviewJSON(base+"/policy", map[string]any{"expectedDigest": candidate.CandidateDigest, "originPolicy": map[string]any{"origin": second.SiteScope.Origin, "status": "allowed", "scopes": []string{"ambient_learn"}, "checkedAt": "2026-09-03T12:11:01Z"}})
+	if policy.Code != http.StatusCreated {
+		t.Fatalf("allowed policy: %d %s", policy.Code, policy.Body.String())
+	}
+	var policyBody struct {
+		PolicyDecision struct {
+			ID string `json:"id"`
+		} `json:"policyDecision"`
+	}
+	if err := json.Unmarshal(policy.Body.Bytes(), &policyBody); err != nil || policyBody.PolicyDecision.ID == "" {
+		t.Fatalf("policy identifier: %v %s", err, policy.Body.String())
+	}
+	replay := postReviewJSON(base+"/replay", map[string]any{"expectedDigest": candidate.CandidateDigest})
+	if replay.Code != http.StatusCreated || !strings.Contains(replay.Body.String(), `"status":"passed"`) {
+		t.Fatalf("replay: %d %s", replay.Code, replay.Body.String())
+	}
+	var replayBody struct {
+		ReplayReport struct {
+			ID string `json:"id"`
+		} `json:"replayReport"`
+	}
+	if err := json.Unmarshal(replay.Body.Bytes(), &replayBody); err != nil || replayBody.ReplayReport.ID == "" {
+		t.Fatalf("replay identifier: %v %s", err, replay.Body.String())
+	}
+	published := postReviewJSON(base, map[string]any{"expectedDigest": candidate.CandidateDigest, "decision": "approve", "reviewer": "local-user", "policyDecisionId": policyBody.PolicyDecision.ID, "replayReportId": replayBody.ReplayReport.ID})
+	if published.Code != http.StatusOK || !strings.Contains(published.Body.String(), `"status":"published"`) {
+		t.Fatalf("publication: %d %s", published.Code, published.Body.String())
+	}
+	if duplicate := postReviewJSON(base, map[string]any{"expectedDigest": candidate.CandidateDigest, "decision": "approve", "reviewer": "local-user", "policyDecisionId": policyBody.PolicyDecision.ID, "replayReportId": replayBody.ReplayReport.ID}); duplicate.Code != http.StatusConflict {
+		t.Fatalf("duplicate approve: %d %s", duplicate.Code, duplicate.Body.String())
+	}
+	discovery := httptest.NewRecorder()
+	server.ServeHTTP(discovery, httptest.NewRequest(http.MethodGet, "/v1/action-lists?origin=https%3A%2F%2Fshop.example&url=https%3A%2F%2Fshop.example%2Forders", nil))
+	if discovery.Code != http.StatusOK || !strings.Contains(discovery.Body.String(), `"listId":"`+listID+`"`) {
+		t.Fatalf("published discovery: %d %s", discovery.Code, discovery.Body.String())
 	}
 }
 

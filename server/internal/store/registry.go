@@ -59,6 +59,24 @@ type ReplayReport struct {
 	Report          json.RawMessage
 }
 
+// CandidateBinding is server-owned provenance for an ambient projection.  It
+// is intentionally not reconstructed from client-visible candidate JSON.
+type CandidateBinding struct {
+	ListID            string `json:"listId"`
+	Revision          int    `json:"revision"`
+	CandidateDigest   string `json:"candidateDigest"`
+	ScopeID           string `json:"scopeId"`
+	ActionMapRevision int    `json:"actionMapRevision"`
+	ActionMapDigest   string `json:"actionMapDigest"`
+}
+
+type CandidateReviewState struct {
+	Binding      CandidateBinding `json:"binding"`
+	Status       string           `json:"status"`
+	ReplayReport *ReplayReport    `json:"replayReport,omitempty"`
+	Policy       *PolicyRecord    `json:"policyDecision,omitempty"`
+}
+
 type RunObservation struct {
 	SchemaVersion string            `json:"schemaVersion"`
 	RunID         string            `json:"runId"`
@@ -288,6 +306,84 @@ func (store *Store) SaveReplayReport(ctx context.Context, report ReplayReport) e
 		report.CandidateDigest, report.Status, string(report.Report), time.Now().UTC())
 	if err != nil {
 		return fmt.Errorf("save replay report: %w", err)
+	}
+	return nil
+}
+
+func (store *Store) BindCandidate(ctx context.Context, binding CandidateBinding) error {
+	if !boundedIdentifier(binding.ListID, 80) || !boundedIdentifier(binding.ScopeID, 80) ||
+		binding.Revision < 1 || binding.ActionMapRevision < 1 || !validDigest(binding.CandidateDigest) || !validDigest(binding.ActionMapDigest) {
+		return errors.New("candidate binding is invalid")
+	}
+	result, err := store.db.ExecContext(ctx, `
+		INSERT INTO action_list_candidate_bindings
+		  (list_id, revision, candidate_digest, scope_id, action_map_revision, action_map_digest, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (list_id, revision) DO NOTHING`, binding.ListID, binding.Revision,
+		binding.CandidateDigest, binding.ScopeID, binding.ActionMapRevision, binding.ActionMapDigest, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if inserted, _ := result.RowsAffected(); inserted == 1 {
+		return nil
+	}
+	var existing CandidateBinding
+	err = store.db.QueryRowContext(ctx, `
+		SELECT candidate_digest, scope_id, action_map_revision, action_map_digest
+		FROM action_list_candidate_bindings WHERE list_id = $1 AND revision = $2`, binding.ListID, binding.Revision,
+	).Scan(&existing.CandidateDigest, &existing.ScopeID, &existing.ActionMapRevision, &existing.ActionMapDigest)
+	if err != nil {
+		return err
+	}
+	if existing.CandidateDigest != binding.CandidateDigest || existing.ScopeID != binding.ScopeID ||
+		existing.ActionMapRevision != binding.ActionMapRevision || existing.ActionMapDigest != binding.ActionMapDigest {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (store *Store) GetCandidateReviewState(ctx context.Context, listID string, revision int) (CandidateReviewState, error) {
+	revisionValue, err := store.GetActionListRevision(ctx, listID, revision)
+	if err != nil {
+		return CandidateReviewState{}, err
+	}
+	var result CandidateReviewState
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT candidate_digest, scope_id, action_map_revision, action_map_digest
+		FROM action_list_candidate_bindings
+		WHERE list_id = $1 AND revision = $2`, listID, revision).Scan(
+		&result.Binding.CandidateDigest, &result.Binding.ScopeID,
+		&result.Binding.ActionMapRevision, &result.Binding.ActionMapDigest,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return CandidateReviewState{}, ErrNotFound
+		}
+		return CandidateReviewState{}, err
+	}
+	result.Binding.ListID, result.Binding.Revision, result.Status = listID, revision, revisionValue.Status
+	if result.Binding.CandidateDigest != revisionValue.CandidateDigest {
+		return CandidateReviewState{}, ErrConflict
+	}
+	return result, nil
+}
+
+func (store *Store) RecordCandidateRejection(ctx context.Context, listID string, revision int, digest, reviewer string) error {
+	if strings.TrimSpace(reviewer) == "" || !validDigest(digest) {
+		return errors.New("candidate rejection is invalid")
+	}
+	result, err := store.db.ExecContext(ctx, `
+		INSERT INTO action_list_reviews (id, list_id, revision, candidate_digest, decision, reviewer, created_at)
+		SELECT $1, $2, $3, $4, 'reject', $5, $6
+		WHERE EXISTS (
+			SELECT 1 FROM action_list_revisions WHERE list_id = $2 AND revision = $3 AND candidate_digest = $4
+		) AND NOT EXISTS (
+			SELECT 1 FROM action_list_publications WHERE list_id = $2 AND revision = $3
+		)`, newID("review"), listID, revision, digest, reviewer, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return ErrGate
 	}
 	return nil
 }

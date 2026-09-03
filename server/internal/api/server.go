@@ -56,6 +56,7 @@ type Server struct {
 	handler          http.Handler
 	actionMaps       store.ActionMapService
 	ambient          *learning.Engine
+	replay           CandidateReplayExecutor
 }
 
 type learnRequest struct {
@@ -78,6 +79,7 @@ func New(
 	server := &Server{
 		store: database, discoverer: discoverer, apiKeyConfigured: apiKeyConfigured,
 		provider: provider, model: model, demoDirectory: demoDirectory,
+		replay: semanticOwnedDemoReplay{},
 	}
 	if actionMaps, ok := database.(store.ActionMapService); ok {
 		server.actionMaps = actionMaps
@@ -94,6 +96,10 @@ func New(
 	mux.HandleFunc("GET /v1/action-lists", server.discoverActionLists)
 	mux.HandleFunc("GET /v1/action-lists/{listID}/revisions/{revision}", server.getActionListRevision)
 	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/publish", server.publishActionList)
+	mux.HandleFunc("GET /v1/action-lists/{listID}/revisions/{revision}/candidate-review", server.candidateState)
+	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/candidate-review/policy", server.materializeCandidatePolicy)
+	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/candidate-review/replay", server.replayCandidate)
+	mux.HandleFunc("POST /v1/action-lists/{listID}/revisions/{revision}/candidate-review", server.submitCandidateReview)
 	mux.HandleFunc("POST /v1/run-observations", server.recordRunObservation)
 	if server.actionMaps != nil {
 		actionMapHandlers := actionmapapi.New(server.actionMaps)
@@ -111,6 +117,14 @@ func New(
 
 func (server *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	server.handler.ServeHTTP(writer, request)
+}
+
+// SetCandidateReplayExecutor is an intentionally narrow seam for the owned
+// deterministic demo actor. It exists for local integration and CI only.
+func (server *Server) SetCandidateReplayExecutor(executor CandidateReplayExecutor) {
+	if executor != nil {
+		server.replay = executor
+	}
 }
 
 func (server *Server) health(writer http.ResponseWriter, _ *http.Request) {

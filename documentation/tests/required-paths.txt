@@ -23,6 +23,7 @@ documentation/contracts/README.md
 documentation/contracts/action-list.schema.json
 documentation/contracts/run-message.schema.json
 documentation/contracts/ambient-learning.md
+documentation/g10-candidate-publication.md
 documentation/contracts/ambient-parse-request.schema.json
 documentation/contracts/action-map-patch.schema.json
 documentation/contracts/action-map-revision.schema.json
