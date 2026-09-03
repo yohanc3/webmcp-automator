@@ -35,16 +35,9 @@
           const page = projection(); onSettled(observationId, { projection: page, outcome: { kind, evidenceIds: page.evidenceIds } });
         }), 180);
       };
-      const settle = (observationId, kind) => {
-        const timer = setTimeout(() => {
-          pending.delete(observationId);
-          const page = projection();
-          onSettled(observationId, {
-            projection: page,
-            outcome: { kind, evidenceIds: page.evidenceIds },
-          });
-        }, 80);
-        pending.set(observationId, timer);
+      const settle = (observationId) => {
+        pending.set(observationId, true);
+        settlePending('semantic_update');
       };
       const observe = (event, kind) => {
         if (!event.isTrusted || globalThis.__webMcpRunnerActive) return;
@@ -52,7 +45,10 @@
           argumentsByValue: new Map(), ledger: WebMcpLearningPrivacy.createLedger(),
         }) : null;
         const observationId = onObservation({ kind, targetEvidenceId: target?.id, trusted: event.isTrusted });
-        if (observationId) settle(observationId, 'semantic_update');
+        if (observationId) {
+          globalThis.__webMcpAmbientLastObservation = { observationId, kind, targetEvidenceId: target?.id || null };
+          settle(observationId);
+        }
       };
       const onClick = (event) => observe(event, 'click');
       const onInput = (event) => observe(event, 'fill');
@@ -63,10 +59,10 @@
       mutations.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
       document.addEventListener('click', onClick, true); document.addEventListener('input', onInput, true);
       document.addEventListener('focusin', onFocus, true); document.addEventListener('submit', onSubmit, true);
-      document.addEventListener('keydown', onKeydown, true); window.addEventListener('popstate', settlePending);
+      document.addEventListener('keydown', onKeydown, true); window.addEventListener('popstate', () => settlePending('same_document_route'));
       return {
-        disconnect() { document.removeEventListener('click', onClick, true); document.removeEventListener('input', onInput, true); document.removeEventListener('focusin', onFocus, true); document.removeEventListener('submit', onSubmit, true); document.removeEventListener('keydown', onKeydown, true); window.removeEventListener('popstate', settlePending); mutations.disconnect(); clearTimeout(quietTimer); pending.forEach((timer) => clearTimeout(timer)); },
-        discard(observationId) { clearTimeout(pending.get(observationId)); pending.delete(observationId); },
+        disconnect() { document.removeEventListener('click', onClick, true); document.removeEventListener('input', onInput, true); document.removeEventListener('focusin', onFocus, true); document.removeEventListener('submit', onSubmit, true); document.removeEventListener('keydown', onKeydown, true); mutations.disconnect(); clearTimeout(quietTimer); pending.clear(); },
+        discard(observationId) { pending.delete(observationId); },
       };
     },
     async captureInitial() { return projection(); },
@@ -115,9 +111,8 @@
     await chrome.storage.session.set({ [lifecycleKey(scopeId)]: prior });
     window.addEventListener('pagehide', () => {
       const status = controller.status();
-      const target = document.activeElement;
-      const targetNode = target instanceof Element ? semantic.describeElement(target, { argumentsByValue: new Map(), ledger: WebMcpLearningPrivacy.createLedger() }) : null;
-      prior.pending = status.lastLayerId ? { observationId: `obs_${scopeId}_${status.eventSequence + 1}`, eventSequence: status.eventSequence + 1, fromLayerId: status.lastLayerId, kind: 'navigate', targetEvidenceId: targetNode?.id || null, argumentTokens: [] } : null;
+      const observed = globalThis.__webMcpAmbientLastObservation;
+      prior.pending = observed && status.lastLayerId ? { observationId: observed.observationId, eventSequence: status.eventSequence, fromLayerId: status.lastLayerId, kind: observed.kind, targetEvidenceId: observed.targetEvidenceId, argumentTokens: [] } : null;
       void chrome.storage.session.set({ [lifecycleKey(scopeId)]: prior });
     }, { once: true });
     chrome.storage.onChanged?.addListener((changes, areaName) => {
