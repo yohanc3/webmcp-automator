@@ -2,10 +2,11 @@
   root.WebMcpLearningBootstrap = factory(
     root.WebMcpProtocol,
     root.WebMcpErrors,
-    root.WebMcpSemantic,
+    root.WebMcpLearningSemantic || root.WebMcpSemantic,
+    root.WebMcpLearningPrivacy || null,
   );
 }(typeof globalThis === 'undefined' ? this : globalThis,
-  (protocol, publicErrors, semantic) => {
+  (protocol, publicErrors, semantic, privacy) => {
   'use strict';
 
   const {
@@ -19,6 +20,36 @@
   let recordingId = null;
   let pendingInput = null;
   let started = false;
+
+  const renderIndicator = () => {
+    const active = Boolean(recordingId);
+    document.documentElement.dataset.webMcpLearning = active ? 'recording' : 'idle';
+    let indicator = document.querySelector('[data-webmcp-learning-ui="indicator"]');
+    if (!active) {
+      indicator?.remove();
+      return;
+    }
+    if (indicator) return;
+    indicator = document.createElement('div');
+    indicator.dataset.webmcpLearningUi = 'indicator';
+    indicator.setAttribute('role', 'status');
+    indicator.textContent = '● Learning recording on';
+    Object.assign(indicator.style, {
+      background: '#171717',
+      border: '1px solid rgba(255,255,255,.18)',
+      borderRadius: '999px',
+      bottom: '16px',
+      boxShadow: '0 8px 24px rgba(0,0,0,.3)',
+      color: '#fff',
+      font: '600 12px/1 system-ui, sans-serif',
+      left: '16px',
+      padding: '10px 13px',
+      pointerEvents: 'none',
+      position: 'fixed',
+      zIndex: '2147483647',
+    });
+    document.documentElement.append(indicator);
+  };
 
   const sendMessage = (message) => sendRuntimeMessage(chrome.runtime, message);
 
@@ -71,6 +102,13 @@
     };
   };
 
+  const syntheticEvent = (event) => (
+    globalThis.__webMcpActorActive === true
+    || globalThis.__webMcpRunnerActive === true
+    || event?.webMcpSynthetic === true
+    || (privacy && event?.isTrusted === false)
+  );
+
   const beginEvent = (kind, target, value, beforeState) => {
     const traceEvent = createTraceEvent(kind, target, value);
     if (!traceEvent) return null;
@@ -122,7 +160,7 @@
   };
 
   const onInput = (event) => {
-    if (!recordingId || globalThis.__webMcpRunnerActive) return;
+    if (!recordingId || syntheticEvent(event)) return;
     const target = interactiveTarget(event.target);
     if (!(target instanceof HTMLInputElement
       || target instanceof HTMLTextAreaElement
@@ -146,7 +184,7 @@
   };
 
   const onClick = (event) => {
-    if (!recordingId || globalThis.__webMcpRunnerActive) return;
+    if (!recordingId || syntheticEvent(event)) return;
     if (event.detail === 0) return;
     void flushInput();
     const target = interactiveTarget(event.target);
@@ -157,7 +195,7 @@
   };
 
   const onKeyDown = (event) => {
-    if (!recordingId || globalThis.__webMcpRunnerActive || event.key !== 'Enter') return;
+    if (!recordingId || syntheticEvent(event) || event.key !== 'Enter') return;
     void flushInput();
     const target = interactiveTarget(event.target) || event.target;
     if (!(target instanceof Element)) return;
@@ -174,6 +212,7 @@
       recordingId = message.recordingId;
       pendingInput = null;
       pendingCompletions.clear();
+      renderIndicator();
       sendResponse({ ok: true });
       return false;
     }
@@ -182,6 +221,7 @@
         .then(() => Promise.allSettled([...pendingCompletions]))
         .then(() => {
           recordingId = null;
+          renderIndicator();
           sendResponse({ ok: true, finalState: capturePageState() });
         })
         .catch((error) => sendResponse(publicErrors.legacyResponseFor(error)));
@@ -201,6 +241,7 @@
     if (response?.recordingActive) {
       recordingId = response.recordingId;
     }
+    renderIndicator();
     // WebMCP registration is intentionally paused while the discovery pipeline is validated.
   };
 
@@ -217,5 +258,10 @@
     handleMessage,
     initialize,
     start,
+    status: () => ({
+      recordingId,
+      state: recordingId ? 'recording' : 'idle',
+      indicatorVisible: Boolean(document.querySelector('[data-webmcp-learning-ui="indicator"]')),
+    }),
   };
 }));

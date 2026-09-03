@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Learning capture tests</title>
+    <style>
+      body { font-family: system-ui, sans-serif; }
+      #fixture { padding: 12px; }
+    </style>
+  </head>
+  <body data-status="running">
+    <main>
+      <h1>Learning capture tests</h1>
+      <p id="summary">Running…</p>
+      <ol id="results"></ol>
+      <section id="fixture"></section>
+    </main>
+    <script>
+      window.addEventListener('error', (event) => {
+        document.body.dataset.status = 'failed';
+        document.querySelector('#summary').textContent = event.message || 'A test file did not load.';
+      });
+      window.addEventListener('unhandledrejection', (event) => {
+        document.body.dataset.status = 'failed';
+        document.querySelector('#summary').textContent = event.reason?.message || 'A test rejected.';
+      });
+    </script>
+    <script src="../../tests/test-harness.js"></script>
+    <script src="../privacy.js"></script>
+    <script src="../semantic.js"></script>
+    <script src="../recorder-core.js"></script>
+    <script src="../session.js"></script>
+    <script src="./tests.js"></script>
+  </body>
+</html>
