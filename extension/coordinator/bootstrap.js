@@ -108,7 +108,7 @@
       return body;
     };
     const requestRegistry = async (path) => {
-      const response = await fetchApi(`http://127.0.0.1:4317${path}`);
+      const response = await fetchApi(`http://127.0.0.1:4317${path}`, { headers: { 'X-WebMCP-Internal': 'ambient-v1' } });
       const body = await response.json().catch(() => null);
       return { body, response };
     };

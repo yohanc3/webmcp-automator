@@ -139,7 +139,20 @@ func (database *memoryStore) GetCandidateReviewState(_ context.Context, listID s
 	if published := database.published[listID][revision]; published.Revision > 0 {
 		status = "published"
 	}
-	return store.CandidateReviewState{Binding: binding, Status: status}, nil
+	state := store.CandidateReviewState{Binding: binding, Status: status}
+	for _, policy := range database.policies {
+		if policy.ListID == listID && policy.Revision == revision && policy.CandidateDigest == binding.CandidateDigest {
+			copy := policy
+			state.Policy = &copy
+		}
+	}
+	for _, replay := range database.replays {
+		if replay.ListID == listID && replay.Revision == revision && replay.CandidateDigest == binding.CandidateDigest {
+			copy := replay
+			state.ReplayReport = &copy
+		}
+	}
+	return state, nil
 }
 
 func (database *memoryStore) SavePolicyDecision(_ context.Context, policy store.PolicyRecord) error {
@@ -757,6 +770,8 @@ func registryServer(database *memoryStore) *api.Server {
 func insertStorefront(t *testing.T, server *api.Server) store.ActionListRevision {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodPost, "/v1/action-lists", bytes.NewReader(ownedStorefrontList(t)))
+	request.Header.Set("Origin", "chrome-extension://registry-test")
+	request.Header.Set("X-WebMCP-Internal", "ambient-v1")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
 	if response.Code != http.StatusCreated {

@@ -40,23 +40,23 @@ type PublishActionListRequest struct {
 }
 
 type PolicyRecord struct {
-	ID              string
-	ListID          string
-	Revision        int
-	CandidateDigest string
-	Decision        string
-	Scopes          []string
-	CheckedAt       time.Time
-	ExpiresAt       *time.Time
+	ID              string     `json:"id"`
+	ListID          string     `json:"listId"`
+	Revision        int        `json:"revision"`
+	CandidateDigest string     `json:"candidateDigest"`
+	Decision        string     `json:"status"`
+	Scopes          []string   `json:"scopes"`
+	CheckedAt       time.Time  `json:"checkedAt"`
+	ExpiresAt       *time.Time `json:"expiresAt"`
 }
 
 type ReplayReport struct {
-	ID              string
-	ListID          string
-	Revision        int
-	CandidateDigest string
-	Status          string
-	Report          json.RawMessage
+	ID              string          `json:"id"`
+	ListID          string          `json:"listId"`
+	Revision        int             `json:"revision"`
+	CandidateDigest string          `json:"candidateDigest"`
+	Status          string          `json:"status"`
+	Report          json.RawMessage `json:"report"`
 }
 
 // CandidateBinding is server-owned provenance for an ambient projection.  It
@@ -374,6 +374,31 @@ func (store *Store) GetCandidateReviewState(ctx context.Context, listID string, 
 	}
 	if rejected {
 		result.Status = "rejected"
+	}
+	var scopesJSON string
+	policy := PolicyRecord{ListID: listID, Revision: revision, CandidateDigest: result.Binding.CandidateDigest}
+	err = store.db.QueryRowContext(ctx, `
+		SELECT id, decision, scopes_json, checked_at, expires_at
+		FROM policy_decisions
+		WHERE list_id = $1 AND revision = $2 AND candidate_digest = $3
+		ORDER BY created_at DESC LIMIT 1`, listID, revision, result.Binding.CandidateDigest).
+		Scan(&policy.ID, &policy.Decision, &scopesJSON, &policy.CheckedAt, &policy.ExpiresAt)
+	if err == nil && json.Unmarshal([]byte(scopesJSON), &policy.Scopes) == nil {
+		result.Policy = &policy
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return CandidateReviewState{}, err
+	}
+	replay := ReplayReport{ListID: listID, Revision: revision, CandidateDigest: result.Binding.CandidateDigest}
+	err = store.db.QueryRowContext(ctx, `
+		SELECT id, status, report_json
+		FROM replay_reports
+		WHERE list_id = $1 AND revision = $2 AND candidate_digest = $3
+		ORDER BY created_at DESC LIMIT 1`, listID, revision, result.Binding.CandidateDigest).
+		Scan(&replay.ID, &replay.Status, &replay.Report)
+	if err == nil {
+		result.ReplayReport = &replay
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return CandidateReviewState{}, err
 	}
 	return result, nil
 }
