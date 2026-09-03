@@ -30,8 +30,8 @@ func TestDiscoverUsesOpenRouterStructuredOutputs(t *testing.T) {
 		if body["model"] != "openai/gpt-oss-20b:nitro" {
 			t.Fatalf("unexpected model: %#v", body["model"])
 		}
-		if body["max_completion_tokens"] != float64(8000) {
-			t.Fatalf("unexpected output limit: %#v", body["max_completion_tokens"])
+		if body["max_tokens"] != float64(8000) {
+			t.Fatalf("unexpected output limit: %#v", body["max_tokens"])
 		}
 		reasoning := body["reasoning"].(map[string]any)
 		if reasoning["effort"] != "low" {

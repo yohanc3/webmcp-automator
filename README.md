@@ -136,7 +136,7 @@ Requirements:
 - Chrome;
 - an OpenRouter API key.
 
-Use Go's native process environment and start the service:
+`npm start` loads `OPENROUTER_API_KEY` from a repository-root `.env` file when present. You can alternatively use Go's native process environment:
 
 ```bash
 export OPENROUTER_API_KEY="your-key"
